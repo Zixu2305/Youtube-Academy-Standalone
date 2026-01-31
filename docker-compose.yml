@@ -1,0 +1,56 @@
+services:
+  mysql:
+    image: mysql:${MYSQL_VERSION}
+    container_name: yta-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    ports:
+      - "${MYSQL_PORT}:3307"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      # Any .sql here runs ON FIRST INIT only (when the volume is empty)
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    command: >
+      --mysql-native-password=ON
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_0900_ai_ci
+      --default-time-zone=+00:00
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+  seed_skillsfuture:
+    build:
+      context: .
+      dockerfile: etl/skillsfuture/Dockerfile
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_NAME: ${MYSQL_DATABASE}
+      DB_USER: ${MYSQL_USER}
+      DB_PASSWORD: ${MYSQL_PASSWORD}
+      SEED_OUT_DIR: /app/out
+    volumes:
+      - ./data:/app/data:ro
+      - ./out:/app/out
+
+  adminer:
+    image: adminer:4
+    container_name: yta-adminer
+    restart: unless-stopped
+    ports:
+      - "${ADMINER_PORT}:8080"
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+volumes:
+  mysql_data:
