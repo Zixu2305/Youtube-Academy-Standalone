@@ -116,6 +116,39 @@ Expected console output includes:
 
 ---
 
+## MongoDB Setup
+
+This project now includes MongoDB for youtube Ingestion Data.
+
+### Prerequisites
+- Docker + Docker Compose (same as MySQL)
+
+### Quick Start for MongoDB
+
+1. **Configure Environment Variables**  
+   Your `.env` file should include:  
+   ```
+   MONGO_PORT=27017
+   MONGO_ROOT_USERNAME=yta
+   MONGO_ROOT_PASSWORD=your_password
+   MONGO_DATABASE=yta
+   ```
+
+2. **Start the MongoDB Container**  
+   ```bash
+   docker compose up -d mongodb
+   ```  
+   Verify with: `docker compose ps`
+
+3. **Connect to MongoDB**  
+   - **Via Docker Exec (Interactive)**:  
+     ```bash
+     docker compose exec mongodb mongosh -u your_username -p your_password --authenticationDatabase admin
+     ```  
+
+
+---
+
 ## Reset everything (wipe DB and re-seed)
 
 ⚠️ This deletes the MySQL volume and all data.
