@@ -39,16 +39,121 @@ Seeded from the Excel files in `data/raw/` (this folder is gitignored by default
 │       ├── Dockerfile
 │       └── requirements.txt
 ├── pipelines/
-│   └── skillsfuture/
-│       ├── seed_mapping.py
-│       ├── seed_skillsfuture.py
-│       └── seed_unique_skills.py
+│   ├── skillsfuture/
+│   │   ├── seed_mapping.py
+│   │   ├── seed_skillsfuture.py
+│   │   └── seed_unique_skills.py
+│   └── youtube/
+│       ├── Youtube_API_Ingestion_Prototype_GUI.py
+│       └── YTA_MongoDB.py
 ├── out/
 │   ├── fixed_sf_skill_variants.csv
 │   └── missing_sf_skill_lookups.csv
 ├── scripts/
 │   └── mysql.sh
 ```
+
+---
+
+## YouTube API Ingestion
+
+This repo includes a prototype GUI application for ingesting YouTube video metadata and comments using the YouTube Data API v3.
+
+### Features
+
+- **Sector and Skill Selection**: Fetches sectors and skills from the seeded database (`map_sf_to_cat_skill` table).
+- **Search and Filter**: Search skills within selected sectors (prefix-based matching).
+- **YouTube API Integration**: Searches for videos, fetches video details (statistics, tags, duration), and retrieves top comments.
+- **Data Export**: Saves fetched data to a JSON file for further processing.
+
+### Prerequisites
+
+- Seeded database (run SkillsFuture seeding first).
+- Python 3.10+ with required packages: `tkinter`, `requests`, `mysql-connector-python`, `python-dotenv`, `pymongo`.
+- YouTube Data API v3 key (obtain from [Google Cloud Console](https://console.cloud.google.com/)).
+- MongoDB Atlas cluster or local MongoDB instance (for ingestion).
+
+### Running the GUI
+
+1. Ensure the database is running and seeded.
+
+2. Install dependencies (if not using Docker):
+
+   ```bash
+   pip install tkinter requests mysql-connector-python python-dotenv pymongo
+   ```
+
+   Note: `tkinter` is usually included with Python, but on some systems you may need to install it separately.
+
+3. Run the GUI:
+
+   ```bash
+   cd pipelines/youtube
+   python Youtube_API_Ingestion_Prototype_GUI.py
+   ```
+
+4. In the GUI:
+   - Select a sector from the dropdown.
+   - Search for skills using the search box (type to filter skills starting with your input).
+   - Select desired skills by checking the boxes.
+   - Enter your YouTube API key.
+   - Adjust search parameters (number of max results, order, etc.).
+   - Click "Fetch Selected Skills" to start data collection.
+   - Choose a save location for the JSON output.
+
+### API Parameters
+
+- **Search Type**: Fixed to "video".
+- **Videos Part**: `snippet, statistics, contentDetails`.
+- **Comments Part**: `snippet` (plaintext format).
+
+### Output Format
+
+The JSON output includes:
+- Selected skills.
+- Search order.
+- Videos data: search results, statistics, tags, duration, and comments for each video.
+
+### MongoDB Ingestion
+
+After exporting the JSON from the GUI, you can ingest the data into MongoDB for storage and querying.
+
+#### Prerequisites
+
+- MongoDB instance (local) configured via environment variables in `.env`:
+  - `MONGO_HOST` (default: "localhost")
+  - `MONGO_PORT` (default: "27017")
+  - `MONGO_ROOT_USERNAME` (optional, for authenticated connections)
+  - `MONGO_ROOT_PASSWORD` (optional, for authenticated connections)
+  - `MONGO_DATABASE` (default: "DB_NAME")
+
+#### Running the Ingestion
+
+1. Ensure MongoDB is running and accessible.
+
+2. Run the script:
+
+   ```bash
+   cd pipelines/youtube
+   python YTA_MongoDB.py
+   ```
+
+3. Select the JSON file when the dialog opens.
+
+4. The script will process the JSON and insert documents into the `videos` collection in the specified "DB_NAME" database.
+
+#### Document Structure
+
+Each document in MongoDB includes:
+- `sector`: The sector name (e.g., "Accountancy").
+- `skill_name`: The associated skill.
+- `videoId`: YouTube video ID.
+- `publishedAt`, `title`, `description`: Video metadata.
+- `viewCount`, `likeCount`: Engagement metrics.
+- `tags`: List of video tags.
+- `comments`: List of comment objects (textDisplay, textOriginal).
+- `duration`: Parsed video duration (e.g., "19:58").
+- `ingested_timing`: Timestamp of ingestion.
 
 ---
 
