@@ -64,7 +64,37 @@ services:
       - "${MONGO_PORT}:27017"
     volumes:
       - mongodb_data:/data/db
+      
+  seed_youtube:
+    build:
+      context: .
+      dockerfile: etl/youtube/Dockerfile
+    depends_on:
+      mysql:
+        condition: service_healthy
+      mongodb:
+        condition: service_started  # MongoDB doesn't have a healthcheck
+    environment:
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_NAME: ${MYSQL_DATABASE}
+      DB_USER: ${MYSQL_USER}
+      DB_PASSWORD: ${MYSQL_PASSWORD}
+      MONGO_HOST: mongodb
+      MONGO_PORT: 27017
+      MONGO_ROOT_USERNAME: ${MONGO_ROOT_USERNAME}
+      MONGO_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD}
+      MONGO_DATABASE: ${MONGO_DATABASE}
+    volumes:
+      - ./data:/app/data:ro  # If you need to read input data
+      - ./out:/app/out       # If you need to write output
+      - ./pipelines:/app/pipelines:ro  # Mount the scripts
+    command: ["python", "/app/pipelines/youtube/YTA_MongoDB.py"]  # Specify the entry point script
+
 
 volumes:
   mysql_data:
   mongodb_data:
+
+
+  
