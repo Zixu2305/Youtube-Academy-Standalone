@@ -2,10 +2,11 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-COPY etl/requirements.txt /app/requirements.txt
+COPY etl/youtube/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
+COPY pipelines/youtube/Youtube_API_Ingestion_Prototype_GUI.py /app/app.py
 
+EXPOSE 5000
 
-# default: run all
-CMD ["bash", "-lc", ""]
+CMD ["python", "/app/app.py"]

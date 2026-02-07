@@ -85,11 +85,11 @@ services:
       MONGO_ROOT_USERNAME: ${MONGO_ROOT_USERNAME}
       MONGO_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD}
       MONGO_DATABASE: ${MONGO_DATABASE}
+    ports:
+      - "5000:5000"
     volumes:
-      - ./data:/app/data:ro  # If you need to read input data
-      - ./out:/app/out       # If you need to write output
-      - ./pipelines:/app/pipelines:ro  # Mount the scripts
-    command: ["python", "/app/pipelines/youtube/YTA_MongoDB.py"]  # Specify the entry point script
+      - ./.env:/app/.env:ro
+      - ./pipelines/youtube/Youtube_API_Ingestion_Prototype_GUI.py:/app/app.py:ro
 
 
 volumes:
