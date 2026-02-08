@@ -45,6 +45,13 @@ Seeded from the Excel files in `data/raw/` (this folder is gitignored by default
 │   │   └── seed_unique_skills.py
 │   └── youtube/
 │       ├── Youtube_API_Ingestion_Prototype_GUI.py
+│       ├── youtube_config.py
+│       ├── youtube_data_access.py
+│       ├── youtube_ingestion_service.py
+│       ├── youtube_web_app.py
+│       ├── static/
+│       ├── templates/
+│       └── tests/
 ├── out/
 │   ├── fixed_sf_skill_variants.csv
 │   └── missing_sf_skill_lookups.csv
@@ -54,101 +61,40 @@ Seeded from the Excel files in `data/raw/` (this folder is gitignored by default
 
 ---
 
-## YouTube API Ingestion
+## Setup order (new users)
 
-This repo includes a prototype GUI application for ingesting YouTube video metadata and comments using the YouTube Data API v3.
-
-### Features
-
-- **Sector and Skill Selection**: Fetches sectors and skills from the seeded database (`map_sf_to_cat_skill` table).
-- **Search and Filter**: Search skills within selected sectors (prefix-based matching).
-- **YouTube API Integration**: Searches for videos, fetches video details (statistics, tags, duration), and retrieves top comments.
-- **Direct MongoDB Ingestion**: Fetches data from the YouTube API and directly upserts it into MongoDB for storage and querying.
-
-### Prerequisites
-
-- Seeded database (run SkillsFuture seeding first).
-- Python 3.10+ with required packages: `flask`, `requests`, `mysql-connector-python`, `python-dotenv`, `pymongo`.
-- YouTube Data API v3 key (obtain from [Google Cloud Console](https://console.cloud.google.com/)).
-- MongoDB instance (local or Atlas) configured via environment variables in `.env`.
-
-### Running the GUI
-
-1. Ensure the database and MongoDB are running and seeded.
-
-2. Install dependencies (if not using Docker):
-
-   ```bash
-   pip install flask requests mysql-connector-python python-dotenv pymongo
-   ```
-
-3. Run the GUI:
-
-   ```bash
-   cd pipelines/youtube
-   python Youtube_API_Ingestion_Prototype_GUI.py
-   ```
-
-4. Open your browser to `http://localhost:5000`.
-
-5. In the GUI:
-   - Select a sector from the dropdown.
-   - Search for skills using the search box (type to filter skills starting with your input).
-   - Select desired skills by checking the boxes.
-   - Enter your YouTube API key.
-   - Adjust search parameters (number of max results, order, etc.).
-   - Click "Fetch and Upsert Data" to start data collection and direct ingestion into MongoDB.
-
-### API Parameters
-
-- **Search Type**: `video`.
-- **Videos Part**: `snippet, statistics, contentDetails`.
-- **Comments Part**: `snippet` (plaintext format).
-
-### MongoDB Document Structure
-
-Each document in the `videos` collection includes fields in the following order:
-- `sector`: The sector name (e.g., "Accountancy").
-- `skill_name`: The associated skill.
-- `videoId`: YouTube video ID.
-- `publishedAt`: Video publication timestamp.
-- `title`: Video title.
-- `description`: Video description.
-- `viewCount`: Number of views.
-- `likeCount`: Number of likes.
-- `tags`: List of video tags.
-- `comments`: List of comment objects (each with `textDisplay` and `textOriginal`).
-- `duration`: Parsed video duration (e.g., "19:58").
-- `ingested_timing`: Timestamp of ingestion.
-
-Documents are upserted (updated if exists, inserted if not) to prevent duplicates.
+1. Start the MySQL + MongoDB containers (and Adminer).
+2. Seed SkillsFuture data into MySQL.
+3. Start the YouTube ingestion app (reads MySQL, writes MongoDB).
 
 ---
 
 ## Prerequisites
 
 - Docker + Docker Compose
+- Local Excel files in `data/raw/` (see list above) for seeding
+- YouTube Data API v3 key (only needed when you run ingestion)
 
-Optional (only if you want to run scripts locally):
-- Python 3.10+ (venv)
+Optional (only if you want to run the GUI locally):
+- Python 3.10+
 
 ---
 
-## Quick start (recommended: seed via Docker)
+## Quick start (new user setup)
 
-### 1) Create `.env`
+### 1) Create `.env` and add data files
 
 ```bash
 cp .env.example .env
-# edit values if needed
+# edit values if needed (passwords/ports)
 ```
 
-Your `.env` controls the MySQL container and the seed job.
+Place the Excel files in `data/raw/` (this folder is gitignored).
 
-### 2) Start the database
+### 2) Start MySQL + MongoDB + Adminer
 
 ```bash
-docker compose up -d mysql adminer
+docker compose up -d mysql mongodb adminer
 ```
 
 Adminer (DB web UI) is available at:
@@ -162,7 +108,7 @@ Adminer login:
 - Password: from `.env`
 - Database: `yta`
 
-### 3) Seed SkillsFuture data
+### 3) Seed SkillsFuture data (MySQL)
 
 Make sure the output folder exists (so reports persist on your host):
 
@@ -181,7 +127,30 @@ Expected console output includes:
 - `✅ SkillsFuture seeded.`
 - `✅ map_sf_to_cat_skill inserted: ...`
 
-### 4) Connect to MySQL (inside container)
+### 4) Run the YouTube ingestion app
+
+**Option A: Docker (recommended)**
+
+```bash
+docker compose up -d seed_youtube
+```
+
+Open `http://localhost:5001`.
+
+**Option B: Local**
+
+```bash
+pip install -r etl/youtube/requirements.txt
+python pipelines/youtube/Youtube_API_Ingestion_Prototype_GUI.py
+```
+
+Open `http://localhost:5000`.
+
+If running locally, ensure `.env` includes `MONGO_HOST=127.0.0.1` (or `localhost`) and your ports match Docker.
+
+See **YouTube API Ingestion** below for details on the UI and fields.
+
+### 5) Connect to MySQL (optional)
 
 ```bash
 ./scripts/mysql.sh
@@ -189,46 +158,31 @@ Expected console output includes:
 
 ---
 
-## MongoDB Setup
+## MongoDB Notes
 
-This project now includes MongoDB for youtube Ingestion Data.
+Default connection settings come from `.env`. For a local Docker setup, MongoDB is available at:
 
-### Prerequisites
-- Docker + Docker Compose (same as MySQL)
+- Host: `localhost`
+- Port: `${MONGO_PORT}` (default `27017`)
+- Username/Password: from `.env`
 
-### Quick Start for MongoDB
+Connect via Docker exec:
 
-1. **Configure Environment Variables**  
-   Your `.env` file should include:  
-   ```
-   MONGO_PORT=27017
-   MONGO_ROOT_USERNAME=yta
-   MONGO_ROOT_PASSWORD=your_password
-   MONGO_DATABASE=yta
-   ```
-
-2. **Start the MongoDB Container**  
-   ```bash
-   docker compose up -d mongodb
-   ```  
-   Verify with: `docker compose ps`
-
-3. **Connect to MongoDB**  
-   - **Via Docker Exec (Interactive)**:  
-     ```bash
-     docker compose exec mongodb mongosh -u your_username -p your_password --authenticationDatabase admin
-     ```  
-
+```bash
+docker compose exec mongodb mongosh -u your_username -p your_password --authenticationDatabase admin
+```
 
 ---
 
 ## Reset everything (wipe DB and re-seed)
 
-⚠️ This deletes the MySQL volume and all data.
+⚠️ This deletes the MySQL and MongoDB volumes and all data.
+
+Remove '-v' arg in compose down, if you want to keep volumes and all data
 
 ```bash
 docker compose down -v
-docker compose up -d mysql adminer
+docker compose up -d mysql mongodb adminer
 mkdir -p out
 docker compose run --rm seed_skillsfuture
 ```
@@ -289,5 +243,83 @@ Some SkillsFuture job role records encode **multiple tracks in one cell** (e.g.,
 This repo currently stores those as a single `sf_track.track_name` string. If you later need true
 many-to-many relationships (job role ↔ multiple tracks), introduce a junction table like
 `sf_job_role_track(job_role_id, track_id)` and split during seeding.
+
+---
+
+## YouTube API Ingestion
+
+This repo includes a Flask-based GUI application for ingesting YouTube video metadata and comments using the YouTube Data API v3.
+It reads sectors/skills from the seeded MySQL mapping table (`map_sf_to_cat_skill`) and upserts results into MongoDB.
+
+### Features
+
+- **Sector and Skill Selection**: Fetches sectors and skills from the seeded database (`map_sf_to_cat_skill` table).
+- **Search and Filter**: Search skills within selected sectors (substring match).
+- **YouTube API Integration**: Searches for videos, fetches video details (statistics, tags, duration), and retrieves top comments.
+- **Direct MongoDB Ingestion**: Fetches data from the YouTube API and directly upserts it into MongoDB for storage and querying.
+
+### Requirements (for the GUI)
+
+- Seeded MySQL database (run SkillsFuture seeding first).
+- Running MongoDB instance.
+- YouTube Data API v3 key.
+- Python 3.10+ if running locally (Docker option below doesn't need local Python).
+
+### Running the GUI
+
+After completing the setup steps above, run one of:
+
+**Option A: Docker (recommended)**
+
+```bash
+docker compose up -d seed_youtube
+```
+
+Open `http://localhost:5001`.
+
+**Option B: Local**
+
+```bash
+pip install -r etl/youtube/requirements.txt
+python pipelines/youtube/Youtube_API_Ingestion_Prototype_GUI.py
+```
+
+Open `http://localhost:5000`.
+
+If running locally, make sure `.env` includes `MONGO_HOST=127.0.0.1` (or `localhost`) and your MySQL/Mongo ports match the Docker ports.
+
+In the GUI:
+   - Select a sector from the dropdown.
+   - Search for skills using the search box (type to filter skills containing your input).
+   - Select desired skills by checking the boxes.
+   - Enter your YouTube API key.
+   - Adjust search parameters (number of max results, order, etc.).
+   - Click "Fetch and Upsert Data" to start data collection and direct ingestion into MongoDB.
+   - The page now stays on the same screen and shows live run state (`running/success/error`) plus upsert counters (`inserted/updated/unchanged`).
+   - Use the built-in **MongoDB Status** panel to verify total document count, duplicate groups, and recently ingested rows.
+
+### API Parameters
+
+- **Search Type**: `video`.
+- **Videos Part**: `snippet, statistics, contentDetails`.
+- **Comments Part**: `snippet` (plaintext format).
+
+### MongoDB Document Structure
+
+Each document in the `videos` collection includes fields in the following order:
+- `sector`: The sector name (e.g., "Accountancy").
+- `skill_name`: The associated skill.
+- `videoId`: YouTube video ID.
+- `publishedAt`: Video publication timestamp.
+- `title`: Video title.
+- `description`: Video description.
+- `viewCount`: Number of views.
+- `likeCount`: Number of likes.
+- `tags`: List of video tags.
+- `comments`: List of comment objects (each with `textDisplay` and `textOriginal`).
+- `duration`: Parsed video duration (e.g., "19:58").
+- `ingested_timing`: Timestamp of ingestion.
+
+Documents are upserted (updated if exists, inserted if not) to prevent duplicates.
 
 ---

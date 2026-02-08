@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>YouTube Ingestion Console</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+    <h1>YouTube Ingestion Console</h1>
+    <div class="layout">
+        <div class="card">
+            <h2 class="title">Fetch And Upsert</h2>
+            <form id="fetch_form">
+                <div class="field">
+                    <label for="sector_select">Sector</label>
+                    <select name="sector" id="sector_select">
+                        {% for sector in sectors_list %}
+                        <option value="{{ sector }}">{{ sector }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="field">
+                    <label for="search_skills">Search Skills</label>
+                    <input type="text" id="search_skills" placeholder="Type to filter skills">
+                </div>
+                <div class="field">
+                    <div class="skill-count" id="skill_count">Selected: 0</div>
+                    <div class="skills" id="skills_container"></div>
+                    <div class="skill-actions">
+                        <button type="button" id="select_all_btn">Select Visible</button>
+                        <button type="button" id="deselect_all_btn">Deselect Visible</button>
+                    </div>
+                </div>
+                <div class="field">
+                    <label for="api_key">YouTube API Key</label>
+                    <input id="api_key" name="api_key" type="password" required>
+                </div>
+                <div class="field">
+                    <label for="search_max_results">Search Max Results</label>
+                    <input id="search_max_results" name="search_max_results" value="10" type="number" min="1">
+                </div>
+                <div class="field">
+                    <label for="search_order">Search Order</label>
+                    <select id="search_order" name="search_order">
+                        <option value="relevance">relevance</option>
+                        <option value="date">date</option>
+                        <option value="rating">rating</option>
+                        <option value="viewCount">viewCount</option>
+                        <option value="title">title</option>
+                        <option value="videoCount">videoCount</option>
+                    </select>
+                </div>
+                <div class="field">
+                    <label for="comments_max_results">Comments Max Results</label>
+                    <input id="comments_max_results" name="comments_max_results" value="10" type="number" min="0">
+                </div>
+
+                <h3 class="subheader">Search Constraints</h3>
+                <div class="field two-col">
+                    <div>
+                        <label for="published_after">Published After</label>
+                        <input id="published_after" name="published_after" type="date">
+                    </div>
+                    <div>
+                        <label for="published_before">Published Before</label>
+                        <input id="published_before" name="published_before" type="date">
+                    </div>
+                </div>
+                <div class="field two-col">
+                    <div>
+                        <label for="region_code">Region Code (optional)</label>
+                        <input id="region_code" name="region_code" placeholder="e.g. SG or US">
+                    </div>
+                    <div>
+                        <label for="relevance_language">Relevance Language (optional)</label>
+                        <input id="relevance_language" name="relevance_language" placeholder="e.g. en">
+                    </div>
+                </div>
+                <div class="field two-col">
+                    <div>
+                        <label for="video_duration">Video Duration</label>
+                        <select id="video_duration" name="video_duration">
+                            <option value="any">any</option>
+                            <option value="short">short</option>
+                            <option value="medium">medium</option>
+                            <option value="long">long</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label for="min_view_count">Min View Count</label>
+                        <input id="min_view_count" name="min_view_count" type="number" min="0" value="0">
+                    </div>
+                </div>
+                <div class="field">
+                    <label for="min_like_count">Min Like Count</label>
+                    <input id="min_like_count" name="min_like_count" type="number" min="0" value="0">
+                </div>
+
+                <div id="quota_banner" class="status">Quota estimate pending...</div>
+                <button id="submit_btn" class="primary" type="submit">Fetch and Upsert Data</button>
+            </form>
+            <div id="run_state" class="status">Idle. Ready to run ingestion.</div>
+            <div id="run_summary"></div>
+        </div>
+
+        <div class="card">
+            <h2 class="title">MongoDB Status</h2>
+            <button type="button" id="refresh_mongo_btn">Refresh Status</button>
+            <div id="mongo_state" class="status">Loading MongoDB status...</div>
+            <div id="mongo_meta" class="mongo-meta"></div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Ingested At</th>
+                        <th>Skill</th>
+                        <th>Video ID</th>
+                        <th>Title</th>
+                    </tr>
+                </thead>
+                <tbody id="mongo_recent_rows"></tbody>
+            </table>
+
+            <h3 class="subheader">Ingestion Runs</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Started</th>
+                        <th>Status</th>
+                        <th>Skills</th>
+                        <th>Upserts</th>
+                    </tr>
+                </thead>
+                <tbody id="runs_rows"></tbody>
+            </table>
+        </div>
+    </div>
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

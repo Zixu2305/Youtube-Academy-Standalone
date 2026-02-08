@@ -5,8 +5,8 @@ WORKDIR /app
 COPY etl/youtube/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
-COPY pipelines/youtube/Youtube_API_Ingestion_Prototype_GUI.py /app/app.py
+COPY pipelines/youtube/ /app/pipelines/youtube/
 
 EXPOSE 5000
 
-CMD ["python", "/app/app.py"]
+CMD ["python", "/app/pipelines/youtube/Youtube_API_Ingestion_Prototype_GUI.py"]
