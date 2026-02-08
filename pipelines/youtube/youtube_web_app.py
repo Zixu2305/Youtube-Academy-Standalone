@@ -1,8 +1,10 @@
 import json
+import re
 from datetime import datetime
 from uuid import uuid4
 
 from flask import Flask, jsonify, render_template, request
+from bson import ObjectId
 
 from youtube_config import (
     DEFAULT_DAILY_QUOTA_LIMIT,
@@ -36,11 +38,24 @@ def _quota_warning_threshold():
 def _serialize(value):
     if isinstance(value, datetime):
         return value.isoformat()
+    if isinstance(value, ObjectId):
+        return str(value)
     if isinstance(value, dict):
         return {key: _serialize(val) for key, val in value.items()}
     if isinstance(value, list):
         return [_serialize(item) for item in value]
     return value
+
+
+def _parse_bool(value) -> bool:
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _build_mongo_filter(field: str, value: str) -> dict:
+    allowed_fields = {"sector", "skill_name", "videoId", "title"}
+    if not field or not value or field not in allowed_fields:
+        return {}
+    return {field: {"$regex": re.escape(value), "$options": "i"}}
 
 
 def _parse_fetch_payload(req):
@@ -139,6 +154,10 @@ def create_app():
             sectors_list = []
         return render_template("index.html", sectors_list=sectors_list)
 
+    @app.route("/mongo_browser")
+    def mongo_browser():
+        return render_template("mongo_browser.html")
+
     @app.route("/search_skills", methods=["POST"])
     def search_skills_route():
         data = request.get_json(silent=True) or {}
@@ -164,6 +183,78 @@ def create_app():
             status = mongo_status_snapshot(videos_collection)
             recent_runs = _get_recent_runs(runs_collection, limit=8)
             return jsonify({"ok": True, "status": status, "recent_runs": recent_runs})
+        except Exception as e:
+            return jsonify({"ok": False, "error": str(e)}), 500
+        finally:
+            if client:
+                client.close()
+
+    @app.route("/mongo_collections", methods=["GET"])
+    def mongo_collections():
+        client = None
+        try:
+            client = get_mongo_client()
+            db = client[env("MONGO_DATABASE", "")]
+            collections = sorted(db.list_collection_names())
+            return jsonify({"ok": True, "collections": collections})
+        except Exception as e:
+            return jsonify({"ok": False, "error": str(e)}), 500
+        finally:
+            if client:
+                client.close()
+
+    @app.route("/mongo_documents", methods=["GET"])
+    def mongo_documents():
+        client = None
+        try:
+            collection_name = request.args.get("collection", "videos").strip()
+            limit = to_int(request.args.get("limit", 20), 20)
+            limit = max(1, min(limit, 100))
+            skip = to_int(request.args.get("skip", 0), 0)
+            skip = max(0, skip)
+            sort_field = request.args.get("sort", "ingested_timing").strip()
+            allowed_sorts = {
+                "ingested_timing",
+                "publishedAt",
+                "viewCount",
+                "likeCount",
+                "title",
+            }
+            if sort_field not in allowed_sorts:
+                sort_field = "ingested_timing"
+            sort_dir = -1 if request.args.get("order", "desc").lower() == "desc" else 1
+            filter_field = request.args.get("filter_field", "").strip()
+            filter_value = request.args.get("filter_value", "").strip()
+            include_comments = _parse_bool(request.args.get("include_comments", "false"))
+
+            client = get_mongo_client()
+            db = client[env("MONGO_DATABASE", "")]
+            if collection_name not in db.list_collection_names():
+                return jsonify({"ok": False, "error": "Collection not found."}), 404
+
+            collection = db[collection_name]
+            query = _build_mongo_filter(filter_field, filter_value)
+            projection = None if include_comments else {"comments": 0}
+
+            cursor = (
+                collection.find(query, projection)
+                .sort(sort_field, sort_dir)
+                .skip(skip)
+                .limit(limit + 1)
+            )
+            docs = list(cursor)
+            has_more = len(docs) > limit
+            docs = docs[:limit]
+            docs = [_serialize(doc) for doc in docs]
+            return jsonify(
+                {
+                    "ok": True,
+                    "documents": docs,
+                    "skip": skip,
+                    "limit": limit,
+                    "has_more": has_more,
+                }
+            )
         except Exception as e:
             return jsonify({"ok": False, "error": str(e)}), 500
         finally:

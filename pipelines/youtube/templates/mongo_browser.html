@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>MongoDB Browser</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+    <h1>MongoDB Browser</h1>
+    <div class="nav">
+        <a class="link-button" href="/">Back to Ingestion</a>
+    </div>
+    <div class="card">
+        <h2 class="title">Browse Documents</h2>
+        <div class="field two-col">
+            <div>
+                <label for="mongo_collection_select">Collection</label>
+                <select id="mongo_collection_select"></select>
+            </div>
+            <div>
+                <label for="mongo_limit">Limit</label>
+                <input id="mongo_limit" type="number" min="1" max="100" value="20">
+            </div>
+        </div>
+        <div class="field two-col">
+            <div>
+                <label for="mongo_filter_field">Filter Field</label>
+                <select id="mongo_filter_field">
+                    <option value="">(none)</option>
+                    <option value="sector">sector</option>
+                    <option value="skill_name">skill_name</option>
+                    <option value="videoId">videoId</option>
+                    <option value="title">title</option>
+                </select>
+            </div>
+            <div>
+                <label for="mongo_filter_value">Filter Value</label>
+                <input id="mongo_filter_value" type="text" placeholder="substring match">
+            </div>
+        </div>
+        <div class="field">
+            <label class="inline">
+                <input id="mongo_include_comments" type="checkbox">
+                Include comments field
+            </label>
+        </div>
+        <div class="field actions">
+            <button type="button" id="mongo_load_btn">Load</button>
+            <button type="button" id="mongo_prev_btn">Prev</button>
+            <button type="button" id="mongo_next_btn">Next</button>
+        </div>
+        <div id="mongo_browser_state" class="status">Waiting for selection.</div>
+        <div id="mongo_browser_results" class="mongo-docs"></div>
+    </div>
+    <script src="{{ url_for('static', filename='mongo_browser.js') }}"></script>
+</body>
+</html>
