@@ -257,6 +257,7 @@ It reads sectors/skills from the seeded MySQL mapping table (`map_sf_to_cat_skil
 - **Search and Filter**: Search skills within selected sectors (substring match).
 - **YouTube API Integration**: Searches for videos, fetches video details (statistics, tags, duration), and retrieves top comments.
 - **Direct MongoDB Ingestion**: Fetches data from the YouTube API and directly upserts it into MongoDB for storage and querying.
+- **Mongo Browser Page**: Browse MongoDB documents and use a dedicated comment-thread lookup by `videoId`.
 
 ### Requirements (for the GUI)
 
@@ -288,15 +289,37 @@ Open `http://localhost:5000`.
 
 If running locally, make sure `.env` includes `MONGO_HOST=127.0.0.1` (or `localhost`) and your MySQL/Mongo ports match the Docker ports.
 
-In the GUI:
-   - Select a sector from the dropdown.
-   - Search for skills using the search box (type to filter skills containing your input).
-   - Select desired skills by checking the boxes.
-   - Enter your YouTube API key.
-   - Adjust search parameters (number of max results, order, etc.).
-   - Click "Fetch and Upsert Data" to start data collection and direct ingestion into MongoDB.
-   - The page now stays on the same screen and shows live run state (`running/success/error`) plus upsert counters (`inserted/updated/unchanged`).
-   - Use the built-in **MongoDB Status** panel to verify total document count, duplicate groups, and recently ingested rows.
+### Usage (Ingestion page)
+
+1. Open the app:
+   - Docker: `http://localhost:5001`
+   - Local: `http://localhost:5000`
+2. Select a `sector`.
+3. Search and select one or more skills.
+4. Paste your YouTube API key.
+5. Set ingestion parameters:
+   - `Search Max Results`, `Search Order`
+   - `Comments Max Results`
+   - Optional constraints (`published_after`, `published_before`, `region_code`, `relevance_language`, `video_duration`, minimum views/likes)
+6. Click `Fetch and Upsert Data`.
+7. Read run output from:
+   - run state banner (`running/success/error/warning`)
+   - run summary (`Requested Skills`, `Processed Skills`, `Upserts Attempted`, `Inserted`, `Updated`, `Unchanged`, `Error Count`, `Quota Exceeded`)
+8. Check the `MongoDB Status` panel for total docs, duplicate groups, recent rows, and recent run history.
+
+### Usage (Mongo Browser page)
+
+1. Open `/mongo_browser` from the navigation link.
+2. In `Browse Documents`:
+   - Choose collection, limit, and optional field filter.
+   - Click `Load` (or page with `Prev`/`Next`).
+3. For a video row, use:
+   - `View comments` to load its comments in the dedicated lookup section.
+   - `Copy ID` to copy `videoId`.
+   - `Open on YouTube` to open `https://www.youtube.com/watch?v=<videoId>`.
+4. In `Comment Thread Lookup`:
+   - Paste a `videoId` and click `View comments`.
+   - Review comment entries grouped by matching video documents.
 
 ### API Parameters
 

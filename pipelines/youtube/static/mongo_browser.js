@@ -5,10 +5,14 @@
     const mongoFilterField = document.getElementById("mongo_filter_field");
     const mongoFilterValue = document.getElementById("mongo_filter_value");
     const mongoLimitInput = document.getElementById("mongo_limit");
-    const mongoIncludeComments = document.getElementById("mongo_include_comments");
     const mongoLoadBtn = document.getElementById("mongo_load_btn");
     const mongoPrevBtn = document.getElementById("mongo_prev_btn");
     const mongoNextBtn = document.getElementById("mongo_next_btn");
+    const commentLookupInput = document.getElementById("comment_lookup_video_id");
+    const commentLookupBtn = document.getElementById("comment_lookup_btn");
+    const commentClearBtn = document.getElementById("comment_clear_btn");
+    const commentLookupState = document.getElementById("comment_lookup_state");
+    const commentLookupResults = document.getElementById("comment_lookup_results");
     let mongoBrowserSkip = 0;
     let mongoBrowserHasMore = false;
 
@@ -22,13 +26,25 @@
             .replaceAll("'", "&#39;");
     }
 
+    function setStatus(el, message, statusType = "idle") {
+        el.className = "status";
+        if (statusType === "running") el.classList.add("running");
+        if (statusType === "success") el.classList.add("success");
+        if (statusType === "error") el.classList.add("error");
+        if (statusType === "warning") el.classList.add("warning");
+        el.textContent = message;
+    }
+
     function setMongoBrowserState(message, statusType = "idle") {
-        mongoBrowserState.className = "status";
-        if (statusType === "running") mongoBrowserState.classList.add("running");
-        if (statusType === "success") mongoBrowserState.classList.add("success");
-        if (statusType === "error") mongoBrowserState.classList.add("error");
-        if (statusType === "warning") mongoBrowserState.classList.add("warning");
-        mongoBrowserState.textContent = message;
+        setStatus(mongoBrowserState, message, statusType);
+    }
+
+    function setCommentLookupState(message, statusType = "idle") {
+        setStatus(commentLookupState, message, statusType);
+    }
+
+    function youtubeWatchUrl(videoId) {
+        return `https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`;
     }
 
     function renderMongoDocs(docs) {
@@ -37,7 +53,90 @@
             return;
         }
         mongoBrowserResults.innerHTML = docs
-            .map((doc) => `<pre>${esc(JSON.stringify(doc, null, 2))}</pre>`)
+            .map((doc) => {
+                const videoId = doc.videoId || "";
+                const title = doc.title || "-";
+                const sector = doc.sector || "-";
+                const skillName = doc.skill_name || "-";
+                const ingested = doc.ingested_timing || "-";
+                const publishedAt = doc.publishedAt || "-";
+                const actions = videoId
+                    ? `
+                        <div class="actions">
+                            <button type="button" data-action="view-comments" data-video-id="${esc(videoId)}">View comments</button>
+                            <button type="button" data-action="copy-video-id" data-video-id="${esc(videoId)}">Copy ID</button>
+                            <a class="link-button" href="${esc(youtubeWatchUrl(videoId))}" target="_blank" rel="noopener noreferrer">Open on YouTube</a>
+                        </div>
+                    `
+                    : "";
+                return `
+                    <article class="doc-card">
+                        <div class="doc-meta">
+                            <div><strong>Video ID</strong><div class="mono">${esc(videoId || "-")}</div></div>
+                            <div><strong>Skill</strong><div>${esc(skillName)}</div></div>
+                            <div><strong>Sector</strong><div>${esc(sector)}</div></div>
+                            <div><strong>Published</strong><div>${esc(publishedAt)}</div></div>
+                            <div><strong>Ingested</strong><div>${esc(ingested)}</div></div>
+                        </div>
+                        <div class="doc-title"><strong>Title</strong><div>${esc(title)}</div></div>
+                        ${actions}
+                        <details>
+                            <summary>Raw JSON</summary>
+                            <pre>${esc(JSON.stringify(doc, null, 2))}</pre>
+                        </details>
+                    </article>
+                `;
+            })
+            .join("");
+    }
+
+    function renderCommentLookup(entries) {
+        if (!entries.length) {
+            commentLookupResults.textContent = "No matching video documents found.";
+            return;
+        }
+        commentLookupResults.innerHTML = entries
+            .map((entry) => {
+                const comments = Array.isArray(entry.comments) ? entry.comments : [];
+                const commentsHtml = comments.length
+                    ? comments
+                          .map((comment, index) => {
+                              const text =
+                                  comment.textOriginal || comment.textDisplay || "";
+                              return `
+                                <div class="comment-item">
+                                    <span class="comment-index">#${index + 1}</span>
+                                    <div>${esc(text)}</div>
+                                </div>
+                            `;
+                          })
+                          .join("")
+                    : `<div class="empty-note">No comments stored in this video document.</div>`;
+                const videoId = entry.videoId || "";
+                const actions = videoId
+                    ? `
+                        <div class="actions">
+                            <button type="button" data-action="copy-video-id" data-video-id="${esc(videoId)}">Copy ID</button>
+                            <a class="link-button" href="${esc(youtubeWatchUrl(videoId))}" target="_blank" rel="noopener noreferrer">Open on YouTube</a>
+                        </div>
+                    `
+                    : "";
+
+                return `
+                    <article class="comment-card">
+                        <div class="doc-meta">
+                            <div><strong>Video ID</strong><div class="mono">${esc(entry.videoId || "-")}</div></div>
+                            <div><strong>Skill</strong><div>${esc(entry.skill_name || "-")}</div></div>
+                            <div><strong>Sector</strong><div>${esc(entry.sector || "-")}</div></div>
+                            <div><strong>Comments</strong><div>${esc(comments.length)}</div></div>
+                            <div><strong>Ingested</strong><div>${esc(entry.ingested_timing || "-")}</div></div>
+                        </div>
+                        <div class="doc-title"><strong>Title</strong><div>${esc(entry.title || "-")}</div></div>
+                        ${actions}
+                        <div class="comment-list">${commentsHtml}</div>
+                    </article>
+                `;
+            })
             .join("");
     }
 
@@ -46,10 +145,6 @@
         params.set("collection", mongoCollectionSelect.value || "videos");
         params.set("limit", mongoLimitInput.value || "20");
         params.set("skip", String(mongoBrowserSkip));
-        params.set(
-            "include_comments",
-            mongoIncludeComments.checked ? "true" : "false"
-        );
         const filterField = mongoFilterField.value || "";
         const filterValue = mongoFilterValue.value || "";
         if (filterField && filterValue) {
@@ -75,7 +170,9 @@
                 mongoBrowserResults.textContent = "";
                 return;
             }
-            mongoCollectionSelect.value = collections[0];
+            mongoCollectionSelect.value = collections.includes("videos")
+                ? "videos"
+                : collections[0];
             setMongoBrowserState("Collections loaded.", "success");
         } catch (error) {
             setMongoBrowserState(`Collection load failed: ${error.message}`, "error");
@@ -116,6 +213,55 @@
         }
     }
 
+    async function copyToClipboard(text) {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(text);
+            return;
+        }
+        const temp = document.createElement("textarea");
+        temp.value = text;
+        document.body.appendChild(temp);
+        temp.select();
+        document.execCommand("copy");
+        document.body.removeChild(temp);
+    }
+
+    async function loadCommentLookup(videoId) {
+        const targetVideoId = (videoId || commentLookupInput.value || "").trim();
+        if (!targetVideoId) {
+            setCommentLookupState("Provide a video ID.", "warning");
+            commentLookupResults.textContent = "";
+            return;
+        }
+        commentLookupInput.value = targetVideoId;
+        setCommentLookupState("Loading comment threads...", "running");
+        try {
+            const response = await fetch(
+                `/mongo_video_comments?video_id=${encodeURIComponent(targetVideoId)}`
+            );
+            const payload = await response.json();
+            if (!response.ok || !payload.ok) {
+                throw new Error(payload.error || "Unable to load comments");
+            }
+            const entries = payload.entries || [];
+            renderCommentLookup(entries);
+            if (!entries.length) {
+                setCommentLookupState(
+                    `No video documents found for ${targetVideoId}.`,
+                    "warning"
+                );
+                return;
+            }
+            setCommentLookupState(
+                `Loaded ${entries.length} video document(s) for ${targetVideoId}.`,
+                "success"
+            );
+        } catch (error) {
+            setCommentLookupState(`Comment lookup failed: ${error.message}`, "error");
+            commentLookupResults.textContent = "";
+        }
+    }
+
     function resetMongoPagination() {
         mongoBrowserSkip = 0;
     }
@@ -143,11 +289,6 @@
         loadMongoDocuments();
     });
 
-    mongoIncludeComments.addEventListener("change", () => {
-        resetMongoPagination();
-        loadMongoDocuments();
-    });
-
     mongoLimitInput.addEventListener("change", () => {
         resetMongoPagination();
         loadMongoDocuments();
@@ -157,6 +298,43 @@
         if (event.key !== "Enter") return;
         resetMongoPagination();
         loadMongoDocuments();
+    });
+
+    commentLookupBtn.addEventListener("click", () => {
+        loadCommentLookup();
+    });
+
+    commentClearBtn.addEventListener("click", () => {
+        commentLookupInput.value = "";
+        commentLookupResults.textContent = "";
+        setCommentLookupState("Enter a video ID to load comment threads.", "idle");
+    });
+
+    commentLookupInput.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter") return;
+        loadCommentLookup();
+    });
+
+    mongoBrowserResults.addEventListener("click", async (event) => {
+        const button = event.target.closest("button[data-action]");
+        if (!button) return;
+        const action = button.getAttribute("data-action");
+        const videoId = (button.getAttribute("data-video-id") || "").trim();
+        if (!videoId) return;
+
+        if (action === "view-comments") {
+            loadCommentLookup(videoId);
+            return;
+        }
+
+        if (action === "copy-video-id") {
+            try {
+                await copyToClipboard(videoId);
+                setCommentLookupState(`Copied ${videoId}.`, "success");
+            } catch (_error) {
+                setCommentLookupState("Unable to copy video ID.", "error");
+            }
+        }
     });
 
     async function bootstrap() {

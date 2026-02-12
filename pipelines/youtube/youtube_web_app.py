@@ -47,10 +47,6 @@ def _serialize(value):
     return value
 
 
-def _parse_bool(value) -> bool:
-    return str(value).strip().lower() in {"1", "true", "yes", "on"}
-
-
 def _build_mongo_filter(field: str, value: str) -> dict:
     allowed_fields = {"sector", "skill_name", "videoId", "title"}
     if not field or not value or field not in allowed_fields:
@@ -225,7 +221,6 @@ def create_app():
             sort_dir = -1 if request.args.get("order", "desc").lower() == "desc" else 1
             filter_field = request.args.get("filter_field", "").strip()
             filter_value = request.args.get("filter_value", "").strip()
-            include_comments = _parse_bool(request.args.get("include_comments", "false"))
 
             client = get_mongo_client()
             db = client[env("MONGO_DATABASE", "")]
@@ -234,7 +229,7 @@ def create_app():
 
             collection = db[collection_name]
             query = _build_mongo_filter(filter_field, filter_value)
-            projection = None if include_comments else {"comments": 0}
+            projection = {"comments": 0} if collection_name == "videos" else None
 
             cursor = (
                 collection.find(query, projection)
@@ -255,6 +250,39 @@ def create_app():
                     "has_more": has_more,
                 }
             )
+        except Exception as e:
+            return jsonify({"ok": False, "error": str(e)}), 500
+        finally:
+            if client:
+                client.close()
+
+    @app.route("/mongo_video_comments", methods=["GET"])
+    def mongo_video_comments():
+        client = None
+        try:
+            video_id = request.args.get("video_id", "").strip()
+            if not video_id:
+                return jsonify({"ok": False, "error": "video_id is required."}), 400
+
+            client = get_mongo_client()
+            db = client[env("MONGO_DATABASE", "")]
+            collection = db["videos"]
+
+            projection = {
+                "_id": 1,
+                "videoId": 1,
+                "sector": 1,
+                "skill_name": 1,
+                "title": 1,
+                "publishedAt": 1,
+                "ingested_timing": 1,
+                "comments": 1,
+            }
+            cursor = collection.find({"videoId": video_id}, projection).sort(
+                "ingested_timing", -1
+            )
+            entries = [_serialize(doc) for doc in cursor]
+            return jsonify({"ok": True, "video_id": video_id, "entries": entries})
         except Exception as e:
             return jsonify({"ok": False, "error": str(e)}), 500
         finally:
