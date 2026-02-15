@@ -24,10 +24,18 @@
     const maxVideoAgeInput = document.getElementById("max_video_age");
     const minViewCountInput = document.getElementById("min_view_count");
     const minLikeCountInput = document.getElementById("min_like_count");
+    const minVideoLengthInput = document.getElementById("min_video_length");
+    const maxVideoLengthInput = document.getElementById("max_video_length");
+    const minCommentCountInput = document.getElementById("min_comment_count");
+    const previewSection = document.getElementById("preview_section");
+    const previewVideos = document.getElementById("preview_videos");
+    const upsertSelectedBtn = document.getElementById("upsert_selected_btn");
+    const cancelPreviewBtn = document.getElementById("cancel_preview_btn");
     let selectedSkill = null;
     let selectedCompetency = null;
     let selectedProficiency = null;
     let selectedRequirement = null;
+    let previewData = null;
 
     function esc(text) {
         const value = String(text ?? "");
@@ -300,6 +308,8 @@
             search_max_results: searchMaxResultsInput.value,
             search_order: document.getElementById("search_order").value,
             skills: selectedSkill ? [selectedSkill] : [],
+            competency: selectedCompetency,
+            proficiency: selectedProficiency,
             published_after: publishedAfterInput.value,
             published_before: publishedBeforeInput.value,
             max_video_age: maxVideoAgeInput.value,
@@ -308,6 +318,9 @@
             additional_query: additionalQueryInput.value,
             min_view_count: minViewCountInput.value,
             min_like_count: minLikeCountInput.value,
+            min_video_length: document.getElementById("min_video_length").value,
+            max_video_length: document.getElementById("max_video_length").value,
+            min_comment_count: document.getElementById("min_comment_count").value,
         };
     }
 
@@ -334,24 +347,40 @@
         const errors = summary.errors || [];
         const rows = [
             { key: "Run ID", value: runId || "-" },
-            { key: "Requested Skills", value: summary.skills_requested },
-            { key: "Processed Skills", value: summary.skills_processed },
-            { key: "Videos Found", value: summary.videos_found },
-            { key: "Videos Processed", value: summary.videos_processed },
-            {
-                key: "Filtered By Constraints",
-                value: summary.videos_filtered_constraints,
-            },
-            { key: "Upserts Attempted", value: summary.upserts_attempted },
-            { key: "Inserted", value: summary.inserted },
-            { key: "Updated", value: summary.updated },
-            { key: "Unchanged", value: summary.unchanged },
-            { key: "Error Count", value: summary.error_count },
-            {
-                key: "Quota Exceeded",
-                value: summary.quota_exceeded ? "yes" : "no",
-            },
         ];
+
+        // Add different fields based on summary type
+        if (summary.skills_requested !== undefined) {
+            rows.push(
+                { key: "Requested Skills", value: summary.skills_requested },
+                { key: "Processed Skills", value: summary.skills_processed },
+                { key: "Videos Found", value: summary.videos_found },
+                { key: "Videos Filtered By Constraints", value: summary.videos_filtered_constraints }
+            );
+        }
+
+        if (summary.upserts_attempted !== undefined) {
+            rows.push(
+                { key: "Upserts Attempted", value: summary.upserts_attempted },
+                { key: "Inserted", value: summary.inserted },
+                { key: "Updated", value: summary.updated },
+                { key: "Unchanged", value: summary.unchanged }
+            );
+        }
+
+        if (summary.videos_to_upsert !== undefined) {
+            rows.push(
+                { key: "Videos to Upsert", value: summary.videos_to_upsert },
+                { key: "Inserted", value: summary.inserted },
+                { key: "Updated", value: summary.updated },
+                { key: "Unchanged", value: summary.unchanged }
+            );
+        }
+
+        rows.push(
+            { key: "Error Count", value: summary.error_count },
+            { key: "Quota Exceeded", value: summary.quota_exceeded ? "yes" : "no" }
+        );
 
         const kvHtml = rows
             .map(({ key, value }) => {
@@ -486,32 +515,29 @@
         refreshMongoBtn.disabled = true;
         runSummary.innerHTML = "";
         setRunState(
-            "Fetching from YouTube and upserting into MongoDB...",
+            "Fetching videos from YouTube...",
             "running",
             true
         );
 
         try {
-            const response = await fetch("/fetch", {
+            const response = await fetch("/preview", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify(payload),
             });
             const result = await response.json();
             if (!response.ok || !result.ok) {
-                throw new Error(result.error || "Ingestion failed");
+                throw new Error(result.error || "Preview failed");
             }
 
-            let statusType = "success";
-            if (result.summary?.quota_exceeded) {
-                statusType = "warning";
-            }
-            setRunState(result.message || "Ingestion completed.", statusType);
-            renderSummary(result.summary || {}, result.run_id);
+            previewData = result;
+            setRunState("Videos fetched successfully. Review and select videos to upsert.", "success");
+            renderSummary(result.summary || {}, null);
             setQuotaBanner(result.quota || null);
-            await refreshMongoStatus();
+            showPreview(result.videos || []);
         } catch (error) {
-            setRunState(`Ingestion failed: ${error.message}`, "error");
+            setRunState(`Preview failed: ${error.message}`, "error");
         } finally {
             submitBtn.disabled = false;
             refreshMongoBtn.disabled = false;
@@ -544,14 +570,127 @@
         searchMaxResultsInput,
         minViewCountInput,
         minLikeCountInput,
+        minVideoLengthInput,
+        maxVideoLengthInput,
+        minCommentCountInput,
         publishedAfterInput,
         publishedBeforeInput,
         maxVideoAgeInput,
         regionCodeInput,
         relevanceLanguageInput,
+        additionalQueryInput,
     ].forEach((el) => el.addEventListener("input", updateQuotaEstimate));
 
     refreshMongoBtn.addEventListener("click", refreshMongoStatus);
+
+    function showPreview(videos) {
+        previewVideos.innerHTML = "";
+        
+        if (videos.length === 0) {
+            previewVideos.innerHTML = "<p>No videos found matching the criteria.</p>";
+            return;
+        }
+
+        const table = document.createElement("table");
+        table.innerHTML = `
+            <thead>
+                <tr>
+                    <th><input type="checkbox" id="select_all"></th>
+                    <th>Thumbnail</th>
+                    <th>Title</th>
+                    <th>Channel</th>
+                    <th>Views</th>
+                    <th>Likes</th>
+                    <th>Duration</th>
+                    <th>Skill</th>
+                </tr>
+            </thead>
+            <tbody></tbody>
+        `;
+        
+        const tbody = table.querySelector("tbody");
+        const selectAllCheckbox = table.querySelector("#select_all");
+        
+        videos.forEach((video, index) => {
+            const row = document.createElement("tr");
+            row.innerHTML = `
+                <td><input type="checkbox" class="video_checkbox" data-index="${index}"></td>
+                <td><img src="${esc(video.thumbnailUrl)}" alt="Thumbnail" style="width: 80px; height: 60px; object-fit: cover;"></td>
+                <td><a href="https://www.youtube.com/watch?v=${esc(video.videoId)}" target="_blank">${esc(video.title)}</a></td>
+                <td>${esc(video.channelTitle)}</td>
+                <td>${video.viewCount.toLocaleString()}</td>
+                <td>${video.likeCount.toLocaleString()}</td>
+                <td>${esc(video.duration)}</td>
+                <td>${esc(video.skill_name)}</td>
+            `;
+            tbody.appendChild(row);
+        });
+        
+        previewVideos.appendChild(table);
+        
+        // Handle select all functionality
+        selectAllCheckbox.addEventListener("change", (e) => {
+            const checkboxes = table.querySelectorAll(".video_checkbox");
+            checkboxes.forEach(cb => cb.checked = e.target.checked);
+        });
+        
+        previewSection.style.display = "block";
+        previewSection.scrollIntoView({ behavior: "smooth" });
+    }
+
+    function hidePreview() {
+        previewSection.style.display = "none";
+        previewData = null;
+    }
+
+    upsertSelectedBtn.addEventListener("click", async () => {
+        const selectedCheckboxes = previewVideos.querySelectorAll(".video_checkbox:checked");
+        if (selectedCheckboxes.length === 0) {
+            setRunState("Please select at least one video to upsert.", "error");
+            return;
+        }
+
+        const selectedVideos = Array.from(selectedCheckboxes).map(cb => {
+            const index = parseInt(cb.dataset.index);
+            return previewData.videos[index];
+        });
+
+        upsertSelectedBtn.disabled = true;
+        cancelPreviewBtn.disabled = true;
+        setRunState("Upserting selected videos into MongoDB...", "running", true);
+
+        try {
+            const response = await fetch("/upsert_selected", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ videos: selectedVideos }),
+            });
+            const result = await response.json();
+            if (!response.ok || !result.ok) {
+                throw new Error(result.error || "Upsert failed");
+            }
+
+            let statusType = "success";
+            if (result.summary?.error_count > 0) {
+                statusType = "warning";
+            }
+            setRunState(result.message || "Videos upserted successfully.", statusType);
+            renderSummary(result.summary || {}, result.run_id);
+            hidePreview();
+            await refreshMongoStatus();
+        } catch (error) {
+            setRunState(`Upsert failed: ${error.message}`, "error");
+        } finally {
+            upsertSelectedBtn.disabled = false;
+            cancelPreviewBtn.disabled = false;
+        }
+    });
+
+    cancelPreviewBtn.addEventListener("click", () => {
+        hidePreview();
+        setRunState("Preview cancelled. Ready to run ingestion.", "idle");
+        runSummary.innerHTML = "";
+    });
 
     async function bootstrap() {
         if (sectorSelect.value) {

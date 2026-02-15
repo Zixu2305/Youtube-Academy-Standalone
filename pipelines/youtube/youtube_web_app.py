@@ -66,6 +66,8 @@ def _parse_fetch_payload(req):
             "search_max_results": to_int(data.get("search_max_results", 5), 5),
             "search_order": data.get("search_order", "relevance"),
             "selected_skills": data.get("skills", []),
+            "competency": data.get("competency", ""),
+            "proficiency": data.get("proficiency", ""),
             "published_after": data.get("published_after", ""),
             "published_before": data.get("published_before", ""),
             "max_video_age": to_int(data.get("max_video_age", 0), 0),
@@ -310,6 +312,133 @@ def create_app():
             if client:
                 client.close()
 
+    @app.route("/preview", methods=["POST"])
+    def preview():
+        from youtube_ingestion_service import fetch_videos_for_preview
+        
+        payload = _parse_fetch_payload(request)
+        validation_error = _validate_fetch_payload(payload)
+        if validation_error:
+            return jsonify({"ok": False, "error": validation_error}), 400
+
+        try:
+            videos, summary = fetch_videos_for_preview(
+                sector=payload["sector"],
+                api_key=payload["api_key"],
+                search_max_results=payload["search_max_results"],
+                search_order=payload["search_order"],
+                selected_skills=payload["selected_skills"],
+                competency=payload["competency"],
+                proficiency=payload["proficiency"],
+                min_view_count=payload["min_view_count"],
+                min_like_count=payload["min_like_count"],
+                min_video_length=payload["min_video_length"],
+                max_video_length=payload["max_video_length"],
+                min_comment_count=payload["min_comment_count"],
+                max_video_age=payload["max_video_age"],
+                additional_query=payload["additional_query"],
+                search_constraints={
+                    "published_after": payload["published_after"],
+                    "published_before": payload["published_before"],
+                    "region_code": payload["region_code"],
+                    "relevance_language": payload["relevance_language"],
+                },
+            )
+            
+            quota_context = _build_quota_context(payload)
+            
+            return jsonify({
+                "ok": True,
+                "videos": videos,
+                "summary": summary,
+                "quota": quota_context,
+            })
+        except Exception as e:
+            return jsonify({"ok": False, "error": str(e)}), 500
+
+    @app.route("/upsert_selected", methods=["POST"])
+    def upsert_selected():
+        from youtube_ingestion_service import upsert_selected_videos
+        
+        data = request.get_json(silent=True) or {}
+        videos_to_upsert = data.get("videos", [])
+        
+        if not videos_to_upsert:
+            return jsonify({"ok": False, "error": "No videos selected for upsert"}), 400
+
+        client = None
+        run_doc_id = None
+        summary = None
+        run_id = str(uuid4())
+
+        try:
+            client = get_mongo_client()
+            db = client[env("MONGO_DATABASE", "")] 
+            videos_collection = db["videos"]
+            runs_collection = db["ingestion_runs"]
+
+            run_doc = {
+                "run_id": run_id,
+                "started_at": datetime.now(),
+                "ended_at": None,
+                "status": "running",
+                "message": "Upserting selected videos",
+                "params": {
+                    "videos_to_upsert": len(videos_to_upsert),
+                },
+                "summary": None,
+            }
+            run_doc_id = runs_collection.insert_one(run_doc).inserted_id
+
+            summary = upsert_selected_videos(videos_collection, videos_to_upsert)
+            summary["mongo_status"] = mongo_status_snapshot(videos_collection)
+
+            run_status = "completed"
+            run_message = "Selected videos upserted successfully."
+            if summary.get("error_count", 0) > 0:
+                run_status = "completed_with_errors"
+                run_message = "Selected videos upserted with errors."
+
+            runs_collection.update_one(
+                {"_id": run_doc_id},
+                {
+                    "$set": {
+                        "ended_at": datetime.now(),
+                        "status": run_status,
+                        "message": run_message,
+                        "summary": summary,
+                    }
+                },
+            )
+
+            return jsonify({
+                "ok": True,
+                "run_id": run_id,
+                "message": run_message,
+                "summary": summary,
+            })
+        except Exception as e:
+            if summary is None:
+                summary = {"error_count": 1, "errors": [str(e)]}
+            if client and run_doc_id is not None:
+                db = client[env("MONGO_DATABASE", "")] 
+                runs_collection = db["ingestion_runs"]
+                runs_collection.update_one(
+                    {"_id": run_doc_id},
+                    {
+                        "$set": {
+                            "ended_at": datetime.now(),
+                            "status": "failed",
+                            "message": str(e),
+                            "summary": summary,
+                        }
+                    },
+                )
+            return jsonify({"ok": False, "error": str(e), "summary": summary}), 500
+        finally:
+            if client:
+                client.close()
+
     @app.route("/fetch", methods=["POST"])
     def fetch():
         payload = _parse_fetch_payload(request)
@@ -364,6 +493,8 @@ def create_app():
                 search_max_results=payload["search_max_results"],
                 search_order=payload["search_order"],
                 selected_skills=payload["selected_skills"],
+                competency=payload["competency"],
+                proficiency=payload["proficiency"],
                 min_view_count=payload["min_view_count"],
                 min_like_count=payload["min_like_count"],
                 min_video_length=payload["min_video_length"],

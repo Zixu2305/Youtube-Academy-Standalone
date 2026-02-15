@@ -74,7 +74,7 @@
                 </div>
                 <div class="field">
                     <label for="additional_query">Additional Query (optional)</label>
-                    <textarea id="additional_query" name="additional_query" placeholder="Additional search terms to combine with sector and skills" class="constraint-input" rows="2"></textarea>
+                    <textarea id="additional_query" name="additional_query" placeholder="Additional search terms to combine with sector, skills, and proficiency description" class="constraint-input" rows="2"></textarea>
                 </div>
                 <div class="field">
                     <label for="min_view_count">Min View Count</label>
@@ -118,10 +118,19 @@
                 </div>
 
                 <div id="quota_banner" class="status">Quota estimate pending...</div>
-                <button id="submit_btn" class="primary" type="submit">Fetch and Upsert Data</button>
+                <button id="submit_btn" class="primary" type="submit">Fetch Videos for Preview</button>
             </form>
             <div id="run_state" class="status">Idle. Ready to run ingestion.</div>
             <div id="run_summary"></div>
+            
+            <!-- Preview Section -->
+            <div id="preview_section" style="display: none;">
+                <h3 class="subheader">Video Preview</h3>
+                <p>Select the videos you want to upsert into MongoDB:</p>
+                <div id="preview_videos"></div>
+                <button id="upsert_selected_btn" class="primary">Upsert Selected Videos</button>
+                <button id="cancel_preview_btn" class="secondary">Cancel</button>
+            </div>
         </div>
 
         <div class="card">

@@ -457,6 +457,49 @@ summary {
         "Liberation Mono", "Courier New", monospace;
 }
 
+/* Preview Section Styles */
+#preview_section {
+    margin-top: 20px;
+    border-top: 1px solid #d1d5db;
+    padding-top: 20px;
+}
+
+#preview_videos table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 10px;
+}
+
+#preview_videos th,
+#preview_videos td {
+    padding: 8px 12px;
+    text-align: left;
+    border-bottom: 1px solid #d1d5db;
+}
+
+#preview_videos th {
+    background: #f9fafb;
+    font-weight: 600;
+}
+
+#preview_videos tr:hover {
+    background: #f9fafb;
+}
+
+#preview_videos img {
+    border-radius: 4px;
+}
+
+.secondary {
+    background: #f3f4f6;
+    border: 1px solid #9ca3af;
+    color: #374151;
+}
+
+.secondary:hover {
+    background: #e5e7eb;
+}
+
 @media (max-width: 980px) {
     .layout {
         grid-template-columns: 1fr;

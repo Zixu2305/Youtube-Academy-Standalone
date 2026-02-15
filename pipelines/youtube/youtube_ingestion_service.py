@@ -4,6 +4,7 @@ import re
 import requests
 
 from youtube_config import MAX_ERROR_DETAILS, REQUEST_TIMEOUT_SECONDS, to_int
+from youtube_data_access import get_requirement
 
 
 QUOTA_ERROR_REASONS = {
@@ -141,6 +142,193 @@ def _apply_search_constraints(search_params: dict, search_constraints: dict):
         search_params["relevanceLanguage"] = relevance_language
 
 
+def fetch_videos_for_preview(
+    *,
+    sector: str,
+    api_key: str,
+    search_max_results: int,
+    search_order: str,
+    selected_skills: list[str],
+    competency: str = "",
+    proficiency: str = "",
+    min_view_count: int = 0,
+    min_like_count: int = 0,
+    min_video_length: int = 0,
+    max_video_length: int = 0,
+    min_comment_count: int = 0,
+    max_video_age: int = 0,
+    additional_query: str = "",
+    search_constraints: dict | None = None,
+):
+    search_constraints = search_constraints or {}
+    unique_skills = list(dict.fromkeys(selected_skills))
+
+    videos = []
+    summary = {
+        "sector": sector,
+        "skills_requested": len(unique_skills),
+        "skills_processed": 0,
+        "videos_found": 0,
+        "videos_filtered_constraints": 0,
+        "error_count": 0,
+        "errors": [],
+        "quota_exceeded": False,
+        "constraints": {
+            "min_view_count": max(0, min_view_count),
+            "min_like_count": max(0, min_like_count),
+            "min_video_length": max(0, min_video_length),
+            "max_video_length": max(0, max_video_length),
+            "min_comment_count": max(0, min_comment_count),
+            "max_video_age": max(0, max_video_age),
+            "published_after": search_constraints.get("published_after", ""),
+            "published_before": search_constraints.get("published_before", ""),
+            "region_code": search_constraints.get("region_code", ""),
+            "relevance_language": search_constraints.get("relevance_language", ""),
+            "competency": competency,
+            "proficiency": proficiency,
+            "additional_query": additional_query,
+        },
+    }
+
+    # Convert max_video_age to published_after if not already set
+    if max_video_age > 0 and not search_constraints.get("published_after"):
+        cutoff_date = datetime.now() - timedelta(days=max_video_age)
+        search_constraints["published_after"] = cutoff_date.strftime("%Y-%m-%d")
+
+    stop_due_to_quota = False
+
+    for skill in unique_skills:
+        if stop_due_to_quota:
+            break
+
+        summary["skills_processed"] += 1
+
+        search_url = "https://www.googleapis.com/youtube/v3/search"
+        query_parts = [sector, skill]
+        
+        # Add proficiency description if available
+        if proficiency and skill:
+            proficiency_requirements = get_requirement(skill, competency, proficiency)
+            if proficiency_requirements:
+                # Join all requirements with spaces and add to query
+                proficiency_text = " ".join(proficiency_requirements)
+                query_parts.append(proficiency_text)
+        
+        if additional_query.strip():
+            query_parts.append(additional_query.strip())
+        search_params = {
+            "part": "snippet",
+            "maxResults": search_max_results,
+            "order": search_order,
+            "key": api_key,
+            "type": "video",
+            "q": " ".join(query_parts),
+            "videoEmbeddable": "true",
+        }
+        _apply_search_constraints(search_params, search_constraints)
+
+        try:
+            search_response, search_data = request_json(search_url, search_params)
+        except requests.RequestException as e:
+            summary["errors"].append(f"[{skill}] search request failed: {e}")
+            continue
+
+        if search_response.status_code != 200:
+            summary["errors"].append(
+                f"[{skill}] search request returned {_status_with_reason(search_response.status_code, search_data)}"
+            )
+            if _is_quota_error(search_data):
+                summary["quota_exceeded"] = True
+                stop_due_to_quota = True
+            continue
+
+        if "error" in search_data:
+            summary["errors"].append(f"[{skill}] YouTube error: {search_data['error']}")
+            if _is_quota_error(search_data):
+                summary["quota_exceeded"] = True
+                stop_due_to_quota = True
+            continue
+
+        items = search_data.get("items", [])
+        summary["videos_found"] += len(items)
+
+        for item in items:
+            if stop_due_to_quota:
+                break
+
+            video_id = item.get("id", {}).get("videoId")
+            if not video_id:
+                continue
+
+            statistics = {}
+            tags = []
+            duration = ""
+
+            videos_url = "https://www.googleapis.com/youtube/v3/videos"
+            videos_params = {
+                "key": api_key,
+                "part": "snippet,statistics,contentDetails",
+                "id": video_id,
+            }
+
+            try:
+                videos_response, videos_json = request_json(videos_url, videos_params)
+                if videos_response.status_code == 200 and videos_json.get("items"):
+                    video_item = videos_json["items"][0]
+                    statistics = video_item.get("statistics", {})
+                    tags = video_item.get("snippet", {}).get("tags", [])
+                    duration = video_item.get("contentDetails", {}).get("duration", "")
+                elif videos_response.status_code != 200:
+                    summary["errors"].append(
+                        f"[{skill}:{video_id}] videos request returned {_status_with_reason(videos_response.status_code, videos_json)}"
+                    )
+                    if _is_quota_error(videos_json):
+                        summary["quota_exceeded"] = True
+                        stop_due_to_quota = True
+            except requests.RequestException as e:
+                summary["errors"].append(f"[{skill}:{video_id}] videos request failed: {e}")
+
+            if stop_due_to_quota:
+                break
+
+            view_count = to_int(statistics.get("viewCount", 0), 0)
+            like_count = to_int(statistics.get("likeCount", 0), 0)
+            comment_count = to_int(statistics.get("commentCount", 0), 0)
+            video_length_minutes = duration_to_minutes(duration)
+
+            if (
+                view_count < max(0, min_view_count)
+                or like_count < max(0, min_like_count)
+                or comment_count < max(0, min_comment_count)
+                or (min_video_length > 0 and video_length_minutes < min_video_length)
+                or (max_video_length > 0 and video_length_minutes > max_video_length)
+            ):
+                summary["videos_filtered_constraints"] += 1
+                continue
+
+            snippet = item.get("snippet", {})
+            video_doc = {
+                "sector": sector,
+                "skill_name": skill,
+                "videoId": video_id,
+                "publishedAt": snippet.get("publishedAt", ""),
+                "title": snippet.get("title", ""),
+                "description": snippet.get("description", ""),
+                "viewCount": view_count,
+                "likeCount": like_count,
+                "commentCount": comment_count,
+                "tags": tags,
+                "duration": parse_duration(duration),
+                "channelTitle": snippet.get("channelTitle", ""),
+                "thumbnailUrl": snippet.get("thumbnails", {}).get("default", {}).get("url", ""),
+            }
+            videos.append(video_doc)
+
+    summary["error_count"] = len(summary["errors"])
+    summary["errors"] = summary["errors"][:MAX_ERROR_DETAILS]
+    return videos, summary
+
+
 def run_ingestion(
     collection,
     *,
@@ -149,6 +337,8 @@ def run_ingestion(
     search_max_results: int,
     search_order: str,
     selected_skills: list[str],
+    competency: str = "",
+    proficiency: str = "",
     min_view_count: int = 0,
     min_like_count: int = 0,
     min_video_length: int = 0,
@@ -186,6 +376,8 @@ def run_ingestion(
             "published_before": search_constraints.get("published_before", ""),
             "region_code": search_constraints.get("region_code", ""),
             "relevance_language": search_constraints.get("relevance_language", ""),
+            "competency": competency,
+            "proficiency": proficiency,
             "additional_query": additional_query,
         },
     }
@@ -205,6 +397,15 @@ def run_ingestion(
 
         search_url = "https://www.googleapis.com/youtube/v3/search"
         query_parts = [sector, skill]
+        
+        # Add proficiency description if available
+        if proficiency and skill:
+            proficiency_requirements = get_requirement(skill, competency, proficiency)
+            if proficiency_requirements:
+                # Join all requirements with spaces and add to query
+                proficiency_text = " ".join(proficiency_requirements)
+                query_parts.append(proficiency_text)
+        
         if additional_query.strip():
             query_parts.append(additional_query.strip())
         search_params = {
@@ -214,6 +415,7 @@ def run_ingestion(
             "key": api_key,
             "type": "video",
             "q": " ".join(query_parts),
+            "videoEmbeddable": "true",
         }
         _apply_search_constraints(search_params, search_constraints)
 
@@ -334,5 +536,60 @@ def run_ingestion(
                 summary["unchanged"] += 1
 
     summary["error_count"] = len(summary["errors"])
+    summary["errors"] = summary["errors"][:MAX_ERROR_DETAILS]
+    return summary
+
+
+def upsert_selected_videos(collection, videos_to_upsert: list[dict]):
+    """
+    Upsert selected videos into MongoDB.
+    
+    Args:
+        collection: MongoDB collection to upsert into
+        videos_to_upsert: List of video documents to upsert
+        
+    Returns:
+        Summary dict with upsert statistics
+    """
+    summary = {
+        "videos_to_upsert": len(videos_to_upsert),
+        "inserted": 0,
+        "updated": 0,
+        "unchanged": 0,
+        "error_count": 0,
+        "errors": [],
+    }
+    
+    for video in videos_to_upsert:
+        try:
+            # Add ingestion timestamp
+            video["ingested_timing"] = datetime.now()
+            
+            # Extract videoId and skill_name for the filter
+            video_id = video.get("videoId")
+            skill_name = video.get("skill_name")
+            
+            if not video_id or not skill_name:
+                summary["errors"].append(f"Missing videoId or skill_name in video document")
+                summary["error_count"] += 1
+                continue
+            
+            result = collection.update_one(
+                {"videoId": video_id, "skill_name": skill_name},
+                {"$set": video},
+                upsert=True,
+            )
+            
+            if result.upserted_id is not None:
+                summary["inserted"] += 1
+            elif result.modified_count > 0:
+                summary["updated"] += 1
+            else:
+                summary["unchanged"] += 1
+                
+        except Exception as e:
+            summary["errors"].append(f"Failed to upsert video {video.get('videoId', 'unknown')}: {str(e)}")
+            summary["error_count"] += 1
+    
     summary["errors"] = summary["errors"][:MAX_ERROR_DETAILS]
     return summary
