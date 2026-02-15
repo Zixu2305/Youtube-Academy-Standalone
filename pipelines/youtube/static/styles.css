@@ -200,6 +200,21 @@ textarea.constraint-input {
     font-weight: 600;
 }
 
+.query-source-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    max-width: 520px;
+}
+
+.query-source-option {
+    margin-bottom: 0;
+}
+
+.query-source-option input[type="checkbox"] {
+    margin: 0;
+}
+
 button {
     padding: 8px 12px;
     border: 1px solid #9ca3af;

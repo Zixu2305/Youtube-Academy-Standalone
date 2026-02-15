@@ -57,23 +57,36 @@ def _build_mongo_filter(field: str, value: str) -> dict:
     return {field: {"$regex": re.escape(value), "$options": "i"}}
 
 
+def _to_bool(value, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _parse_fetch_payload(req):
     if req.is_json:
         data = req.get_json(silent=True) or {}
         payload = {
-            "sector": data.get("sector", ""),
-            "api_key": data.get("api_key", ""),
+            "sector": data.get("sector", "") or "",
+            "api_key": data.get("api_key", "") or "",
             "search_max_results": to_int(data.get("search_max_results", 5), 5),
-            "search_order": data.get("search_order", "relevance"),
+            "search_order": data.get("search_order", "relevance") or "relevance",
             "selected_skills": data.get("skills", []),
-            "competency": data.get("competency", ""),
-            "proficiency": data.get("proficiency", ""),
-            "published_after": data.get("published_after", ""),
-            "published_before": data.get("published_before", ""),
+            "competency": data.get("competency", "") or "",
+            "proficiency": data.get("proficiency", "") or "",
+            "requirement": data.get("requirement", "") or "",
+            "include_sector": _to_bool(data.get("include_sector", False)),
+            "include_skill": _to_bool(data.get("include_skill", False)),
+            "include_competency": _to_bool(data.get("include_competency", False)),
+            "include_requirement": _to_bool(data.get("include_requirement", False)),
+            "published_after": data.get("published_after", "") or "",
+            "published_before": data.get("published_before", "") or "",
             "max_video_age": to_int(data.get("max_video_age", 0), 0),
-            "region_code": data.get("region_code", ""),
-            "relevance_language": data.get("relevance_language", ""),
-            "additional_query": data.get("additional_query", ""),
+            "region_code": data.get("region_code", "") or "",
+            "relevance_language": data.get("relevance_language", "") or "",
+            "additional_query": data.get("additional_query", "") or "",
             "min_view_count": to_int(data.get("min_view_count", 0), 0),
             "min_like_count": to_int(data.get("min_like_count", 0), 0),
             "min_video_length": to_int(data.get("min_video_length", 0), 0),
@@ -96,6 +109,13 @@ def _parse_fetch_payload(req):
         "search_max_results": to_int(req.form.get("search_max_results", 5), 5),
         "search_order": req.form.get("search_order", "relevance"),
         "selected_skills": selected_skills,
+        "competency": req.form.get("competency", ""),
+        "proficiency": req.form.get("proficiency", ""),
+        "requirement": req.form.get("requirement", ""),
+        "include_sector": _to_bool(req.form.get("include_sector", "false")),
+        "include_skill": _to_bool(req.form.get("include_skill", "false")),
+        "include_competency": _to_bool(req.form.get("include_competency", "false")),
+        "include_requirement": _to_bool(req.form.get("include_requirement", "false")),
         "published_after": req.form.get("published_after", ""),
         "published_before": req.form.get("published_before", ""),
         "max_video_age": to_int(req.form.get("max_video_age", 0), 0),
@@ -132,6 +152,22 @@ def _validate_fetch_payload(payload):
         return "Minimum comment count cannot be negative."
     if payload["max_video_age"] < 0:
         return "Maximum video age cannot be negative."
+
+    has_query_source = False
+    if payload.get("include_sector") and (payload.get("sector") or "").strip():
+        has_query_source = True
+    if payload.get("include_skill") and payload.get("selected_skills"):
+        has_query_source = True
+    if payload.get("include_competency") and (payload.get("competency") or "").strip():
+        has_query_source = True
+    if payload.get("include_requirement") and (payload.get("requirement") or "").strip():
+        has_query_source = True
+    if (payload.get("additional_query") or "").strip():
+        has_query_source = True
+
+    if not has_query_source:
+        return "Select at least one query field (Sector, Skill, Competencies, Requirement) or fill Additional Query."
+
     return None
 
 
@@ -333,6 +369,7 @@ def create_app():
                 selected_skills=payload["selected_skills"],
                 competency=payload["competency"],
                 proficiency=payload["proficiency"],
+                requirement=payload["requirement"],
                 min_view_count=payload["min_view_count"],
                 min_like_count=payload["min_like_count"],
                 min_video_length=payload["min_video_length"],
@@ -340,6 +377,12 @@ def create_app():
                 min_comment_count=payload["min_comment_count"],
                 max_video_age=payload["max_video_age"],
                 additional_query=payload["additional_query"],
+                query_includes={
+                    "sector": payload["include_sector"],
+                    "skill": payload["include_skill"],
+                    "competency": payload["include_competency"],
+                    "requirement": payload["include_requirement"],
+                },
                 search_constraints={
                     "published_after": payload["published_after"],
                     "published_before": payload["published_before"],
@@ -498,6 +541,7 @@ def create_app():
                 selected_skills=payload["selected_skills"],
                 competency=payload["competency"],
                 proficiency=payload["proficiency"],
+                requirement=payload["requirement"],
                 min_view_count=payload["min_view_count"],
                 min_like_count=payload["min_like_count"],
                 min_video_length=payload["min_video_length"],
@@ -505,6 +549,12 @@ def create_app():
                 min_comment_count=payload["min_comment_count"],
                 max_video_age=payload["max_video_age"],
                 additional_query=payload["additional_query"],
+                query_includes={
+                    "sector": payload["include_sector"],
+                    "skill": payload["include_skill"],
+                    "competency": payload["include_competency"],
+                    "requirement": payload["include_requirement"],
+                },
                 search_constraints={
                     "published_after": payload["published_after"],
                     "published_before": payload["published_before"],

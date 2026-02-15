@@ -344,6 +344,64 @@ class YoutubeIngestionServiceTests(unittest.TestCase):
         self.assertEqual(summary["constraints"]["competency"], "Financial Accounting")
         self.assertEqual(summary["constraints"]["query"], "Accountancy Skill A Financial Accounting Apply basic accounting principles advanced tutorial")
 
+    @patch("youtube_ingestion_service.request_json")
+    def test_run_ingestion_with_query_include_flags(self, mock_request_json):
+        def _side_effect(url, params):
+            if "search" in url:
+                self.assertEqual(params["q"], "Skill A Apply basic accounting principles tutorial")
+                return _FakeResponse(200), {
+                    "items": [{
+                        "id": {"videoId": "video1"},
+                        "snippet": {
+                            "publishedAt": "2023-01-01T00:00:00Z",
+                            "title": "Test Video",
+                            "description": "Test Description",
+                        }
+                    }]
+                }
+            elif "videos" in url:
+                return _FakeResponse(200), {
+                    "items": [{
+                        "statistics": {
+                            "viewCount": "1000",
+                            "likeCount": "10",
+                            "commentCount": "5",
+                        },
+                        "contentDetails": {
+                            "duration": "PT10M",
+                        }
+                    }]
+                }
+            else:
+                raise AssertionError("Unexpected URL")
+
+        mock_request_json.side_effect = _side_effect
+        collection = _FakeCollection([_FakeUpdateResult(upserted_id="new-id")])
+
+        summary = run_ingestion(
+            collection,
+            sector="Accountancy",
+            api_key="key",
+            search_max_results=5,
+            search_order="relevance",
+            selected_skills=["Skill A"],
+            competency="Financial Accounting",
+            proficiency="",
+            requirement="Apply basic accounting principles",
+            additional_query="tutorial",
+            query_includes={
+                "sector": False,
+                "skill": True,
+                "competency": False,
+                "requirement": True,
+            },
+        )
+
+        self.assertEqual(summary["skills_processed"], 1)
+        self.assertEqual(summary["videos_found"], 1)
+        self.assertEqual(summary["upserts_attempted"], 1)
+        self.assertEqual(summary["constraints"]["query"], "Skill A Apply basic accounting principles tutorial")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -21,6 +21,10 @@
     const regionCodeInput = document.getElementById("region_code");
     const relevanceLanguageInput = document.getElementById("relevance_language");
     const additionalQueryInput = document.getElementById("additional_query");
+    const includeSectorQueryInput = document.getElementById("include_sector_query");
+    const includeSkillQueryInput = document.getElementById("include_skill_query");
+    const includeCompetencyQueryInput = document.getElementById("include_competency_query");
+    const includeRequirementQueryInput = document.getElementById("include_requirement_query");
     const maxVideoAgeInput = document.getElementById("max_video_age");
     const minViewCountInput = document.getElementById("min_view_count");
     const minLikeCountInput = document.getElementById("min_like_count");
@@ -308,8 +312,13 @@
             search_max_results: searchMaxResultsInput.value,
             search_order: document.getElementById("search_order").value,
             skills: selectedSkill ? [selectedSkill] : [],
-            competency: selectedCompetency,
-            proficiency: selectedProficiency,
+            competency: selectedCompetency || "",
+            proficiency: selectedProficiency || "",
+            requirement: selectedRequirement || "",
+            include_sector: includeSectorQueryInput.checked,
+            include_skill: includeSkillQueryInput.checked,
+            include_competency: includeCompetencyQueryInput.checked,
+            include_requirement: includeRequirementQueryInput.checked,
             published_after: publishedAfterInput.value,
             published_before: publishedBeforeInput.value,
             max_video_age: maxVideoAgeInput.value,
@@ -516,6 +525,20 @@
             return;
         }
 
+        const hasCheckedQueryField =
+            includeSectorQueryInput.checked ||
+            includeSkillQueryInput.checked ||
+            includeCompetencyQueryInput.checked ||
+            includeRequirementQueryInput.checked;
+        const hasAdditionalQuery = additionalQueryInput.value.trim() !== "";
+        if (!hasCheckedQueryField && !hasAdditionalQuery) {
+            setRunState(
+                "Select at least one query field (Sector, Skill, Competencies, Requirement) or fill Additional Query.",
+                "error"
+            );
+            return;
+        }
+
         const payload = collectPayload();
         submitBtn.disabled = true;
         refreshMongoBtn.disabled = true;
@@ -585,7 +608,18 @@
         regionCodeInput,
         relevanceLanguageInput,
         additionalQueryInput,
+        includeSectorQueryInput,
+        includeSkillQueryInput,
+        includeCompetencyQueryInput,
+        includeRequirementQueryInput,
     ].forEach((el) => el.addEventListener("input", updateQuotaEstimate));
+
+    [
+        includeSectorQueryInput,
+        includeSkillQueryInput,
+        includeCompetencyQueryInput,
+        includeRequirementQueryInput,
+    ].forEach((el) => el.addEventListener("change", updateQuotaEstimate));
 
     refreshMongoBtn.addEventListener("click", refreshMongoStatus);
 

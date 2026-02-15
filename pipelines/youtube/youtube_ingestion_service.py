@@ -142,6 +142,57 @@ def _apply_search_constraints(search_params: dict, search_constraints: dict):
         search_params["relevanceLanguage"] = relevance_language
 
 
+def _normalize_query_includes(query_includes: dict | None):
+    defaults = {
+        "sector": True,
+        "skill": True,
+        "competency": True,
+        "requirement": True,
+    }
+    if not query_includes:
+        return defaults
+    return {
+        "sector": bool(query_includes.get("sector", defaults["sector"])),
+        "skill": bool(query_includes.get("skill", defaults["skill"])),
+        "competency": bool(query_includes.get("competency", defaults["competency"])),
+        "requirement": bool(query_includes.get("requirement", defaults["requirement"])),
+    }
+
+
+def _build_query_parts(
+    *,
+    sector: str,
+    skill: str,
+    competency: str,
+    proficiency: str,
+    requirement: str,
+    additional_query: str,
+    query_includes: dict,
+):
+    query_parts = []
+
+    if query_includes.get("sector") and sector.strip():
+        query_parts.append(sector.strip())
+    if query_includes.get("skill") and skill.strip():
+        query_parts.append(skill.strip())
+    if query_includes.get("competency") and competency.strip():
+        query_parts.append(competency.strip())
+
+    if query_includes.get("requirement"):
+        requirement_text = requirement.strip()
+        if not requirement_text and proficiency.strip():
+            description = get_proficiency_description(sector, skill, proficiency.strip())
+            if description:
+                requirement_text = description.strip()
+        if requirement_text:
+            query_parts.append(requirement_text)
+
+    if additional_query.strip():
+        query_parts.append(additional_query.strip())
+
+    return query_parts
+
+
 def fetch_videos_for_preview(
     *,
     sector: str,
@@ -151,6 +202,7 @@ def fetch_videos_for_preview(
     selected_skills: list[str],
     competency: str = "",
     proficiency: str = "",
+    requirement: str = "",
     min_view_count: int = 0,
     min_like_count: int = 0,
     min_video_length: int = 0,
@@ -158,9 +210,11 @@ def fetch_videos_for_preview(
     min_comment_count: int = 0,
     max_video_age: int = 0,
     additional_query: str = "",
+    query_includes: dict | None = None,
     search_constraints: dict | None = None,
 ):
     search_constraints = search_constraints or {}
+    query_includes = _normalize_query_includes(query_includes)
     unique_skills = list(dict.fromkeys(selected_skills))
 
     videos = []
@@ -186,7 +240,9 @@ def fetch_videos_for_preview(
             "relevance_language": search_constraints.get("relevance_language", ""),
             "competency": competency,
             "proficiency": proficiency,
+            "requirement": requirement,
             "additional_query": additional_query,
+            "query_includes": query_includes,
             "query": "",
         },
     }
@@ -205,20 +261,15 @@ def fetch_videos_for_preview(
         summary["skills_processed"] += 1
 
         search_url = "https://www.googleapis.com/youtube/v3/search"
-        query_parts = [sector, skill]
-        
-        # Add selected competency if available
-        if competency.strip():
-            query_parts.append(competency.strip())
-        
-        # Add proficiency description if available
-        if proficiency.strip():
-            description = get_proficiency_description(sector, skill, proficiency.strip())
-            if description:
-                query_parts.append(description)
-        
-        if additional_query.strip():
-            query_parts.append(additional_query.strip())
+        query_parts = _build_query_parts(
+            sector=sector,
+            skill=skill,
+            competency=competency,
+            proficiency=proficiency,
+            requirement=requirement,
+            additional_query=additional_query,
+            query_includes=query_includes,
+        )
         
         # Store the query in summary (same for all skills)
         if not summary["constraints"]["query"]:
@@ -347,6 +398,7 @@ def run_ingestion(
     selected_skills: list[str],
     competency: str = "",
     proficiency: str = "",
+    requirement: str = "",
     min_view_count: int = 0,
     min_like_count: int = 0,
     min_video_length: int = 0,
@@ -354,9 +406,11 @@ def run_ingestion(
     min_comment_count: int = 0,
     max_video_age: int = 0,
     additional_query: str = "",
+    query_includes: dict | None = None,
     search_constraints: dict | None = None,
 ):
     search_constraints = search_constraints or {}
+    query_includes = _normalize_query_includes(query_includes)
     unique_skills = list(dict.fromkeys(selected_skills))
 
     summary = {
@@ -386,7 +440,9 @@ def run_ingestion(
             "relevance_language": search_constraints.get("relevance_language", ""),
             "competency": competency,
             "proficiency": proficiency,
+            "requirement": requirement,
             "additional_query": additional_query,
+            "query_includes": query_includes,
             "query": "",
         },
     }
@@ -405,20 +461,15 @@ def run_ingestion(
         summary["skills_processed"] += 1
 
         search_url = "https://www.googleapis.com/youtube/v3/search"
-        query_parts = [sector, skill]
-        
-        # Add selected competency if available
-        if competency.strip():
-            query_parts.append(competency.strip())
-        
-        # Add proficiency description if available
-        if proficiency.strip():
-            description = get_proficiency_description(sector, skill, proficiency.strip())
-            if description:
-                query_parts.append(description)
-        
-        if additional_query.strip():
-            query_parts.append(additional_query.strip())
+        query_parts = _build_query_parts(
+            sector=sector,
+            skill=skill,
+            competency=competency,
+            proficiency=proficiency,
+            requirement=requirement,
+            additional_query=additional_query,
+            query_includes=query_includes,
+        )
         
         # Store the query in summary (same for all skills)
         if not summary["constraints"]["query"]:
