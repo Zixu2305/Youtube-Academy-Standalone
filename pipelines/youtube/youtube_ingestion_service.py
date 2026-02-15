@@ -369,6 +369,9 @@ def fetch_videos_for_preview(
             video_doc = {
                 "sector": sector,
                 "skill_name": skill,
+                "competency": competency,
+                "proficiency_level": proficiency,
+                "proficiency_description": requirement,
                 "videoId": video_id,
                 "publishedAt": snippet.get("publishedAt", ""),
                 "title": snippet.get("title", ""),
@@ -576,6 +579,9 @@ def run_ingestion(
             doc = {
                 "sector": sector,
                 "skill_name": skill,
+                "competency": competency,
+                "proficiency_level": proficiency,
+                "proficiency_description": requirement,
                 "videoId": video_id,
                 "publishedAt": snippet.get("publishedAt", ""),
                 "title": snippet.get("title", ""),
