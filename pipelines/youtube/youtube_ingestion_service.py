@@ -4,7 +4,7 @@ import re
 import requests
 
 from youtube_config import MAX_ERROR_DETAILS, REQUEST_TIMEOUT_SECONDS, to_int
-from youtube_data_access import get_requirement
+from youtube_data_access import get_requirement, get_proficiency_description
 
 
 QUOTA_ERROR_REASONS = {
@@ -187,6 +187,7 @@ def fetch_videos_for_preview(
             "competency": competency,
             "proficiency": proficiency,
             "additional_query": additional_query,
+            "query": "",
         },
     }
 
@@ -206,16 +207,23 @@ def fetch_videos_for_preview(
         search_url = "https://www.googleapis.com/youtube/v3/search"
         query_parts = [sector, skill]
         
+        # Add selected competency if available
+        if competency.strip():
+            query_parts.append(competency.strip())
+        
         # Add proficiency description if available
-        if proficiency and skill:
-            proficiency_requirements = get_requirement(skill, competency, proficiency)
-            if proficiency_requirements:
-                # Join all requirements with spaces and add to query
-                proficiency_text = " ".join(proficiency_requirements)
-                query_parts.append(proficiency_text)
+        if proficiency.strip():
+            description = get_proficiency_description(sector, skill, proficiency.strip())
+            if description:
+                query_parts.append(description)
         
         if additional_query.strip():
             query_parts.append(additional_query.strip())
+        
+        # Store the query in summary (same for all skills)
+        if not summary["constraints"]["query"]:
+            summary["constraints"]["query"] = " ".join(query_parts)
+        
         search_params = {
             "part": "snippet",
             "maxResults": search_max_results,
@@ -379,6 +387,7 @@ def run_ingestion(
             "competency": competency,
             "proficiency": proficiency,
             "additional_query": additional_query,
+            "query": "",
         },
     }
 
@@ -398,16 +407,23 @@ def run_ingestion(
         search_url = "https://www.googleapis.com/youtube/v3/search"
         query_parts = [sector, skill]
         
+        # Add selected competency if available
+        if competency.strip():
+            query_parts.append(competency.strip())
+        
         # Add proficiency description if available
-        if proficiency and skill:
-            proficiency_requirements = get_requirement(skill, competency, proficiency)
-            if proficiency_requirements:
-                # Join all requirements with spaces and add to query
-                proficiency_text = " ".join(proficiency_requirements)
-                query_parts.append(proficiency_text)
+        if proficiency.strip():
+            description = get_proficiency_description(sector, skill, proficiency.strip())
+            if description:
+                query_parts.append(description)
         
         if additional_query.strip():
             query_parts.append(additional_query.strip())
+        
+        # Store the query in summary (same for all skills)
+        if not summary["constraints"]["query"]:
+            summary["constraints"]["query"] = " ".join(query_parts)
+        
         search_params = {
             "part": "snippet",
             "maxResults": search_max_results,

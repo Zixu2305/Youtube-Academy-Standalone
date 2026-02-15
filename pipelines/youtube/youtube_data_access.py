@@ -82,18 +82,18 @@ def search_skills(sector, search_term):
         return []
 
 
-def search_competencies(skill):
+def search_competencies(sector, skill):
     try:
         conn = get_mysql_conn()
         cur = conn.cursor()
         query = """
-            SELECT DISTINCT sci.item_text
+            SELECT DISTINCT CONCAT(sci.item_type, ': ', sci.item_text) AS competency
             FROM map_sf_to_cat_skill m
             JOIN sf_competency_item sci ON m.sf_skill_id = sci.sf_skill_id
-            WHERE m.source_skill_title = %s
-            ORDER BY sci.item_text
+            WHERE m.sector_name_raw = %s AND m.source_skill_title = %s
+            ORDER BY competency
         """
-        cur.execute(query, (skill,))
+        cur.execute(query, (sector, skill))
         rows = cur.fetchall()
         cur.close()
         conn.close()
@@ -102,18 +102,23 @@ def search_competencies(skill):
         return []
 
 
-def search_proficiency_levels(skill, competency):
+def search_proficiency_levels(sector, skill, competency):
     try:
         conn = get_mysql_conn()
         cur = conn.cursor()
         query = """
-            SELECT DISTINCT sci.proficiency_level
+                        SELECT DISTINCT sl.proficiency_level
             FROM map_sf_to_cat_skill m
             JOIN sf_competency_item sci ON m.sf_skill_id = sci.sf_skill_id
-            WHERE m.source_skill_title = %s AND sci.item_text = %s
-            ORDER BY sci.proficiency_level
+                        JOIN sf_skill_level sl
+                            ON sl.sf_skill_id = sci.sf_skill_id
+                         AND sl.proficiency_level = sci.proficiency_level
+            WHERE m.sector_name_raw = %s
+              AND m.source_skill_title = %s
+              AND CONCAT(sci.item_type, ': ', sci.item_text) = %s
+                        ORDER BY sl.proficiency_level
         """
-        cur.execute(query, (skill, competency))
+        cur.execute(query, (sector, skill, competency))
         rows = cur.fetchall()
         cur.close()
         conn.close()
@@ -122,27 +127,53 @@ def search_proficiency_levels(skill, competency):
         return []
 
 
-def get_requirement(skill, competency, proficiency):
+def get_requirement(sector, skill, competency, proficiency):
     try:
         conn = get_mysql_conn()
         cur = conn.cursor()
         query = """
-            SELECT CONCAT(sci.item_type, ': ', sci.item_text) AS requirement
-            FROM sf_competency_item sci
-            WHERE sci.sf_skill_id IN (
-                SELECT DISTINCT m.sf_skill_id
-                FROM map_sf_to_cat_skill m
-                WHERE m.source_skill_title = %s
-            ) AND sci.proficiency_level = %s
-            ORDER BY sci.item_type, sci.item_text
+                        SELECT DISTINCT sl.proficiency_description
+            FROM map_sf_to_cat_skill m
+            JOIN sf_competency_item sci ON m.sf_skill_id = sci.sf_skill_id
+                        JOIN sf_skill_level sl
+                            ON sl.sf_skill_id = sci.sf_skill_id
+                         AND sl.proficiency_level = sci.proficiency_level
+            WHERE m.sector_name_raw = %s
+              AND m.source_skill_title = %s
+              AND CONCAT(sci.item_type, ': ', sci.item_text) = %s
+                            AND sl.proficiency_level = %s
         """
-        cur.execute(query, (skill, proficiency))
-        rows = cur.fetchall()
+        cur.execute(query, (sector, skill, competency, proficiency))
+        row = cur.fetchone()
         cur.close()
         conn.close()
-        return [row[0] for row in rows]
+        description = row[0] if row and row[0] else ""
+        return [description] if description else []
     except Exception:
         return []
+
+
+def get_proficiency_description(sector, skill, proficiency):
+    try:
+        conn = get_mysql_conn()
+        cur = conn.cursor()
+        query = """
+                        SELECT DISTINCT sl.proficiency_description
+            FROM map_sf_to_cat_skill m
+                        JOIN sf_skill_level sl
+                            ON sl.sf_skill_id = m.sf_skill_id
+                         AND sl.proficiency_level = m.proficiency_level
+            WHERE m.sector_name_raw = %s
+              AND m.source_skill_title = %s
+                            AND sl.proficiency_level = %s
+        """
+        cur.execute(query, (sector, skill, proficiency))
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        return row[0] if row and row[0] else ""
+    except Exception:
+        return ""
 
 
 def mongo_status_snapshot(collection):

@@ -285,16 +285,12 @@ class YoutubeIngestionServiceTests(unittest.TestCase):
         self.assertEqual(summary["upserts_attempted"], 1)
         self.assertEqual(summary["constraints"]["max_video_age"], 30)
 
-    @patch("youtube_ingestion_service.get_requirement")
     @patch("youtube_ingestion_service.request_json")
-    def test_run_ingestion_with_proficiency_description(self, mock_request_json, mock_get_requirement):
-        # Mock the proficiency requirements
-        mock_get_requirement.return_value = ["Knowledge: Basic accounting principles", "Skill: Financial statement analysis"]
-        
+    def test_run_ingestion_with_competency(self, mock_request_json):
         def _side_effect(url, params):
             if "search" in url:
-                # Verify the query includes sector, skill, proficiency description, and additional query
-                expected_query = "Accountancy Skill A Knowledge: Basic accounting principles Skill: Financial statement analysis advanced tutorial"
+                # Verify the query includes sector, skill, competency, proficiency description, and additional query
+                expected_query = "Accountancy Skill A Financial Accounting Apply basic accounting principles advanced tutorial"
                 self.assertEqual(params["q"], expected_query)
                 return _FakeResponse(200), {
                     "items": [{
@@ -325,23 +321,28 @@ class YoutubeIngestionServiceTests(unittest.TestCase):
         mock_request_json.side_effect = _side_effect
         collection = _FakeCollection([_FakeUpdateResult(upserted_id="new-id")])
 
-        summary = run_ingestion(
-            collection,
-            sector="Accountancy",
-            api_key="key",
-            search_max_results=5,
-            search_order="relevance",
-            selected_skills=["Skill A"],
-            competency="Financial Accounting",
-            proficiency="Intermediate",
-            additional_query="advanced tutorial",
-        )
+        # Mock get_proficiency_description
+        with patch("youtube_ingestion_service.get_proficiency_description") as mock_get_proficiency_description:
+            mock_get_proficiency_description.return_value = "Apply basic accounting principles"
+
+            summary = run_ingestion(
+                collection,
+                sector="Accountancy",
+                api_key="key",
+                search_max_results=5,
+                search_order="relevance",
+                selected_skills=["Skill A"],
+                competency="Financial Accounting",
+                proficiency="Intermediate",
+                additional_query="advanced tutorial",
+            )
 
         self.assertEqual(summary["skills_processed"], 1)
         self.assertEqual(summary["videos_found"], 1)
         self.assertEqual(summary["upserts_attempted"], 1)
         self.assertEqual(summary["constraints"]["proficiency"], "Intermediate")
-        mock_get_requirement.assert_called_once_with("Skill A", "Financial Accounting", "Intermediate")
+        self.assertEqual(summary["constraints"]["competency"], "Financial Accounting")
+        self.assertEqual(summary["constraints"]["query"], "Accountancy Skill A Financial Accounting Apply basic accounting principles advanced tutorial")
 
 
 if __name__ == "__main__":

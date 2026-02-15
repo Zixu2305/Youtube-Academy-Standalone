@@ -181,25 +181,28 @@ def create_app():
     @app.route("/search_competencies", methods=["POST"])
     def search_competencies_route():
         data = request.get_json(silent=True) or {}
+        sector = data.get("sector")
         skill = data.get("skill")
-        competencies = search_competencies(skill)
+        competencies = search_competencies(sector, skill)
         return jsonify(competencies)
 
     @app.route("/search_proficiency_levels", methods=["POST"])
     def search_proficiency_levels_route():
         data = request.get_json(silent=True) or {}
+        sector = data.get("sector")
         skill = data.get("skill")
         competency = data.get("competency")
-        levels = search_proficiency_levels(skill, competency)
+        levels = search_proficiency_levels(sector, skill, competency)
         return jsonify(levels)
 
     @app.route("/get_requirement", methods=["POST"])
     def get_requirement_route():
         data = request.get_json(silent=True) or {}
+        sector = data.get("sector")
         skill = data.get("skill")
         competency = data.get("competency")
         proficiency = data.get("proficiency")
-        requirements = get_requirement(skill, competency, proficiency)
+        requirements = get_requirement(sector, skill, competency, proficiency)
         return jsonify({"requirements": requirements})
 
     @app.route("/quota_estimate", methods=["POST"])

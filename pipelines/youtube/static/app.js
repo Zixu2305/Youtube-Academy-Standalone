@@ -133,7 +133,7 @@
             const response = await fetch("/search_competencies", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ skill: selectedSkill })
+                body: JSON.stringify({ sector: sectorSelect.value, skill: selectedSkill })
             });
             const competencies = await response.json();
             if (!competencies.length) {
@@ -189,7 +189,7 @@
             const response = await fetch("/search_proficiency_levels", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ skill: selectedSkill, competency: selectedCompetency })
+                body: JSON.stringify({ sector: sectorSelect.value, skill: selectedSkill, competency: selectedCompetency })
             });
             const levels = await response.json();
             if (!levels.length) {
@@ -242,7 +242,7 @@
             const response = await fetch("/get_requirement", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ skill: selectedSkill, competency: selectedCompetency, proficiency: selectedProficiency })
+                body: JSON.stringify({ sector: sectorSelect.value, skill: selectedSkill, competency: selectedCompetency, proficiency: selectedProficiency })
             });
             const data = await response.json();
             const requirements = data.requirements || [];
@@ -341,6 +341,7 @@
         Unchanged: "Existing documents already matching; no change applied.",
         "Error Count": "Total errors captured during search, video, or comments calls.",
         "Quota Exceeded": "Whether a quota error was detected; run stops early when yes.",
+        "Search Query": "The query string sent to YouTube's search API.",
     };
 
     function renderSummary(summary, runId) {
@@ -381,6 +382,11 @@
             { key: "Error Count", value: summary.error_count },
             { key: "Quota Exceeded", value: summary.quota_exceeded ? "yes" : "no" }
         );
+
+        // Add query if available
+        if (summary.constraints && summary.constraints.query) {
+            rows.push({ key: "Search Query", value: summary.constraints.query });
+        }
 
         const kvHtml = rows
             .map(({ key, value }) => {
