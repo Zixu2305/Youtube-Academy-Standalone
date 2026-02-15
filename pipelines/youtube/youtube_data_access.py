@@ -82,6 +82,69 @@ def search_skills(sector, search_term):
         return []
 
 
+def search_competencies(skill):
+    try:
+        conn = get_mysql_conn()
+        cur = conn.cursor()
+        query = """
+            SELECT DISTINCT sci.item_text
+            FROM map_sf_to_cat_skill m
+            JOIN sf_competency_item sci ON m.sf_skill_id = sci.sf_skill_id
+            WHERE m.source_skill_title = %s
+            ORDER BY sci.item_text
+        """
+        cur.execute(query, (skill,))
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        return [row[0] for row in rows]
+    except Exception:
+        return []
+
+
+def search_proficiency_levels(skill, competency):
+    try:
+        conn = get_mysql_conn()
+        cur = conn.cursor()
+        query = """
+            SELECT DISTINCT sci.proficiency_level
+            FROM map_sf_to_cat_skill m
+            JOIN sf_competency_item sci ON m.sf_skill_id = sci.sf_skill_id
+            WHERE m.source_skill_title = %s AND sci.item_text = %s
+            ORDER BY sci.proficiency_level
+        """
+        cur.execute(query, (skill, competency))
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        return [row[0] for row in rows]
+    except Exception:
+        return []
+
+
+def get_requirement(skill, competency, proficiency):
+    try:
+        conn = get_mysql_conn()
+        cur = conn.cursor()
+        query = """
+            SELECT CONCAT(sci.item_type, ': ', sci.item_text) AS requirement
+            FROM sf_competency_item sci
+            WHERE sci.sf_skill_id IN (
+                SELECT DISTINCT m.sf_skill_id
+                FROM map_sf_to_cat_skill m
+                WHERE m.source_skill_title = %s
+            ) AND sci.proficiency_level = %s
+            ORDER BY sci.item_type, sci.item_text
+        """
+        cur.execute(query, (skill, proficiency))
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        return [row[0] for row in rows]
+    except Exception:
+        return []
+
+
 def mongo_status_snapshot(collection):
     total_documents = collection.count_documents({})
     total_sectors = len(collection.distinct("sector"))

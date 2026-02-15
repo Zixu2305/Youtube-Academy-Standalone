@@ -17,6 +17,9 @@ from youtube_data_access import (
     get_mongo_client,
     mongo_status_snapshot,
     search_skills,
+    search_competencies,
+    search_proficiency_levels,
+    get_requirement,
 )
 from youtube_ingestion_service import build_quota_estimate, run_ingestion
 
@@ -60,17 +63,20 @@ def _parse_fetch_payload(req):
         payload = {
             "sector": data.get("sector", ""),
             "api_key": data.get("api_key", ""),
-            "search_max_results": to_int(data.get("search_max_results", 10), 10),
+            "search_max_results": to_int(data.get("search_max_results", 5), 5),
             "search_order": data.get("search_order", "relevance"),
-            "comments_max_results": to_int(data.get("comments_max_results", 10), 10),
             "selected_skills": data.get("skills", []),
             "published_after": data.get("published_after", ""),
             "published_before": data.get("published_before", ""),
+            "max_video_age": to_int(data.get("max_video_age", 0), 0),
             "region_code": data.get("region_code", ""),
             "relevance_language": data.get("relevance_language", ""),
-            "video_duration": data.get("video_duration", "any"),
+            "additional_query": data.get("additional_query", ""),
             "min_view_count": to_int(data.get("min_view_count", 0), 0),
             "min_like_count": to_int(data.get("min_like_count", 0), 0),
+            "min_video_length": to_int(data.get("min_video_length", 0), 0),
+            "max_video_length": to_int(data.get("max_video_length", 0), 0),
+            "min_comment_count": to_int(data.get("min_comment_count", 0), 0),
         }
         return payload
 
@@ -85,17 +91,20 @@ def _parse_fetch_payload(req):
     payload = {
         "sector": req.form.get("sector", ""),
         "api_key": req.form.get("api_key", ""),
-        "search_max_results": to_int(req.form.get("search_max_results", 10), 10),
+        "search_max_results": to_int(req.form.get("search_max_results", 5), 5),
         "search_order": req.form.get("search_order", "relevance"),
-        "comments_max_results": to_int(req.form.get("comments_max_results", 10), 10),
         "selected_skills": selected_skills,
         "published_after": req.form.get("published_after", ""),
         "published_before": req.form.get("published_before", ""),
+        "max_video_age": to_int(req.form.get("max_video_age", 0), 0),
         "region_code": req.form.get("region_code", ""),
         "relevance_language": req.form.get("relevance_language", ""),
-        "video_duration": req.form.get("video_duration", "any"),
+        "additional_query": req.form.get("additional_query", ""),
         "min_view_count": to_int(req.form.get("min_view_count", 0), 0),
         "min_like_count": to_int(req.form.get("min_like_count", 0), 0),
+        "min_video_length": to_int(req.form.get("min_video_length", 0), 0),
+        "max_video_length": to_int(req.form.get("max_video_length", 0), 0),
+        "min_comment_count": to_int(req.form.get("min_comment_count", 0), 0),
     }
     return payload
 
@@ -106,15 +115,21 @@ def _validate_fetch_payload(payload):
     if not payload["api_key"]:
         return "YouTube API key is required."
     if not payload["selected_skills"]:
-        return "Select at least one skill."
+        return "Select a skill."
     if payload["search_max_results"] <= 0:
         return "Search Max Results must be greater than 0."
-    if payload["comments_max_results"] < 0:
-        return "Comments Max Results cannot be negative."
     if payload["min_view_count"] < 0:
         return "Minimum view count cannot be negative."
     if payload["min_like_count"] < 0:
         return "Minimum like count cannot be negative."
+    if payload["min_video_length"] < 0:
+        return "Minimum video length cannot be negative."
+    if payload["max_video_length"] < 0:
+        return "Maximum video length cannot be negative."
+    if payload["min_comment_count"] < 0:
+        return "Minimum comment count cannot be negative."
+    if payload["max_video_age"] < 0:
+        return "Maximum video age cannot be negative."
     return None
 
 
@@ -122,7 +137,6 @@ def _build_quota_context(payload):
     return build_quota_estimate(
         skills_count=len(list(dict.fromkeys(payload["selected_skills"]))),
         search_max_results=payload["search_max_results"],
-        comments_max_results=payload["comments_max_results"],
         daily_limit=_daily_quota_limit(),
         warning_threshold=_quota_warning_threshold(),
     )
@@ -161,6 +175,30 @@ def create_app():
         search_term = data.get("search_term", "")
         skills = search_skills(sector, search_term)
         return jsonify(skills)
+
+    @app.route("/search_competencies", methods=["POST"])
+    def search_competencies_route():
+        data = request.get_json(silent=True) or {}
+        skill = data.get("skill")
+        competencies = search_competencies(skill)
+        return jsonify(competencies)
+
+    @app.route("/search_proficiency_levels", methods=["POST"])
+    def search_proficiency_levels_route():
+        data = request.get_json(silent=True) or {}
+        skill = data.get("skill")
+        competency = data.get("competency")
+        levels = search_proficiency_levels(skill, competency)
+        return jsonify(levels)
+
+    @app.route("/get_requirement", methods=["POST"])
+    def get_requirement_route():
+        data = request.get_json(silent=True) or {}
+        skill = data.get("skill")
+        competency = data.get("competency")
+        proficiency = data.get("proficiency")
+        requirements = get_requirement(skill, competency, proficiency)
+        return jsonify({"requirements": requirements})
 
     @app.route("/quota_estimate", methods=["POST"])
     def quota_estimate():
@@ -229,7 +267,7 @@ def create_app():
 
             collection = db[collection_name]
             query = _build_mongo_filter(filter_field, filter_value)
-            projection = {"comments": 0} if collection_name == "videos" else None
+            projection = None
 
             cursor = (
                 collection.find(query, projection)
@@ -250,39 +288,6 @@ def create_app():
                     "has_more": has_more,
                 }
             )
-        except Exception as e:
-            return jsonify({"ok": False, "error": str(e)}), 500
-        finally:
-            if client:
-                client.close()
-
-    @app.route("/mongo_video_comments", methods=["GET"])
-    def mongo_video_comments():
-        client = None
-        try:
-            video_id = request.args.get("video_id", "").strip()
-            if not video_id:
-                return jsonify({"ok": False, "error": "video_id is required."}), 400
-
-            client = get_mongo_client()
-            db = client[env("MONGO_DATABASE", "")]
-            collection = db["videos"]
-
-            projection = {
-                "_id": 1,
-                "videoId": 1,
-                "sector": 1,
-                "skill_name": 1,
-                "title": 1,
-                "publishedAt": 1,
-                "ingested_timing": 1,
-                "comments": 1,
-            }
-            cursor = collection.find({"videoId": video_id}, projection).sort(
-                "ingested_timing", -1
-            )
-            entries = [_serialize(doc) for doc in cursor]
-            return jsonify({"ok": True, "video_id": video_id, "entries": entries})
         except Exception as e:
             return jsonify({"ok": False, "error": str(e)}), 500
         finally:
@@ -335,14 +340,16 @@ def create_app():
                     "skills_count": len(list(dict.fromkeys(payload["selected_skills"]))),
                     "search_max_results": payload["search_max_results"],
                     "search_order": payload["search_order"],
-                    "comments_max_results": payload["comments_max_results"],
                     "published_after": payload["published_after"],
                     "published_before": payload["published_before"],
+                    "max_video_age": payload["max_video_age"],
                     "region_code": payload["region_code"],
                     "relevance_language": payload["relevance_language"],
-                    "video_duration": payload["video_duration"],
                     "min_view_count": payload["min_view_count"],
                     "min_like_count": payload["min_like_count"],
+                    "min_video_length": payload["min_video_length"],
+                    "max_video_length": payload["max_video_length"],
+                    "min_comment_count": payload["min_comment_count"],
                     "api_key_supplied": bool(payload["api_key"]),
                 },
                 "quota_estimate": quota_context,
@@ -356,16 +363,19 @@ def create_app():
                 api_key=payload["api_key"],
                 search_max_results=payload["search_max_results"],
                 search_order=payload["search_order"],
-                comments_max_results=payload["comments_max_results"],
                 selected_skills=payload["selected_skills"],
                 min_view_count=payload["min_view_count"],
                 min_like_count=payload["min_like_count"],
+                min_video_length=payload["min_video_length"],
+                max_video_length=payload["max_video_length"],
+                min_comment_count=payload["min_comment_count"],
+                max_video_age=payload["max_video_age"],
+                additional_query=payload["additional_query"],
                 search_constraints={
                     "published_after": payload["published_after"],
                     "published_before": payload["published_before"],
                     "region_code": payload["region_code"],
                     "relevance_language": payload["relevance_language"],
-                    "video_duration": payload["video_duration"],
                 },
             )
             summary["mongo_status"] = mongo_status_snapshot(videos_collection)

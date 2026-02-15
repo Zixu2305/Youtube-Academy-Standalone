@@ -28,24 +28,86 @@
                     <input type="text" id="search_skills" placeholder="Type to filter skills">
                 </div>
                 <div class="field">
-                    <div class="skill-count" id="skill_count">Selected: 0</div>
                     <div class="skills" id="skills_container"></div>
-                    <div class="skill-actions">
-                        <button type="button" id="select_all_btn">Select Visible</button>
-                        <button type="button" id="deselect_all_btn">Deselect Visible</button>
-                    </div>
+                </div>
+                <h3 class="subheader">Competencies</h3>
+                <div class="field">
+                    <div class="competencies" id="competencies_container"></div>
+                </div>
+                <h3 class="subheader">Proficiency Level</h3>
+                <div class="field">
+                    <div class="proficiency-levels" id="proficiency_container"></div>
+                </div>
+                <h3 class="subheader">Requirement</h3>
+                <div class="field">
+                    <div class="requirements" id="requirements_container"></div>
                 </div>
                 <div class="field">
                     <label for="api_key">YouTube API Key</label>
                     <input id="api_key" name="api_key" type="password" required>
                 </div>
+
+                <h3 class="subheader"><u>Search Constraints:</u></h3>
+                <div class="field two-col">
+                    <div>
+                        <label for="published_before">Published Before</label>
+                        <input id="published_before" name="published_before" type="date" class="constraint-input">
+                    </div>
+                    <div>
+                        <label for="published_after">Published After</label>
+                        <input id="published_after" name="published_after" type="date" class="constraint-input">
+                    </div>
+                </div>
+                <div class="field">
+                    <label for="max_video_age">Max Video Age (days)</label>
+                    <input id="max_video_age" name="max_video_age" type="number" min="0" value="0" class="constraint-input">
+                </div>
+                <div class="field two-col">
+                    <div>
+                        <label for="region_code">Region Code (optional)</label>
+                        <input id="region_code" name="region_code" placeholder="e.g. SG or US" class="constraint-input">
+                    </div>
+                    <div>
+                        <label for="relevance_language">Relevance Language (optional)</label>
+                        <input id="relevance_language" name="relevance_language" placeholder="e.g. en" class="constraint-input">
+                    </div>
+                </div>
+                <div class="field">
+                    <label for="additional_query">Additional Query (optional)</label>
+                    <textarea id="additional_query" name="additional_query" placeholder="Additional search terms to combine with sector and skills" class="constraint-input" rows="2"></textarea>
+                </div>
+                <div class="field">
+                    <label for="min_view_count">Min View Count</label>
+                    <input id="min_view_count" name="min_view_count" type="number" min="0" value="0" class="constraint-input">
+                </div>
+                <div class="field two-col">
+                    <div>
+                        <label for="min_video_length">Minimum Video Length (minutes)</label>
+                        <input id="min_video_length" name="min_video_length" type="number" min="0" value="0" class="constraint-input">
+                    </div>
+                    <div>
+                        <label for="max_video_length">Maximum Video Length (minutes)</label>
+                        <input id="max_video_length" name="max_video_length" type="number" min="0" value="0" class="constraint-input">
+                    </div>
+                </div>
+                <div class="field two-col">
+                    <div>
+                        <label for="min_comment_count">Min Comment Count</label>
+                        <input id="min_comment_count" name="min_comment_count" type="number" min="0" value="0" class="constraint-input">
+                    </div>
+                    <div>
+                        <label for="min_like_count">Min Like Count</label>
+                        <input id="min_like_count" name="min_like_count" type="number" min="0" value="0" class="constraint-input">
+                    </div>
+                </div>
+
                 <div class="field">
                     <label for="search_max_results">Search Max Results</label>
-                    <input id="search_max_results" name="search_max_results" value="10" type="number" min="1">
+                    <input id="search_max_results" name="search_max_results" value="5" type="number" min="1" class="constraint-input">
                 </div>
                 <div class="field">
                     <label for="search_order">Search Order</label>
-                    <select id="search_order" name="search_order">
+                    <select id="search_order" name="search_order" class="constraint-input">
                         <option value="relevance">relevance</option>
                         <option value="date">date</option>
                         <option value="rating">rating</option>
@@ -53,51 +115,6 @@
                         <option value="title">title</option>
                         <option value="videoCount">videoCount</option>
                     </select>
-                </div>
-                <div class="field">
-                    <label for="comments_max_results">Comments Max Results</label>
-                    <input id="comments_max_results" name="comments_max_results" value="10" type="number" min="0">
-                </div>
-
-                <h3 class="subheader">Search Constraints</h3>
-                <div class="field two-col">
-                    <div>
-                        <label for="published_after">Published After</label>
-                        <input id="published_after" name="published_after" type="date">
-                    </div>
-                    <div>
-                        <label for="published_before">Published Before</label>
-                        <input id="published_before" name="published_before" type="date">
-                    </div>
-                </div>
-                <div class="field two-col">
-                    <div>
-                        <label for="region_code">Region Code (optional)</label>
-                        <input id="region_code" name="region_code" placeholder="e.g. SG or US">
-                    </div>
-                    <div>
-                        <label for="relevance_language">Relevance Language (optional)</label>
-                        <input id="relevance_language" name="relevance_language" placeholder="e.g. en">
-                    </div>
-                </div>
-                <div class="field two-col">
-                    <div>
-                        <label for="video_duration">Video Duration</label>
-                        <select id="video_duration" name="video_duration">
-                            <option value="any">any</option>
-                            <option value="short">short</option>
-                            <option value="medium">medium</option>
-                            <option value="long">long</option>
-                        </select>
-                    </div>
-                    <div>
-                        <label for="min_view_count">Min View Count</label>
-                        <input id="min_view_count" name="min_view_count" type="number" min="0" value="0">
-                    </div>
-                </div>
-                <div class="field">
-                    <label for="min_like_count">Min Like Count</label>
-                    <input id="min_like_count" name="min_like_count" type="number" min="0" value="0">
                 </div>
 
                 <div id="quota_banner" class="status">Quota estimate pending...</div>

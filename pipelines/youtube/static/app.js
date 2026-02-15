@@ -2,7 +2,9 @@
     const sectorSelect = document.getElementById("sector_select");
     const searchInput = document.getElementById("search_skills");
     const skillsContainer = document.getElementById("skills_container");
-    const skillCount = document.getElementById("skill_count");
+    const competenciesContainer = document.getElementById("competencies_container");
+    const proficiencyContainer = document.getElementById("proficiency_container");
+    const requirementsContainer = document.getElementById("requirements_container");
     const fetchForm = document.getElementById("fetch_form");
     const runState = document.getElementById("run_state");
     const runSummary = document.getElementById("run_summary");
@@ -12,19 +14,20 @@
     const mongoMeta = document.getElementById("mongo_meta");
     const mongoRecentRows = document.getElementById("mongo_recent_rows");
     const runsRows = document.getElementById("runs_rows");
-    const selectAllBtn = document.getElementById("select_all_btn");
-    const deselectAllBtn = document.getElementById("deselect_all_btn");
     const quotaBanner = document.getElementById("quota_banner");
     const searchMaxResultsInput = document.getElementById("search_max_results");
-    const commentsMaxResultsInput = document.getElementById("comments_max_results");
     const publishedAfterInput = document.getElementById("published_after");
     const publishedBeforeInput = document.getElementById("published_before");
     const regionCodeInput = document.getElementById("region_code");
     const relevanceLanguageInput = document.getElementById("relevance_language");
-    const videoDurationInput = document.getElementById("video_duration");
+    const additionalQueryInput = document.getElementById("additional_query");
+    const maxVideoAgeInput = document.getElementById("max_video_age");
     const minViewCountInput = document.getElementById("min_view_count");
     const minLikeCountInput = document.getElementById("min_like_count");
-    let selectedSkills = new Set();
+    let selectedSkill = null;
+    let selectedCompetency = null;
+    let selectedProficiency = null;
+    let selectedRequirement = null;
 
     function esc(text) {
         const value = String(text ?? "");
@@ -67,10 +70,6 @@
         }
     }
 
-    function updateSelectedCount() {
-        skillCount.textContent = `Selected: ${selectedSkills.size}`;
-    }
-
     function renderSkills(skills) {
         skillsContainer.innerHTML = "";
         if (!skills.length) {
@@ -78,27 +77,206 @@
             return;
         }
         skills.forEach((skill) => {
-            const row = document.createElement("label");
+            const row = document.createElement("div");
             row.className = "skill-item";
 
-            const checkbox = document.createElement("input");
-            checkbox.type = "checkbox";
-            checkbox.value = skill;
-            checkbox.checked = selectedSkills.has(skill);
-            checkbox.addEventListener("change", () => {
-                if (checkbox.checked) {
-                    selectedSkills.add(skill);
+            const skillButton = document.createElement("span");
+            skillButton.className = selectedSkill === skill ? "skill-name selected" : "skill-name";
+            skillButton.textContent = skill;
+            skillButton.addEventListener("click", () => {
+                if (selectedSkill === skill) {
+                    selectedSkill = null;
+                    skillButton.className = "skill-name";
                 } else {
-                    selectedSkills.delete(skill);
+                    // Clear previous selection
+                    const prevSelected = document.querySelector(".skill-name.selected");
+                    if (prevSelected) {
+                        prevSelected.className = "skill-name";
+                    }
+                    selectedSkill = skill;
+                    skillButton.className = "skill-name selected";
                 }
-                updateSelectedCount();
+                // Clear downstream selections
+                selectedCompetency = null;
+                selectedProficiency = null;
+                selectedRequirement = null;
+                loadCompetencies();
                 updateQuotaEstimate();
             });
 
-            row.appendChild(checkbox);
-            row.append(" " + skill);
+            row.appendChild(skillButton);
             skillsContainer.appendChild(row);
         });
+    }
+
+    async function loadCompetencies() {
+        competenciesContainer.innerHTML = "";
+        proficiencyContainer.innerHTML = "";
+        requirementsContainer.innerHTML = "";
+        selectedCompetency = null;
+        selectedProficiency = null;
+        selectedRequirement = null;
+        if (!selectedSkill) {
+            competenciesContainer.textContent = "Select a skill first";
+            return;
+        }
+
+        try {
+            const response = await fetch("/search_competencies", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ skill: selectedSkill })
+            });
+            const competencies = await response.json();
+            if (!competencies.length) {
+                competenciesContainer.textContent = "No competencies found.";
+                return;
+            }
+            competencies.forEach((comp) => {
+                const row = document.createElement("div");
+                row.className = "competency-item";
+
+                const compButton = document.createElement("span");
+                compButton.className = selectedCompetency === comp ? "competency-name selected" : "competency-name";
+                compButton.textContent = comp;
+                compButton.addEventListener("click", () => {
+                    if (selectedCompetency === comp) {
+                        selectedCompetency = null;
+                        compButton.className = "competency-name";
+                    } else {
+                        // Clear previous selection
+                        const prevSelected = document.querySelector(".competency-name.selected");
+                        if (prevSelected) {
+                            prevSelected.className = "competency-name";
+                        }
+                        selectedCompetency = comp;
+                        compButton.className = "competency-name selected";
+                    }
+                    // Clear downstream
+                    selectedProficiency = null;
+                    selectedRequirement = null;
+                    loadProficiencyLevels();
+                    updateQuotaEstimate();
+                });
+
+                row.appendChild(compButton);
+                competenciesContainer.appendChild(row);
+            });
+        } catch (error) {
+            competenciesContainer.textContent = "Error loading competencies";
+        }
+    }
+
+    async function loadProficiencyLevels() {
+        proficiencyContainer.innerHTML = "";
+        requirementsContainer.innerHTML = "";
+        selectedProficiency = null;
+        selectedRequirement = null;
+        if (!selectedSkill || !selectedCompetency) {
+            proficiencyContainer.textContent = "Select a competency first";
+            return;
+        }
+
+        try {
+            const response = await fetch("/search_proficiency_levels", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ skill: selectedSkill, competency: selectedCompetency })
+            });
+            const levels = await response.json();
+            if (!levels.length) {
+                proficiencyContainer.textContent = "No proficiency levels found.";
+                return;
+            }
+            levels.forEach((level) => {
+                const row = document.createElement("div");
+                row.className = "proficiency-item";
+
+                const levelButton = document.createElement("span");
+                levelButton.className = selectedProficiency === level ? "proficiency-name selected" : "proficiency-name";
+                levelButton.textContent = level;
+                levelButton.addEventListener("click", () => {
+                    if (selectedProficiency === level) {
+                        selectedProficiency = null;
+                        levelButton.className = "proficiency-name";
+                    } else {
+                        // Clear previous selection
+                        const prevSelected = document.querySelector(".proficiency-name.selected");
+                        if (prevSelected) {
+                            prevSelected.className = "proficiency-name";
+                        }
+                        selectedProficiency = level;
+                        levelButton.className = "proficiency-name selected";
+                    }
+                    // Clear downstream
+                    selectedRequirement = null;
+                    loadRequirements();
+                    updateQuotaEstimate();
+                });
+
+                row.appendChild(levelButton);
+                proficiencyContainer.appendChild(row);
+            });
+        } catch (error) {
+            proficiencyContainer.textContent = "Error loading proficiency levels";
+        }
+    }
+
+    async function loadRequirements() {
+        requirementsContainer.innerHTML = "";
+        selectedRequirement = null;
+        if (!selectedSkill || !selectedCompetency || !selectedProficiency) {
+            requirementsContainer.textContent = "Select proficiency level first";
+            return;
+        }
+
+        try {
+            const response = await fetch("/get_requirement", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ skill: selectedSkill, competency: selectedCompetency, proficiency: selectedProficiency })
+            });
+            const data = await response.json();
+            const requirements = data.requirements || [];
+            if (!requirements.length) {
+                requirementsContainer.textContent = "No requirements found.";
+                return;
+            }
+            requirements.forEach((req) => {
+                const row = document.createElement("div");
+                row.className = "requirement-item";
+
+                const reqButton = document.createElement("span");
+                reqButton.className = selectedRequirement === req ? "requirement-name selected" : "requirement-name";
+                reqButton.textContent = req;
+                reqButton.addEventListener("click", () => {
+                    if (selectedRequirement === req) {
+                        selectedRequirement = null;
+                        reqButton.className = "requirement-name";
+                    } else {
+                        // Clear previous selection
+                        const prevSelected = document.querySelector(".requirement-name.selected");
+                        if (prevSelected) {
+                            prevSelected.className = "requirement-name";
+                        }
+                        selectedRequirement = req;
+                        reqButton.className = "requirement-name selected";
+                    }
+                    updateQuotaEstimate();
+                });
+
+                row.appendChild(reqButton);
+                requirementsContainer.appendChild(row);
+            });
+            if (requirements.length === 1) {
+                // Auto-select if only one
+                const firstButton = requirementsContainer.querySelector(".requirement-name");
+                firstButton.className = "requirement-name selected";
+                selectedRequirement = requirements[0];
+            }
+        } catch (error) {
+            requirementsContainer.textContent = "Error loading requirements";
+        }
     }
 
     async function loadSkills(sector, searchTerm = "") {
@@ -121,13 +299,13 @@
             api_key: document.getElementById("api_key").value,
             search_max_results: searchMaxResultsInput.value,
             search_order: document.getElementById("search_order").value,
-            comments_max_results: commentsMaxResultsInput.value,
-            skills: Array.from(selectedSkills),
+            skills: selectedSkill ? [selectedSkill] : [],
             published_after: publishedAfterInput.value,
             published_before: publishedBeforeInput.value,
+            max_video_age: maxVideoAgeInput.value,
             region_code: regionCodeInput.value,
             relevance_language: relevanceLanguageInput.value,
-            video_duration: videoDurationInput.value,
+            additional_query: additionalQueryInput.value,
             min_view_count: minViewCountInput.value,
             min_like_count: minLikeCountInput.value,
         };
@@ -298,8 +476,8 @@
 
     fetchForm.addEventListener("submit", async (event) => {
         event.preventDefault();
-        if (!selectedSkills.size) {
-            setRunState("Select at least one skill before running.", "error");
+        if (!selectedSkill) {
+            setRunState("Select a skill before running.", "error");
             return;
         }
 
@@ -340,29 +518,12 @@
         }
     });
 
-    selectAllBtn.addEventListener("click", () => {
-        const checkboxes = skillsContainer.querySelectorAll("input[type='checkbox']");
-        checkboxes.forEach((cb) => {
-            cb.checked = true;
-            selectedSkills.add(cb.value);
-        });
-        updateSelectedCount();
-        updateQuotaEstimate();
-    });
-
-    deselectAllBtn.addEventListener("click", () => {
-        const checkboxes = skillsContainer.querySelectorAll("input[type='checkbox']");
-        checkboxes.forEach((cb) => {
-            cb.checked = false;
-            selectedSkills.delete(cb.value);
-        });
-        updateSelectedCount();
-        updateQuotaEstimate();
-    });
-
     sectorSelect.addEventListener("change", async () => {
-        selectedSkills = new Set();
-        updateSelectedCount();
+        selectedSkill = null;
+        selectedCompetency = null;
+        selectedProficiency = null;
+        selectedRequirement = null;
+        loadCompetencies();
         try {
             await loadSkills(sectorSelect.value, searchInput.value);
             await updateQuotaEstimate();
@@ -381,23 +542,22 @@
 
     [
         searchMaxResultsInput,
-        commentsMaxResultsInput,
         minViewCountInput,
         minLikeCountInput,
         publishedAfterInput,
         publishedBeforeInput,
+        maxVideoAgeInput,
         regionCodeInput,
         relevanceLanguageInput,
-        videoDurationInput,
     ].forEach((el) => el.addEventListener("input", updateQuotaEstimate));
 
     refreshMongoBtn.addEventListener("click", refreshMongoStatus);
 
     async function bootstrap() {
-        updateSelectedCount();
         if (sectorSelect.value) {
             try {
                 await loadSkills(sectorSelect.value, "");
+                await loadCompetencies();
             } catch (error) {
                 setRunState(`Initial skill loading failed: ${error.message}`, "error");
             }

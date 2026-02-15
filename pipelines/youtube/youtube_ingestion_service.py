@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 import re
 
 import requests
@@ -29,6 +29,19 @@ def parse_duration(duration_str):
     return f"{minutes}:{seconds:02d}"
 
 
+def duration_to_minutes(duration_str):
+    if not duration_str:
+        return 0
+    match = re.match(r"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?", duration_str)
+    if not match:
+        return 0
+    hours = int(match.group(1) or 0)
+    minutes = int(match.group(2) or 0)
+    seconds = int(match.group(3) or 0)
+    total_minutes = hours * 60 + minutes + seconds / 60
+    return total_minutes
+
+
 def request_json(url: str, params: dict):
     response = requests.get(url, params=params, timeout=REQUEST_TIMEOUT_SECONDS)
     try:
@@ -37,22 +50,6 @@ def request_json(url: str, params: dict):
         payload = {}
     return response, payload
 
-
-def extract_comments(items):
-    comments = []
-    for comment in items:
-        snippet = (
-            comment.get("snippet", {})
-            .get("topLevelComment", {})
-            .get("snippet", {})
-        )
-        comments.append(
-            {
-                "textDisplay": snippet.get("textDisplay", ""),
-                "textOriginal": snippet.get("textOriginal", ""),
-            }
-        )
-    return comments
 
 
 def estimate_quota_units(skills_count: int, search_max_results: int, comments_enabled: bool):
@@ -66,12 +63,10 @@ def build_quota_estimate(
     *,
     skills_count: int,
     search_max_results: int,
-    comments_max_results: int,
     daily_limit: int,
     warning_threshold: int,
 ):
-    comments_enabled = comments_max_results > 0
-    estimate_units = estimate_quota_units(skills_count, search_max_results, comments_enabled)
+    estimate_units = estimate_quota_units(skills_count, search_max_results, False)
 
     level = "ok"
     if estimate_units >= daily_limit:
@@ -83,7 +78,6 @@ def build_quota_estimate(
         "estimated_units": estimate_units,
         "daily_limit": daily_limit,
         "warning_threshold": warning_threshold,
-        "comments_enabled": comments_enabled,
         "level": level,
         "remaining_after_run": daily_limit - estimate_units,
     }
@@ -136,7 +130,6 @@ def _apply_search_constraints(search_params: dict, search_constraints: dict):
     )
     region_code = search_constraints.get("region_code", "").strip()
     relevance_language = search_constraints.get("relevance_language", "").strip()
-    video_duration = search_constraints.get("video_duration", "").strip()
 
     if published_after:
         search_params["publishedAfter"] = published_after
@@ -146,8 +139,6 @@ def _apply_search_constraints(search_params: dict, search_constraints: dict):
         search_params["regionCode"] = region_code
     if relevance_language:
         search_params["relevanceLanguage"] = relevance_language
-    if video_duration and video_duration != "any":
-        search_params["videoDuration"] = video_duration
 
 
 def run_ingestion(
@@ -157,10 +148,14 @@ def run_ingestion(
     api_key: str,
     search_max_results: int,
     search_order: str,
-    comments_max_results: int,
     selected_skills: list[str],
     min_view_count: int = 0,
     min_like_count: int = 0,
+    min_video_length: int = 0,
+    max_video_length: int = 0,
+    min_comment_count: int = 0,
+    max_video_age: int = 0,
+    additional_query: str = "",
     search_constraints: dict | None = None,
 ):
     search_constraints = search_constraints or {}
@@ -183,13 +178,22 @@ def run_ingestion(
         "constraints": {
             "min_view_count": max(0, min_view_count),
             "min_like_count": max(0, min_like_count),
+            "min_video_length": max(0, min_video_length),
+            "max_video_length": max(0, max_video_length),
+            "min_comment_count": max(0, min_comment_count),
+            "max_video_age": max(0, max_video_age),
             "published_after": search_constraints.get("published_after", ""),
             "published_before": search_constraints.get("published_before", ""),
             "region_code": search_constraints.get("region_code", ""),
             "relevance_language": search_constraints.get("relevance_language", ""),
-            "video_duration": search_constraints.get("video_duration", "any"),
+            "additional_query": additional_query,
         },
     }
+
+    # Convert max_video_age to published_after if not already set
+    if max_video_age > 0 and not search_constraints.get("published_after"):
+        cutoff_date = datetime.now() - timedelta(days=max_video_age)
+        search_constraints["published_after"] = cutoff_date.strftime("%Y-%m-%d")
 
     stop_due_to_quota = False
 
@@ -200,13 +204,16 @@ def run_ingestion(
         summary["skills_processed"] += 1
 
         search_url = "https://www.googleapis.com/youtube/v3/search"
+        query_parts = [sector, skill]
+        if additional_query.strip():
+            query_parts.append(additional_query.strip())
         search_params = {
             "part": "snippet",
             "maxResults": search_max_results,
             "order": search_order,
             "key": api_key,
             "type": "video",
-            "q": f"{sector} {skill}",
+            "q": " ".join(query_parts),
         }
         _apply_search_constraints(search_params, search_constraints)
 
@@ -278,36 +285,20 @@ def run_ingestion(
 
             view_count = to_int(statistics.get("viewCount", 0), 0)
             like_count = to_int(statistics.get("likeCount", 0), 0)
+            comment_count = to_int(statistics.get("commentCount", 0), 0)
+            video_length_minutes = duration_to_minutes(duration)
 
-            if view_count < max(0, min_view_count) or like_count < max(0, min_like_count):
+            if (
+                view_count < max(0, min_view_count)
+                or like_count < max(0, min_like_count)
+                or comment_count < max(0, min_comment_count)
+                or (min_video_length > 0 and video_length_minutes < min_video_length)
+                or (max_video_length > 0 and video_length_minutes > max_video_length)
+            ):
                 summary["videos_filtered_constraints"] += 1
                 continue
 
             comments = []
-            if comments_max_results > 0:
-                comments_url = "https://www.googleapis.com/youtube/v3/commentThreads"
-                comments_params = {
-                    "key": api_key,
-                    "part": "snippet",
-                    "videoId": video_id,
-                    "maxResults": comments_max_results,
-                    "textFormat": "plaintext",
-                    "order": "relevance",
-                }
-
-                try:
-                    comments_response, comments_json = request_json(comments_url, comments_params)
-                    if comments_response.status_code == 200:
-                        comments = extract_comments(comments_json.get("items", []))
-                    else:
-                        summary["errors"].append(
-                            f"[{skill}:{video_id}] comments request returned {_status_with_reason(comments_response.status_code, comments_json)}"
-                        )
-                        if _is_quota_error(comments_json):
-                            summary["quota_exceeded"] = True
-                            stop_due_to_quota = True
-                except requests.RequestException as e:
-                    summary["errors"].append(f"[{skill}:{video_id}] comments request failed: {e}")
 
             if stop_due_to_quota:
                 break
@@ -322,8 +313,8 @@ def run_ingestion(
                 "description": snippet.get("description", ""),
                 "viewCount": view_count,
                 "likeCount": like_count,
+                "commentCount": comment_count,
                 "tags": tags,
-                "comments": comments,
                 "duration": parse_duration(duration),
                 "ingested_timing": datetime.now(),
             }

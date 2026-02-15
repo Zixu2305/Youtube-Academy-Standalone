@@ -89,6 +89,17 @@ select {
     border-radius: 6px;
 }
 
+input.constraint-input,
+select.constraint-input,
+textarea.constraint-input {
+    max-width: 240px;
+}
+
+#additional_query {
+    max-width: 400px;
+    resize: vertical;
+}
+
 .skills {
     max-height: 280px;
     overflow-y: auto;
@@ -103,10 +114,72 @@ select {
     margin-bottom: 4px;
 }
 
+.skill-name {
+    display: inline-block;
+    padding: 4px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    background: #e5e7eb;
+    border: 1px solid #d1d5db;
+    transition: background-color 0.2s;
+}
+
+.skill-name:hover {
+    background: #d1d5db;
+}
+
+.skill-name.selected {
+    background: #3b82f6;
+    color: white;
+    border-color: #2563eb;
+}
+
+.skill-name.selected:hover {
+    background: #2563eb;
+}
+
 .skill-actions {
     margin-top: 8px;
     display: flex;
     gap: 8px;
+}
+
+.competencies, .proficiency-levels, .requirements {
+    max-height: 200px;
+    overflow-y: auto;
+    border: 1px solid #d1d5db;
+    padding: 10px;
+    border-radius: 6px;
+    background: #fafafa;
+}
+
+.competency-item, .proficiency-item, .requirement-item {
+    display: block;
+    margin-bottom: 4px;
+}
+
+.competency-name, .proficiency-name, .requirement-name {
+    display: inline-block;
+    padding: 4px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    background: #e5e7eb;
+    border: 1px solid #d1d5db;
+    transition: background-color 0.2s;
+}
+
+.competency-name:hover, .proficiency-name:hover, .requirement-name:hover {
+    background: #d1d5db;
+}
+
+.competency-name.selected, .proficiency-name.selected, .requirement-name.selected {
+    background: #3b82f6;
+    color: white;
+    border-color: #2563eb;
+}
+
+.competency-name.selected:hover, .proficiency-name.selected:hover, .requirement-name.selected:hover {
+    background: #2563eb;
 }
 
 .actions {
@@ -127,12 +200,6 @@ select {
     font-weight: 600;
 }
 
-.skill-count {
-    font-size: 13px;
-    color: #4b5563;
-    margin-bottom: 8px;
-}
-
 button {
     padding: 8px 12px;
     border: 1px solid #9ca3af;
@@ -151,6 +218,15 @@ button.primary {
 button:disabled {
     opacity: 0.6;
     cursor: not-allowed;
+}
+
+.requirement-display {
+    padding: 8px;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    background: #f9fafb;
+    min-height: 40px;
+    white-space: pre-wrap;
 }
 
 .status {

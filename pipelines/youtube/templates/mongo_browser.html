@@ -13,7 +13,7 @@
     </div>
     <div class="card">
         <h2 class="title">Browse Documents</h2>
-        <p class="hint">Use this section to find video records. Click a result's "View comments" button or paste a <code>videoId</code> below.</p>
+        <p class="hint">Use this section to find video records.</p>
         <div class="field two-col">
             <div>
                 <label for="mongo_collection_select">Collection</label>
@@ -47,21 +47,6 @@
         </div>
         <div id="mongo_browser_state" class="status">Waiting for selection.</div>
         <div id="mongo_browser_results" class="mongo-docs"></div>
-    </div>
-    <div class="card">
-        <h2 class="title">Comment Thread Lookup</h2>
-        <div class="field two-col">
-            <div>
-                <label for="comment_lookup_video_id">Video ID</label>
-                <input id="comment_lookup_video_id" type="text" placeholder="Paste YouTube videoId">
-            </div>
-            <div class="actions end">
-                <button type="button" id="comment_lookup_btn">View comments</button>
-                <button type="button" id="comment_clear_btn">Clear</button>
-            </div>
-        </div>
-        <div id="comment_lookup_state" class="status">Enter a video ID to load comment threads.</div>
-        <div id="comment_lookup_results" class="mongo-docs"></div>
     </div>
     <script src="{{ url_for('static', filename='mongo_browser.js') }}"></script>
 </body>
