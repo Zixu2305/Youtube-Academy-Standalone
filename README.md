@@ -300,7 +300,7 @@ If running locally, make sure `.env` includes `MONGO_HOST=127.0.0.1` (or `localh
 5. Set ingestion parameters:
    - `Search Max Results`, `Search Order`
    - `Comments Max Results`
-   - Optional constraints (`published_after`, `published_before`, `region_code`, `relevance_language`, `video_duration`, minimum views/likes)
+   - Optional constraints (`published_after`, `video_age` + unit, `region_code`, `relevance_language`, minimum views/likes/comments, video length range)
 6. Click `Fetch and Upsert Data`.
 7. Read run output from:
    - run state banner (`running/success/error/warning`)
