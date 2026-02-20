@@ -20,10 +20,7 @@
     const videoAgeUnitInput = document.getElementById("video_age_unit");
     const ageDateNote = document.getElementById("age_date_note");
     const additionalQueryInput = document.getElementById("additional_query");
-    const includeSectorQueryInput = document.getElementById("include_sector_query");
-    const includeSkillQueryInput = document.getElementById("include_skill_query");
-    const includeCompetencyQueryInput = document.getElementById("include_competency_query");
-    const includeRequirementQueryInput = document.getElementById("include_requirement_query");
+    /* Removed redundant include query inputs as they are now automatic */
     const maxVideoAgeInput = document.getElementById("max_video_age");
     const minViewCountInput = document.getElementById("min_view_count");
     const minLikeCountInput = document.getElementById("min_like_count");
@@ -465,10 +462,6 @@
             competency: selectedCompetency || "",
             proficiency: selectedProficiency || "",
             requirement: selectedRequirement || "",
-            include_sector: includeSectorQueryInput.checked,
-            include_skill: includeSkillQueryInput.checked,
-            include_competency: includeCompetencyQueryInput.checked,
-            include_requirement: includeRequirementQueryInput.checked,
             published_after: publishedAfterInput.value,
             max_video_age: maxVideoAgeInput.value,
             video_age_unit: videoAgeUnitInput.value,
@@ -681,20 +674,6 @@
             return;
         }
 
-        const hasCheckedQueryField =
-            includeSectorQueryInput.checked ||
-            includeSkillQueryInput.checked ||
-            includeCompetencyQueryInput.checked ||
-            includeRequirementQueryInput.checked;
-        const hasAdditionalQuery = additionalQueryInput.value.trim() !== "";
-        if (!hasCheckedQueryField && !hasAdditionalQuery) {
-            setRunState(
-                "Select at least one query field (Sector, Skill, Competencies, Requirement) or fill Additional Query.",
-                "error"
-            );
-            return;
-        }
-
         const payload = collectPayload();
         submitBtn.disabled = true;
         refreshMongoBtn.disabled = true;
@@ -763,22 +742,16 @@
         maxVideoAgeInput,
         videoAgeUnitInput,
         additionalQueryInput,
-        includeSectorQueryInput,
-        includeSkillQueryInput,
-        includeCompetencyQueryInput,
-        includeRequirementQueryInput,
-    ].forEach((el) => el.addEventListener("input", () => { syncTimeConstraints(); updateQuotaEstimate(); }));
+        /* Removed automatic query inputs */
+    ].forEach((el) => el.addEventListener("input", () => {
+        updateQuotaEstimate();
+    }));
 
     [maxVideoAgeInput, videoAgeUnitInput, publishedAfterInput].forEach((el) =>
         el.addEventListener("change", syncTimeConstraints)
     );
 
-    [
-        includeSectorQueryInput,
-        includeSkillQueryInput,
-        includeCompetencyQueryInput,
-        includeRequirementQueryInput,
-    ].forEach((el) => el.addEventListener("change", updateQuotaEstimate));
+    /* Removed change listeners for removed query inputs */
 
     refreshMongoBtn.addEventListener("click", refreshMongoStatus);
 

@@ -216,22 +216,10 @@ def _validate_fetch_payload(payload):
     if payload["min_comment_count"] < 0:
         errors.append("Minimum Comment Count cannot be negative.")
 
-    # ── query source check ───────────────────────────────────────
-    has_query_source = False
-    if payload.get("include_sector") and (payload.get("sector") or "").strip():
-        has_query_source = True
-    if payload.get("include_skill") and payload.get("selected_skills"):
-        has_query_source = True
-    if payload.get("include_competency") and (payload.get("competency") or "").strip():
-        has_query_source = True
-    if payload.get("include_requirement") and (payload.get("requirement") or "").strip():
-        has_query_source = True
-    if (payload.get("additional_query") or "").strip():
-        has_query_source = True
-
-    if not has_query_source:
-        errors.append("Select at least one query field (Sector, Skill, Competencies, Requirement) or fill Additional Query.")
-
+    # ── query source check (REMOVED) ─────────────────────────────
+    # New ingestion logic automatically builds advanced queries
+    # regardless of these flags. Validation removed.
+    
     return errors
 
 

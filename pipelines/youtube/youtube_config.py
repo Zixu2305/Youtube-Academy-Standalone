@@ -15,7 +15,7 @@ DEFAULT_DAILY_QUOTA_LIMIT = 10000
 DEFAULT_QUOTA_WARNING_THRESHOLD = 8000
 
 # ── Validation constants ────────────────────────────────────────────
-ALLOWED_SEARCH_ORDERS = {"relevance", "date", "rating", "viewCount", "title", "videoCount"}
+ALLOWED_SEARCH_ORDERS = {"relevance", "date", "viewCount", "title"}
 SEARCH_MAX_RESULTS_MIN = 1
 SEARCH_MAX_RESULTS_MAX = 50
 COMMENTS_MAX_RESULTS_MAX = 100

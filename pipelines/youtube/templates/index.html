@@ -76,27 +76,6 @@
                         <label for="additional_query">Additional Query (optional)</label>
                         <textarea id="additional_query" name="additional_query" placeholder="Additional search terms to combine with sector, skills, and proficiency description" class="constraint-input" rows="2"></textarea>
                     </div>
-                    <div>
-                        <label>Search Query Fields</label>
-                        <div class="query-source-grid">
-                            <label class="inline query-source-option" for="include_sector_query">
-                                <input id="include_sector_query" name="include_sector_query" type="checkbox">
-                                Sector
-                            </label>
-                            <label class="inline query-source-option" for="include_skill_query">
-                                <input id="include_skill_query" name="include_skill_query" type="checkbox">
-                                Skill
-                            </label>
-                            <label class="inline query-source-option" for="include_competency_query">
-                                <input id="include_competency_query" name="include_competency_query" type="checkbox">
-                                Competencies
-                            </label>
-                            <label class="inline query-source-option" for="include_requirement_query">
-                                <input id="include_requirement_query" name="include_requirement_query" type="checkbox">
-                                Requirement
-                            </label>
-                        </div>
-                    </div>
                 </div>
                 <div class="field">
                     <label for="min_view_count">Min View Count</label>
@@ -138,10 +117,8 @@
                     <select id="search_order" name="search_order" class="constraint-input">
                         <option value="relevance">relevance</option>
                         <option value="date">date</option>
-                        <option value="rating">rating</option>
                         <option value="viewCount">viewCount</option>
                         <option value="title">title</option>
-                        <option value="videoCount">videoCount</option>
                     </select>
                     <span class="field-error" id="err_search_order"></span>
                 </div>

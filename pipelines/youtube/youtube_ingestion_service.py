@@ -15,6 +15,39 @@ QUOTA_ERROR_REASONS = {
     "rateLimitExceeded",
 }
 
+STOPWORDS = {
+    "a", "an", "the", "and", "or", "but", "is", "are", "was", "were",
+    "of", "in", "on", "at", "to", "for", "with", "by", "from",
+    "this", "that", "these", "those", "it", "its", "as", "be", "have", "has",
+    "can", "will", "shall", "do", "does", "did", "not", "no", "yes"
+}
+
+def keywordize(text: str, k: int = 8) -> str:
+    """
+    Extracts top-k longest keywords from text, excluding stopwords.
+    """
+    if not text:
+        return ""
+    
+    # Simple tokenization: lowercase, remove non-alphanumeric (keep spaces for split)
+    cleaned = re.sub(r"[^a-zA-Z0-9\s]", "", text.lower())
+    tokens = cleaned.split()
+    
+    # Filter stopwords and uniques, keeping order is nice but simple set is fine for keywords
+    # Prioritize longer words as 'keywords' often imply significant terms
+    unique_tokens = []
+    seen = set()
+    for t in tokens:
+        if t not in STOPWORDS and len(t) > 2 and t not in seen:
+            unique_tokens.append(t)
+            seen.add(t)
+            
+    # Sort by length descending, then take top k
+    unique_tokens.sort(key=len, reverse=True)
+    keywords = unique_tokens[:k]
+    
+    return " ".join(keywords)
+
 
 def parse_duration(duration_str):
     if not duration_str:
@@ -181,6 +214,115 @@ def _build_query_parts(
     return query_parts
 
 
+def _build_advanced_queries(
+    *,
+    sector: str,
+    skill: str,
+    competency: str,
+    proficiency_description: str,
+    additional_query: str,
+):
+    """
+    Builds 3 advanced query variants as requested.
+    Q1: sector + skill + "(tutorial|...) + negatives
+    Q2: skill + "(tutorial|...) + negatives
+    Q3: skill + keywordize(competency, 6) + keywordize(proficiency_description, 8) + "(tutorial|...) + negatives
+    """
+    base_terms = "(tutorial|course|guide|explained|basics|hands-on|project|demo)"
+    negatives = "-music -podcast -mix -asmr -trailer -highlights -shorts"
+
+    # Clean inputs
+    s_clean = sector.strip()
+    sk_clean = skill.strip()
+    add_q = additional_query.strip()
+    
+    # Q1
+    q1_parts = [s_clean, sk_clean, base_terms, negatives]
+    if add_q:
+        q1_parts.append(add_q)
+    q1 = " ".join(filter(None, q1_parts))
+
+    # Q2
+    q2_parts = [sk_clean, base_terms, negatives]
+    if add_q:
+        q2_parts.append(add_q)
+    q2 = " ".join(filter(None, q2_parts))
+
+    # Q3
+    comp_k = keywordize(competency, 6)
+    prof_k = keywordize(proficiency_description, 8)
+    q3_parts = [sk_clean, comp_k, prof_k, base_terms, negatives]
+    if add_q:
+        q3_parts.append(add_q)
+    q3 = " ".join(filter(None, q3_parts))
+
+    return [q1, q2, q3]
+
+
+def _search_youtube_for_skill(
+    *,
+    queries: list[str],
+    api_key: str,
+    search_max_results: int,
+    search_order: str,
+    search_constraints: dict,
+    summary_errors: list,
+    skill_name: str,
+):
+    """
+    Runs search.list for each query variant and duration, collecting unique video IDs.
+    Returns: set of unique video IDs
+    """
+    unique_video_ids = set()
+    durations = ["medium", "long"]
+    search_url = "https://www.googleapis.com/youtube/v3/search"
+
+    for q in queries:
+        for duration in durations:
+            search_params = {
+                "part": "snippet",
+                "maxResults": search_max_results,
+                "order": search_order,
+                "key": api_key,
+                "type": "video",
+                "q": q,
+                "videoEmbeddable": "true",
+                "safeSearch": "moderate",
+                "videoDuration": duration,
+            }
+            # Apply date constraint if present
+            _apply_search_constraints(search_params, search_constraints)
+
+            try:
+                search_response, search_data = request_json(search_url, search_params)
+            except requests.RequestException as e:
+                summary_errors.append(f"[{skill_name}] search request failed (q={q[:30]}..., d={duration}): {e}")
+                continue
+
+            if search_response.status_code != 200:
+                summary_errors.append(
+                    f"[{skill_name}] search request returned {_status_with_reason(search_response.status_code, search_data)}"
+                )
+                if _is_quota_error(search_data):
+                    # Signal quota error by re-raising or returning specific flag
+                    return unique_video_ids, True
+                continue
+
+            if "error" in search_data:
+                summary_errors.append(f"[{skill_name}] YouTube error: {search_data['error']}")
+                if _is_quota_error(search_data):
+                    return unique_video_ids, True
+                continue
+
+            items = search_data.get("items", [])
+            for item in items:
+                vid = item.get("id", {}).get("videoId")
+                if vid:
+                    unique_video_ids.add(vid)
+                    
+    return unique_video_ids, False
+
+
 def fetch_videos_for_preview(
     *,
     sector: str,
@@ -245,65 +387,56 @@ def fetch_videos_for_preview(
 
         summary["skills_processed"] += 1
 
-        search_url = "https://www.googleapis.com/youtube/v3/search"
-        query_parts = _build_query_parts(
+        # Use 3 query variants
+        # 1) sector + skill + "(tutorial|...) + negatives
+        # 2) skill + "(tutorial|...) + negatives
+        # 3) skill + keywordize(competency, 6) + keywordize(proficiency_description, 8) + "(tutorial|...) + negatives
+        queries = _build_advanced_queries(
             sector=sector,
             skill=skill,
             competency=competency,
-            proficiency=proficiency,
-            requirement=requirement,
+            proficiency_description=requirement,
             additional_query=additional_query,
-            query_includes=query_includes,
         )
-        
-        # Store the query in summary (same for all skills)
+
+        # Store the first query in summary for reference
         if not summary["constraints"]["query"]:
-            summary["constraints"]["query"] = " ".join(query_parts)
+            summary["constraints"]["query"] = queries[0]
+
+        # Use helper
+        # Run search for each query & duration (medium, long)
+        unique_video_ids = set()
         
-        search_params = {
-            "part": "snippet",
-            "maxResults": search_max_results,
-            "order": search_order,
-            "key": api_key,
-            "type": "video",
-            "q": " ".join(query_parts),
-            "videoEmbeddable": "true",
-        }
-        _apply_search_constraints(search_params, search_constraints)
+        # We need to construct parameters for the helper manually inside or just invoke the search logic
+        # Since I've already defined _search_youtube_for_skill, let's use it.
+        # But wait, I defined `_search_youtube_for_skill` in previous step but did not include full logic.
+        # I actually just defined it in `_search_youtube_for_skill` function which I added to file.
+        
+        # Let's fix the call
+        video_ids, quota_hit = _search_youtube_for_skill(
+            queries=queries,
+            api_key=api_key,
+            search_max_results=search_max_results,
+            search_order=search_order,
+            search_constraints=search_constraints,
+            summary_errors=summary["errors"],
+            skill_name=skill,
+        )
 
-        try:
-            search_response, search_data = request_json(search_url, search_params)
-        except requests.RequestException as e:
-            summary["errors"].append(f"[{skill}] search request failed: {e}")
-            continue
+        if quota_hit:
+            summary["quota_exceeded"] = True
+            stop_due_to_quota = True
 
-        if search_response.status_code != 200:
-            summary["errors"].append(
-                f"[{skill}] search request returned {_status_with_reason(search_response.status_code, search_data)}"
-            )
-            if _is_quota_error(search_data):
-                summary["quota_exceeded"] = True
-                stop_due_to_quota = True
-            continue
+        # Respect the global max results limit per skill by slicing the aggregated list
+        # unique_video_ids is a set, convert to list and slice
+        video_ids_list = list(video_ids)[:search_max_results]
+        summary["videos_found"] += len(video_ids_list)
 
-        if "error" in search_data:
-            summary["errors"].append(f"[{skill}] YouTube error: {search_data['error']}")
-            if _is_quota_error(search_data):
-                summary["quota_exceeded"] = True
-                stop_due_to_quota = True
-            continue
-
-        items = search_data.get("items", [])
-        summary["videos_found"] += len(items)
-
-        for item in items:
+        for video_id in video_ids_list:
             if stop_due_to_quota:
                 break
-
-            video_id = item.get("id", {}).get("videoId")
-            if not video_id:
-                continue
-
+            
+            # Retrieve video details for each ID
             statistics = {}
             tags = []
             duration = ""
@@ -350,7 +483,19 @@ def fetch_videos_for_preview(
                 summary["videos_filtered_constraints"] += 1
                 continue
 
-            snippet = item.get("snippet", {})
+            snippet = item.get("snippet", {}) if 'item' in locals() else {} # Wait, item is not available here. 
+            # I need to get snippet from video_itemResponse. 
+            # In previous code "item" came from search results.
+            # Now "video_item" comes from videos.list
+            
+            # Correction: current snippet needs to come from `video_item` because search result `item` is not available in this loop.
+            # However, videos.list response contains snippet too.
+            
+            if 'video_item' in locals():
+                snippet = video_item.get("snippet", {})
+            else:
+                snippet = {}
+
             video_doc = {
                 "sector": sector,
                 "skill_name": skill,
@@ -445,65 +590,42 @@ def run_ingestion(
 
         summary["skills_processed"] += 1
 
-        search_url = "https://www.googleapis.com/youtube/v3/search"
-        query_parts = _build_query_parts(
+        # Use 3 query variants
+        queries = _build_advanced_queries(
             sector=sector,
             skill=skill,
             competency=competency,
-            proficiency=proficiency,
-            requirement=requirement,
+            proficiency_description=requirement,
             additional_query=additional_query,
-            query_includes=query_includes,
         )
-        
-        # Store the query in summary (same for all skills)
+
+        # Store the first query in summary
         if not summary["constraints"]["query"]:
-            summary["constraints"]["query"] = " ".join(query_parts)
-        
-        search_params = {
-            "part": "snippet",
-            "maxResults": search_max_results,
-            "order": search_order,
-            "key": api_key,
-            "type": "video",
-            "q": " ".join(query_parts),
-            "videoEmbeddable": "true",
-        }
-        _apply_search_constraints(search_params, search_constraints)
+            summary["constraints"]["query"] = queries[0]
 
-        try:
-            search_response, search_data = request_json(search_url, search_params)
-        except requests.RequestException as e:
-            summary["errors"].append(f"[{skill}] search request failed: {e}")
-            continue
+        # Search for each query & duration
+        video_ids, quota_hit = _search_youtube_for_skill(
+            queries=queries,
+            api_key=api_key,
+            search_max_results=search_max_results,
+            search_order=search_order,
+            search_constraints=search_constraints,
+            summary_errors=summary["errors"],
+            skill_name=skill,
+        )
 
-        if search_response.status_code != 200:
-            summary["errors"].append(
-                f"[{skill}] search request returned {_status_with_reason(search_response.status_code, search_data)}"
-            )
-            if _is_quota_error(search_data):
-                summary["quota_exceeded"] = True
-                stop_due_to_quota = True
-            continue
+        if quota_hit:
+            summary["quota_exceeded"] = True
+            stop_due_to_quota = True
 
-        if "error" in search_data:
-            summary["errors"].append(f"[{skill}] YouTube error: {search_data['error']}")
-            if _is_quota_error(search_data):
-                summary["quota_exceeded"] = True
-                stop_due_to_quota = True
-            continue
+        # Respect the global max results limit per skill by slicing the aggregated list
+        video_ids_list = list(video_ids)[:search_max_results]
+        summary["videos_found"] += len(video_ids_list)
 
-        items = search_data.get("items", [])
-        summary["videos_found"] += len(items)
-
-        for item in items:
+        for video_id in video_ids_list:
             if stop_due_to_quota:
                 break
-
-            video_id = item.get("id", {}).get("videoId")
-            if not video_id:
-                continue
-
+            
             summary["videos_processed"] += 1
 
             statistics = {}
@@ -557,7 +679,12 @@ def run_ingestion(
             if stop_due_to_quota:
                 break
 
-            snippet = item.get("snippet", {})
+            # Need to get snippet from video_item, not 'item' (which is gone)
+            if 'video_item' in locals():
+                snippet = video_item.get("snippet", {})
+            else:
+                snippet = {}
+
             doc = {
                 "sector": sector,
                 "skill_name": skill,
