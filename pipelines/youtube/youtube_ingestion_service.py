@@ -126,20 +126,8 @@ def _apply_search_constraints(search_params: dict, search_constraints: dict):
     published_after = normalize_rfc3339_date(
         search_constraints.get("published_after", ""), end_of_day=False
     )
-    published_before = normalize_rfc3339_date(
-        search_constraints.get("published_before", ""), end_of_day=True
-    )
-    region_code = search_constraints.get("region_code", "").strip()
-    relevance_language = search_constraints.get("relevance_language", "").strip()
-
     if published_after:
         search_params["publishedAfter"] = published_after
-    if published_before:
-        search_params["publishedBefore"] = published_before
-    if region_code:
-        search_params["regionCode"] = region_code
-    if relevance_language:
-        search_params["relevanceLanguage"] = relevance_language
 
 
 def _normalize_query_includes(query_includes: dict | None):
@@ -235,9 +223,6 @@ def fetch_videos_for_preview(
             "min_comment_count": max(0, min_comment_count),
             "max_video_age": max(0, max_video_age),
             "published_after": search_constraints.get("published_after", ""),
-            "published_before": search_constraints.get("published_before", ""),
-            "region_code": search_constraints.get("region_code", ""),
-            "relevance_language": search_constraints.get("relevance_language", ""),
             "competency": competency,
             "proficiency": proficiency,
             "requirement": requirement,
@@ -438,9 +423,6 @@ def run_ingestion(
             "min_comment_count": max(0, min_comment_count),
             "max_video_age": max(0, max_video_age),
             "published_after": search_constraints.get("published_after", ""),
-            "published_before": search_constraints.get("published_before", ""),
-            "region_code": search_constraints.get("region_code", ""),
-            "relevance_language": search_constraints.get("relevance_language", ""),
             "competency": competency,
             "proficiency": proficiency,
             "requirement": requirement,

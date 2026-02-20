@@ -14,6 +14,15 @@ RECENT_ROWS_LIMIT = 10
 DEFAULT_DAILY_QUOTA_LIMIT = 10000
 DEFAULT_QUOTA_WARNING_THRESHOLD = 8000
 
+# ── Validation constants ────────────────────────────────────────────
+ALLOWED_SEARCH_ORDERS = {"relevance", "date", "rating", "viewCount", "title", "videoCount"}
+SEARCH_MAX_RESULTS_MIN = 1
+SEARCH_MAX_RESULTS_MAX = 50
+COMMENTS_MAX_RESULTS_MAX = 100
+
+VIDEO_AGE_UNITS = {"days", "weeks", "months", "years"}
+VIDEO_AGE_UNIT_TO_DAYS = {"days": 1, "weeks": 7, "months": 30, "years": 365}
+
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 

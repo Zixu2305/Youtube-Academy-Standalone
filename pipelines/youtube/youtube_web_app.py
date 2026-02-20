@@ -1,14 +1,19 @@
 import json
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from uuid import uuid4
 
 from flask import Flask, jsonify, render_template, request
 from bson import ObjectId
 
 from youtube_config import (
+    ALLOWED_SEARCH_ORDERS,
     DEFAULT_DAILY_QUOTA_LIMIT,
     DEFAULT_QUOTA_WARNING_THRESHOLD,
+    SEARCH_MAX_RESULTS_MAX,
+    SEARCH_MAX_RESULTS_MIN,
+    VIDEO_AGE_UNITS,
+    VIDEO_AGE_UNIT_TO_DAYS,
     env,
     to_int,
 )
@@ -82,10 +87,8 @@ def _parse_fetch_payload(req):
             "include_competency": _to_bool(data.get("include_competency", False)),
             "include_requirement": _to_bool(data.get("include_requirement", False)),
             "published_after": data.get("published_after", "") or "",
-            "published_before": data.get("published_before", "") or "",
             "max_video_age": to_int(data.get("max_video_age", 0), 0),
-            "region_code": data.get("region_code", "") or "",
-            "relevance_language": data.get("relevance_language", "") or "",
+            "video_age_unit": data.get("video_age_unit", "days") or "days",
             "additional_query": data.get("additional_query", "") or "",
             "min_view_count": to_int(data.get("min_view_count", 0), 0),
             "min_like_count": to_int(data.get("min_like_count", 0), 0),
@@ -117,10 +120,8 @@ def _parse_fetch_payload(req):
         "include_competency": _to_bool(req.form.get("include_competency", "false")),
         "include_requirement": _to_bool(req.form.get("include_requirement", "false")),
         "published_after": req.form.get("published_after", ""),
-        "published_before": req.form.get("published_before", ""),
         "max_video_age": to_int(req.form.get("max_video_age", 0), 0),
-        "region_code": req.form.get("region_code", ""),
-        "relevance_language": req.form.get("relevance_language", ""),
+        "video_age_unit": req.form.get("video_age_unit", "days"),
         "additional_query": req.form.get("additional_query", ""),
         "min_view_count": to_int(req.form.get("min_view_count", 0), 0),
         "min_like_count": to_int(req.form.get("min_like_count", 0), 0),
@@ -131,28 +132,91 @@ def _parse_fetch_payload(req):
     return payload
 
 
-def _validate_fetch_payload(payload):
-    if not payload["sector"]:
-        return "Sector is required."
-    if not payload["api_key"]:
-        return "YouTube API key is required."
-    if not payload["selected_skills"]:
-        return "Select a skill."
-    if payload["search_max_results"] <= 0:
-        return "Search Max Results must be greater than 0."
-    if payload["min_view_count"] < 0:
-        return "Minimum view count cannot be negative."
-    if payload["min_like_count"] < 0:
-        return "Minimum like count cannot be negative."
-    if payload["min_video_length"] < 0:
-        return "Minimum video length cannot be negative."
-    if payload["max_video_length"] < 0:
-        return "Maximum video length cannot be negative."
-    if payload["min_comment_count"] < 0:
-        return "Minimum comment count cannot be negative."
-    if payload["max_video_age"] < 0:
-        return "Maximum video age cannot be negative."
+def _resolve_video_age_to_published_after(payload):
+    """If max_video_age is set, compute published_after from it.
 
+    If published_after is already set, video_age is ignored.
+    Mutates *payload* in place.
+    """
+    age = payload.get("max_video_age", 0)
+    if age <= 0:
+        return
+    if payload.get("published_after", "").strip():
+        # Manual date takes precedence; clear the age so it doesn't confuse
+        # downstream code.
+        return
+    unit = payload.get("video_age_unit", "days")
+    multiplier = VIDEO_AGE_UNIT_TO_DAYS.get(unit, 1)
+    total_days = age * multiplier
+    payload["max_video_age"] = total_days  # normalize to days for the service
+    cutoff = datetime.now() - timedelta(days=total_days)
+    payload["published_after"] = cutoff.strftime("%Y-%m-%d")
+
+
+def _validate_fetch_payload(payload):
+    """Return a list of error strings (empty list == valid)."""
+    errors = []
+
+    # ── Required fields ──────────────────────────────────────────
+    if not payload["sector"]:
+        errors.append("Sector is required.")
+    if not payload["api_key"]:
+        errors.append("YouTube API key is required.")
+    if not payload["selected_skills"]:
+        errors.append("Select a skill.")
+
+    # ── search_max_results ───────────────────────────────────────
+    smr = payload["search_max_results"]
+    if smr < SEARCH_MAX_RESULTS_MIN or smr > SEARCH_MAX_RESULTS_MAX:
+        errors.append(
+            f"Search Max Results must be between {SEARCH_MAX_RESULTS_MIN} and {SEARCH_MAX_RESULTS_MAX}."
+        )
+
+    # ── search_order ─────────────────────────────────────────────
+    if payload["search_order"] not in ALLOWED_SEARCH_ORDERS:
+        errors.append(
+            f"Search Order must be one of: {', '.join(sorted(ALLOWED_SEARCH_ORDERS))}."
+        )
+
+    # ── published_after ──────────────────────────────────────────
+    pa = payload.get("published_after", "").strip()
+    if pa:
+        try:
+            pa_date = datetime.strptime(pa, "%Y-%m-%d")
+            if pa_date > datetime.now():
+                errors.append("Published After date cannot be in the future.")
+        except ValueError:
+            errors.append("Published After must be a valid date (YYYY-MM-DD).")
+
+    # ── max_video_age + video_age_unit ───────────────────────────
+    age = payload.get("max_video_age", 0)
+    unit = payload.get("video_age_unit", "days")
+    if age < 0:
+        errors.append("Video Age cannot be negative.")
+    if age > 0 and unit not in VIDEO_AGE_UNITS:
+        errors.append(f"Video Age Unit must be one of: {', '.join(sorted(VIDEO_AGE_UNITS))}.")
+    if age > 0 and pa:
+        errors.append("Provide either Published After or Video Age, not both.")
+
+    # ── numeric min/max constraints ──────────────────────────────
+    if payload["min_view_count"] < 0:
+        errors.append("Minimum View Count cannot be negative.")
+    if payload["min_like_count"] < 0:
+        errors.append("Minimum Like Count cannot be negative.")
+    if payload["min_video_length"] < 0:
+        errors.append("Minimum Video Length cannot be negative.")
+    if payload["max_video_length"] < 0:
+        errors.append("Maximum Video Length cannot be negative.")
+    if (
+        payload["min_video_length"] > 0
+        and payload["max_video_length"] > 0
+        and payload["min_video_length"] > payload["max_video_length"]
+    ):
+        errors.append("Minimum Video Length cannot exceed Maximum Video Length.")
+    if payload["min_comment_count"] < 0:
+        errors.append("Minimum Comment Count cannot be negative.")
+
+    # ── query source check ───────────────────────────────────────
     has_query_source = False
     if payload.get("include_sector") and (payload.get("sector") or "").strip():
         has_query_source = True
@@ -166,9 +230,9 @@ def _validate_fetch_payload(payload):
         has_query_source = True
 
     if not has_query_source:
-        return "Select at least one query field (Sector, Skill, Competencies, Requirement) or fill Additional Query."
+        errors.append("Select at least one query field (Sector, Skill, Competencies, Requirement) or fill Additional Query.")
 
-    return None
+    return errors
 
 
 def _build_quota_context(payload):
@@ -244,6 +308,7 @@ def create_app():
     @app.route("/quota_estimate", methods=["POST"])
     def quota_estimate():
         payload = _parse_fetch_payload(request)
+        _resolve_video_age_to_published_after(payload)
         quota = _build_quota_context(payload)
         return jsonify({"ok": True, "quota": quota})
 
@@ -356,9 +421,10 @@ def create_app():
         from youtube_ingestion_service import fetch_videos_for_preview
         
         payload = _parse_fetch_payload(request)
-        validation_error = _validate_fetch_payload(payload)
-        if validation_error:
-            return jsonify({"ok": False, "error": validation_error}), 400
+        validation_errors = _validate_fetch_payload(payload)
+        if validation_errors:
+            return jsonify({"ok": False, "error": " ".join(validation_errors), "errors": validation_errors}), 400
+        _resolve_video_age_to_published_after(payload)
 
         try:
             videos, summary = fetch_videos_for_preview(
@@ -385,9 +451,6 @@ def create_app():
                 },
                 search_constraints={
                     "published_after": payload["published_after"],
-                    "published_before": payload["published_before"],
-                    "region_code": payload["region_code"],
-                    "relevance_language": payload["relevance_language"],
                 },
             )
             
@@ -488,9 +551,10 @@ def create_app():
     @app.route("/fetch", methods=["POST"])
     def fetch():
         payload = _parse_fetch_payload(request)
-        validation_error = _validate_fetch_payload(payload)
-        if validation_error:
-            return jsonify({"ok": False, "error": validation_error}), 400
+        validation_errors = _validate_fetch_payload(payload)
+        if validation_errors:
+            return jsonify({"ok": False, "error": " ".join(validation_errors), "errors": validation_errors}), 400
+        _resolve_video_age_to_published_after(payload)
 
         client = None
         run_doc_id = None
@@ -516,10 +580,8 @@ def create_app():
                     "search_max_results": payload["search_max_results"],
                     "search_order": payload["search_order"],
                     "published_after": payload["published_after"],
-                    "published_before": payload["published_before"],
                     "max_video_age": payload["max_video_age"],
-                    "region_code": payload["region_code"],
-                    "relevance_language": payload["relevance_language"],
+                    "video_age_unit": payload["video_age_unit"],
                     "min_view_count": payload["min_view_count"],
                     "min_like_count": payload["min_like_count"],
                     "min_video_length": payload["min_video_length"],
@@ -557,9 +619,6 @@ def create_app():
                 },
                 search_constraints={
                     "published_after": payload["published_after"],
-                    "published_before": payload["published_before"],
-                    "region_code": payload["region_code"],
-                    "relevance_language": payload["relevance_language"],
                 },
             )
             summary["mongo_status"] = mongo_status_snapshot(videos_collection)

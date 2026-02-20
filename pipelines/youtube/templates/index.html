@@ -48,30 +48,29 @@
                 </div>
 
                 <h3 class="subheader"><u>Search Constraints:</u></h3>
-                <div class="field two-col">
-                    <div>
-                        <label for="published_before">Published Before</label>
-                        <input id="published_before" name="published_before" type="date" class="constraint-input">
-                    </div>
-                    <div>
-                        <label for="published_after">Published After</label>
-                        <input id="published_after" name="published_after" type="date" class="constraint-input">
-                    </div>
-                </div>
                 <div class="field">
-                    <label for="max_video_age">Max Video Age (days)</label>
-                    <input id="max_video_age" name="max_video_age" type="number" min="0" value="0" class="constraint-input">
+                    <label for="published_after">Published After</label>
+                    <input id="published_after" name="published_after" type="date" class="constraint-input">
+                    <span class="field-error" id="err_published_after"></span>
                 </div>
+                <p class="field-note" style="margin:-6px 0 8px; display:block;">Use <strong>either</strong> Published After <strong>or</strong> Video Age — not both.</p>
                 <div class="field two-col">
                     <div>
-                        <label for="region_code">Region Code (optional)</label>
-                        <input id="region_code" name="region_code" placeholder="e.g. SG or US" class="constraint-input">
+                        <label for="max_video_age">Video Age (max)</label>
+                        <input id="max_video_age" name="max_video_age" type="number" min="0" value="0" class="constraint-input">
+                        <span class="field-error" id="err_max_video_age"></span>
                     </div>
                     <div>
-                        <label for="relevance_language">Relevance Language (optional)</label>
-                        <input id="relevance_language" name="relevance_language" placeholder="e.g. en" class="constraint-input">
+                        <label for="video_age_unit">Unit</label>
+                        <select id="video_age_unit" name="video_age_unit" class="constraint-input">
+                            <option value="days" selected>days</option>
+                            <option value="weeks">weeks</option>
+                            <option value="months">months</option>
+                            <option value="years">years</option>
+                        </select>
                     </div>
                 </div>
+                <div class="field-note" id="age_date_note" style="display:none;"></div>
                 <div class="field two-col">
                     <div>
                         <label for="additional_query">Additional Query (optional)</label>
@@ -102,31 +101,37 @@
                 <div class="field">
                     <label for="min_view_count">Min View Count</label>
                     <input id="min_view_count" name="min_view_count" type="number" min="0" value="0" class="constraint-input">
+                    <span class="field-error" id="err_min_view_count"></span>
                 </div>
                 <div class="field two-col">
                     <div>
                         <label for="min_video_length">Minimum Video Length (minutes)</label>
                         <input id="min_video_length" name="min_video_length" type="number" min="0" value="0" class="constraint-input">
+                        <span class="field-error" id="err_min_video_length"></span>
                     </div>
                     <div>
                         <label for="max_video_length">Maximum Video Length (minutes)</label>
                         <input id="max_video_length" name="max_video_length" type="number" min="0" value="0" class="constraint-input">
+                        <span class="field-error" id="err_max_video_length"></span>
                     </div>
                 </div>
                 <div class="field two-col">
                     <div>
                         <label for="min_comment_count">Min Comment Count</label>
                         <input id="min_comment_count" name="min_comment_count" type="number" min="0" value="0" class="constraint-input">
+                        <span class="field-error" id="err_min_comment_count"></span>
                     </div>
                     <div>
                         <label for="min_like_count">Min Like Count</label>
                         <input id="min_like_count" name="min_like_count" type="number" min="0" value="0" class="constraint-input">
+                        <span class="field-error" id="err_min_like_count"></span>
                     </div>
                 </div>
 
                 <div class="field">
                     <label for="search_max_results">Search Max Results</label>
-                    <input id="search_max_results" name="search_max_results" value="5" type="number" min="1" class="constraint-input">
+                    <input id="search_max_results" name="search_max_results" value="5" type="number" min="1" max="50" class="constraint-input">
+                    <span class="field-error" id="err_search_max_results"></span>
                 </div>
                 <div class="field">
                     <label for="search_order">Search Order</label>
@@ -138,6 +143,7 @@
                         <option value="title">title</option>
                         <option value="videoCount">videoCount</option>
                     </select>
+                    <span class="field-error" id="err_search_order"></span>
                 </div>
 
                 <div id="quota_banner" class="status">Quota estimate pending...</div>

@@ -17,9 +17,8 @@
     const quotaBanner = document.getElementById("quota_banner");
     const searchMaxResultsInput = document.getElementById("search_max_results");
     const publishedAfterInput = document.getElementById("published_after");
-    const publishedBeforeInput = document.getElementById("published_before");
-    const regionCodeInput = document.getElementById("region_code");
-    const relevanceLanguageInput = document.getElementById("relevance_language");
+    const videoAgeUnitInput = document.getElementById("video_age_unit");
+    const ageDateNote = document.getElementById("age_date_note");
     const additionalQueryInput = document.getElementById("additional_query");
     const includeSectorQueryInput = document.getElementById("include_sector_query");
     const includeSkillQueryInput = document.getElementById("include_skill_query");
@@ -40,6 +39,7 @@
     let selectedProficiency = null;
     let selectedRequirement = null;
     let previewData = null;
+    let totalPreviewUnits = 0;
 
     function esc(text) {
         const value = String(text ?? "");
@@ -69,11 +69,12 @@
             return;
         }
 
-        const msg = `Estimated units: ${quota.estimated_units} / ${quota.daily_limit} (remaining after run: ${quota.remaining_after_run})`;
-        if (quota.level === "over_limit") {
+        const adjustedRemaining = quota.remaining_after_run - totalPreviewUnits;
+        const msg = `Estimated units: ${quota.estimated_units} / ${quota.daily_limit} (remaining after run: ${adjustedRemaining})`;
+        if (adjustedRemaining <= 0 || quota.level === "over_limit") {
             quotaBanner.classList.add("error");
             quotaBanner.textContent = `${msg}. This likely exceeds daily quota.`;
-        } else if (quota.level === "warning") {
+        } else if (adjustedRemaining <= (quota.daily_limit - quota.warning_threshold) || quota.level === "warning") {
             quotaBanner.classList.add("warning");
             quotaBanner.textContent = `${msg}. Warning: this is near your daily quota.`;
         } else {
@@ -305,6 +306,155 @@
         renderSkills(skills);
     }
 
+    // ── Client-side validation ──────────────────────────────────────
+    function clearAllErrors() {
+        document.querySelectorAll(".field-error").forEach((el) => {
+            el.textContent = "";
+        });
+        document.querySelectorAll(".constraint-input.invalid").forEach((el) => {
+            el.classList.remove("invalid");
+        });
+    }
+
+    function setFieldError(fieldId, message) {
+        const errSpan = document.getElementById("err_" + fieldId);
+        const input = document.getElementById(fieldId);
+        if (errSpan) errSpan.textContent = message;
+        if (input) input.classList.add("invalid");
+    }
+
+    function validateConstraints() {
+        clearAllErrors();
+        const errors = [];
+
+        // search_max_results
+        const smr = parseInt(searchMaxResultsInput.value, 10);
+        if (isNaN(smr) || smr < 1 || smr > 50) {
+            errors.push("search_max_results");
+            setFieldError("search_max_results", "Must be between 1 and 50.");
+        }
+
+        // published_after
+        const paVal = publishedAfterInput.value;
+        if (paVal) {
+            const paDate = new Date(paVal);
+            if (isNaN(paDate.getTime())) {
+                errors.push("published_after");
+                setFieldError("published_after", "Invalid date.");
+            } else if (paDate > new Date()) {
+                errors.push("published_after");
+                setFieldError("published_after", "Cannot be in the future.");
+            }
+        }
+
+        // max_video_age
+        const age = parseInt(maxVideoAgeInput.value, 10);
+        if (isNaN(age) || age < 0) {
+            errors.push("max_video_age");
+            setFieldError("max_video_age", "Must be 0 or a positive number.");
+        }
+
+        // conflict: both published_after and video_age
+        if (paVal && age > 0) {
+            errors.push("max_video_age");
+            setFieldError("max_video_age", "Use either Published After or Video Age, not both.");
+            setFieldError("published_after", "Use either Published After or Video Age, not both.");
+        }
+
+        // min_view_count
+        const mvc = parseInt(minViewCountInput.value, 10);
+        if (isNaN(mvc) || mvc < 0) {
+            errors.push("min_view_count");
+            setFieldError("min_view_count", "Cannot be negative.");
+        }
+
+        // min_like_count
+        const mlc = parseInt(minLikeCountInput.value, 10);
+        if (isNaN(mlc) || mlc < 0) {
+            errors.push("min_like_count");
+            setFieldError("min_like_count", "Cannot be negative.");
+        }
+
+        // min_video_length
+        const minVL = parseInt(minVideoLengthInput.value, 10);
+        if (isNaN(minVL) || minVL < 0) {
+            errors.push("min_video_length");
+            setFieldError("min_video_length", "Cannot be negative.");
+        }
+
+        // max_video_length
+        const maxVL = parseInt(maxVideoLengthInput.value, 10);
+        if (isNaN(maxVL) || maxVL < 0) {
+            errors.push("max_video_length");
+            setFieldError("max_video_length", "Cannot be negative.");
+        }
+
+        // min > max video length
+        if (minVL > 0 && maxVL > 0 && minVL > maxVL) {
+            errors.push("min_video_length");
+            setFieldError("min_video_length", "Cannot exceed maximum.");
+            setFieldError("max_video_length", "Must be ≥ minimum.");
+        }
+
+        // min_comment_count
+        const mcc = parseInt(minCommentCountInput.value, 10);
+        if (isNaN(mcc) || mcc < 0) {
+            errors.push("min_comment_count");
+            setFieldError("min_comment_count", "Cannot be negative.");
+        }
+
+        return errors;
+    }
+
+    function updateAgeDateNote() {
+        const age = parseInt(maxVideoAgeInput.value, 10);
+        const unit = videoAgeUnitInput.value;
+        const paVal = publishedAfterInput.value;
+        if (age > 0 && !paVal) {
+            const multipliers = { days: 1, weeks: 7, months: 30, years: 365 };
+            const totalDays = age * (multipliers[unit] || 1);
+            const cutoff = new Date();
+            cutoff.setDate(cutoff.getDate() - totalDays);
+            ageDateNote.textContent = `Videos published after ≈ ${cutoff.toISOString().slice(0, 10)}`;
+            ageDateNote.style.display = "block";
+        } else {
+            ageDateNote.style.display = "none";
+        }
+    }
+
+    function syncTimeConstraints() {
+        const paHasValue = publishedAfterInput.value.trim() !== "";
+        const ageHasValue = !isNaN(parseInt(maxVideoAgeInput.value, 10)) && parseInt(maxVideoAgeInput.value, 10) > 0;
+
+        if (paHasValue) {
+            // Published After is active → disable video age
+            maxVideoAgeInput.disabled = true;
+            videoAgeUnitInput.disabled = true;
+            maxVideoAgeInput.classList.add("disabled-field");
+            videoAgeUnitInput.classList.add("disabled-field");
+            publishedAfterInput.disabled = false;
+            publishedAfterInput.classList.remove("disabled-field");
+        } else if (ageHasValue) {
+            // Video Age is active → disable published after
+            publishedAfterInput.disabled = true;
+            publishedAfterInput.classList.add("disabled-field");
+            maxVideoAgeInput.disabled = false;
+            videoAgeUnitInput.disabled = false;
+            maxVideoAgeInput.classList.remove("disabled-field");
+            videoAgeUnitInput.classList.remove("disabled-field");
+        } else {
+            // Neither has a value → enable both
+            publishedAfterInput.disabled = false;
+            publishedAfterInput.classList.remove("disabled-field");
+            maxVideoAgeInput.disabled = false;
+            videoAgeUnitInput.disabled = false;
+            maxVideoAgeInput.classList.remove("disabled-field");
+            videoAgeUnitInput.classList.remove("disabled-field");
+        }
+
+        updateAgeDateNote();
+    }
+
     function collectPayload() {
         return {
             sector: sectorSelect.value,
@@ -320,10 +470,8 @@
             include_competency: includeCompetencyQueryInput.checked,
             include_requirement: includeRequirementQueryInput.checked,
             published_after: publishedAfterInput.value,
-            published_before: publishedBeforeInput.value,
             max_video_age: maxVideoAgeInput.value,
-            region_code: regionCodeInput.value,
-            relevance_language: relevanceLanguageInput.value,
+            video_age_unit: videoAgeUnitInput.value,
             additional_query: additionalQueryInput.value,
             min_view_count: minViewCountInput.value,
             min_like_count: minLikeCountInput.value,
@@ -520,6 +668,14 @@
 
     fetchForm.addEventListener("submit", async (event) => {
         event.preventDefault();
+
+        // Run client-side validation first
+        const validationErrors = validateConstraints();
+        if (validationErrors.length > 0) {
+            setRunState("Fix the highlighted constraint errors before submitting.", "error");
+            return;
+        }
+
         if (!selectedSkill) {
             setRunState("Select a skill before running.", "error");
             return;
@@ -561,6 +717,7 @@
             }
 
             previewData = result;
+            totalPreviewUnits += (result.quota && result.quota.estimated_units) ? result.quota.estimated_units : 0;
             setRunState("Videos fetched successfully. Review and select videos to upsert.", "success");
             renderSummary(result.summary || {}, null);
             setQuotaBanner(result.quota || null);
@@ -603,16 +760,18 @@
         maxVideoLengthInput,
         minCommentCountInput,
         publishedAfterInput,
-        publishedBeforeInput,
         maxVideoAgeInput,
-        regionCodeInput,
-        relevanceLanguageInput,
+        videoAgeUnitInput,
         additionalQueryInput,
         includeSectorQueryInput,
         includeSkillQueryInput,
         includeCompetencyQueryInput,
         includeRequirementQueryInput,
-    ].forEach((el) => el.addEventListener("input", updateQuotaEstimate));
+    ].forEach((el) => el.addEventListener("input", () => { syncTimeConstraints(); updateQuotaEstimate(); }));
+
+    [maxVideoAgeInput, videoAgeUnitInput, publishedAfterInput].forEach((el) =>
+        el.addEventListener("change", syncTimeConstraints)
+    );
 
     [
         includeSectorQueryInput,
