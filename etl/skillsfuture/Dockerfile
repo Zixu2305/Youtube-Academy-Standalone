@@ -2,7 +2,7 @@
 FROM python:3.11-slim
 WORKDIR /app
 
-COPY etl/skillsfuture/requirements.txt /app/requirements.txt
+COPY requirements/skillsfuture.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY pipelines/skillsfuture/ /app/pipelines/skillsfuture/

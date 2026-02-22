@@ -1,0 +1,9 @@
+-r skillsfuture.txt
+-r youtube.txt
+-r vector_search.txt
+
+pytest
+pytest-cov
+ruff
+black
+mypy

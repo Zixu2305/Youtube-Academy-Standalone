@@ -407,12 +407,6 @@ def fetch_videos_for_preview(
         # Run search for each query & duration (medium, long)
         unique_video_ids = set()
         
-        # We need to construct parameters for the helper manually inside or just invoke the search logic
-        # Since I've already defined _search_youtube_for_skill, let's use it.
-        # But wait, I defined `_search_youtube_for_skill` in previous step but did not include full logic.
-        # I actually just defined it in `_search_youtube_for_skill` function which I added to file.
-        
-        # Let's fix the call
         video_ids, quota_hit = _search_youtube_for_skill(
             queries=queries,
             api_key=api_key,
@@ -437,6 +431,7 @@ def fetch_videos_for_preview(
                 break
             
             # Retrieve video details for each ID
+            video_item = None
             statistics = {}
             tags = []
             duration = ""
@@ -483,18 +478,7 @@ def fetch_videos_for_preview(
                 summary["videos_filtered_constraints"] += 1
                 continue
 
-            snippet = item.get("snippet", {}) if 'item' in locals() else {} # Wait, item is not available here. 
-            # I need to get snippet from video_itemResponse. 
-            # In previous code "item" came from search results.
-            # Now "video_item" comes from videos.list
-            
-            # Correction: current snippet needs to come from `video_item` because search result `item` is not available in this loop.
-            # However, videos.list response contains snippet too.
-            
-            if 'video_item' in locals():
-                snippet = video_item.get("snippet", {})
-            else:
-                snippet = {}
+            snippet = video_item.get("snippet", {}) if video_item else {}
 
             video_doc = {
                 "sector": sector,
@@ -628,6 +612,7 @@ def run_ingestion(
             
             summary["videos_processed"] += 1
 
+            video_item = None
             statistics = {}
             tags = []
             duration = ""
@@ -679,11 +664,7 @@ def run_ingestion(
             if stop_due_to_quota:
                 break
 
-            # Need to get snippet from video_item, not 'item' (which is gone)
-            if 'video_item' in locals():
-                snippet = video_item.get("snippet", {})
-            else:
-                snippet = {}
+            snippet = video_item.get("snippet", {}) if video_item else {}
 
             doc = {
                 "sector": sector,

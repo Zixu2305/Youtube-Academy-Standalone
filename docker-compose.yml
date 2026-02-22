@@ -52,6 +52,15 @@ services:
       mysql:
         condition: service_healthy
 
+  qdrant:
+    image: qdrant/qdrant:v1.13.4
+    container_name: yta-qdrant
+    restart: unless-stopped
+    ports:
+      - "${QDRANT_PORT}:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
   mongodb:
     image: mongo:latest
     container_name: yta-mongodb
@@ -86,15 +95,15 @@ services:
       MONGO_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD}
       MONGO_DATABASE: ${MONGO_DATABASE}
     ports:
-      - "5000:5000"
+      - "5001:5000"
     volumes:
       - ./.env:/app/.env:ro
-      - ./pipelines/youtube/Youtube_API_Ingestion_Prototype_GUI.py:/app/app.py:ro
+      - ./pipelines/youtube:/app/pipelines/youtube:ro
 
 
 volumes:
   mysql_data:
   mongodb_data:
+  qdrant_data:
 
 
-  
