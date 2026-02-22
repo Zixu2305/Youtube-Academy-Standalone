@@ -586,14 +586,22 @@
         } else {
             mongoRecentRows.innerHTML = rows
                 .map(
-                    (row) => `
+                    (row) => {
+                        const sector = row.sector || "-";
+                        const skills = row.skill_name || "-";
+                        const competency = row.competency || "-";
+                        const proficiency = row.proficiency || "-";
+                        const requirement = row.requirement || "-";
+                        const skillDetails = `<strong>Sector:</strong> ${esc(sector)}, <strong>Skills:</strong> ${esc(skills)}, <strong>Competency:</strong> ${esc(competency)}, <strong>Proficiency:</strong> ${esc(proficiency)}, <strong>Requirement:</strong> ${esc(requirement)}`;
+                        return `
                 <tr>
                     <td>${esc(row.ingested_timing || "-")}</td>
-                    <td>${esc(row.skill_name || "-")}</td>
+                    <td>${skillDetails}</td>
                     <td class="mono">${esc(row.videoId || "-")}</td>
                     <td>${esc(row.title || "-")}</td>
                 </tr>
-            `
+            `;
+                    }
                 )
                 .join("");
         }
@@ -608,13 +616,18 @@
             .map((run) => {
                 const started = run.started_at || "-";
                 const status = run.status || "-";
-                const skills = run.params?.skills_count ?? "-";
-                const upserts = run.summary?.upserts_attempted ?? "-";
+                const sector = run.params?.sector || "-";
+                const skills = (run.params?.selected_skills || []).join(", ") || "-";
+                const competency = run.params?.competency || "-";
+                const proficiency = run.params?.proficiency || "-";
+                const requirement = run.params?.requirement || "-";
+                const skillsDetails = `<strong>Sector:</strong> ${sector}, <strong>Skills:</strong> ${skills}, <strong>Competency:</strong> ${competency}, <strong>Proficiency:</strong> ${proficiency}, <strong>Requirement:</strong> ${requirement}`;
+                const upserts = run.params?.videos_to_upsert ?? run.summary?.upserts_attempted ?? "-";
                 return `
                     <tr>
                         <td>${esc(started)}</td>
                         <td>${esc(status)}</td>
-                        <td>${esc(skills)}</td>
+                        <td>${skillsDetails}</td>
                         <td>${esc(upserts)}</td>
                     </tr>
                 `;
@@ -835,7 +848,7 @@
             const response = await fetch("/upsert_selected", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ videos: selectedVideos }),
+                body: JSON.stringify({ videos: selectedVideos, payload: collectPayload() }),
             });
             const result = await response.json();
             if (!response.ok || !result.ok) {

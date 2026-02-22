@@ -459,6 +459,7 @@ def create_app():
         
         data = request.get_json(silent=True) or {}
         videos_to_upsert = data.get("videos", [])
+        payload = data.get("payload", {})
         
         if not videos_to_upsert:
             return jsonify({"ok": False, "error": "No videos selected for upsert"}), 400
@@ -481,6 +482,11 @@ def create_app():
                 "status": "running",
                 "message": "Upserting selected videos",
                 "params": {
+                    "sector": payload.get("sector", ""),
+                    "selected_skills": payload.get("skills", []),
+                    "competency": payload.get("competency", ""),
+                    "proficiency": payload.get("proficiency", ""),
+                    "requirement": payload.get("requirement", ""),
                     "videos_to_upsert": len(videos_to_upsert),
                 },
                 "summary": None,
@@ -564,6 +570,10 @@ def create_app():
                 "message": "Ingestion in progress",
                 "params": {
                     "sector": payload["sector"],
+                    "selected_skills": payload["selected_skills"],
+                    "competency": payload["competency"],
+                    "proficiency": payload["proficiency"],
+                    "requirement": payload["requirement"],
                     "skills_count": len(list(dict.fromkeys(payload["selected_skills"]))),
                     "search_max_results": payload["search_max_results"],
                     "search_order": payload["search_order"],
