@@ -340,16 +340,15 @@ def create_app():
             limit = max(1, min(limit, 100))
             skip = to_int(request.args.get("skip", 0), 0)
             skip = max(0, skip)
-            sort_field = request.args.get("sort", "ingested_timing").strip()
-            allowed_sorts = {
-                "ingested_timing",
-                "publishedAt",
-                "viewCount",
-                "likeCount",
-                "title",
-            }
+            if collection_name == "ingestion_runs":
+                default_sort = "started_at"
+                allowed_sorts = {"started_at", "status", "run_id"}
+            else:
+                default_sort = "ingested_timing"
+                allowed_sorts = {"ingested_timing", "publishedAt", "viewCount", "likeCount", "title"}
+            sort_field = request.args.get("sort", default_sort).strip()
             if sort_field not in allowed_sorts:
-                sort_field = "ingested_timing"
+                sort_field = default_sort
             sort_dir = -1 if request.args.get("order", "desc").lower() == "desc" else 1
             filter_field = request.args.get("filter_field", "").strip()
             filter_value = request.args.get("filter_value", "").strip()

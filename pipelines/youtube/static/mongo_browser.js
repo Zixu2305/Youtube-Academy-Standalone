@@ -38,46 +38,83 @@
         return `https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`;
     }
 
-    function renderMongoDocs(docs) {
+    function renderMongoDocs(docs, collection) {
         if (!docs.length) {
             mongoBrowserResults.textContent = "No documents found.";
             return;
         }
-        mongoBrowserResults.innerHTML = docs
-            .map((doc) => {
-                const videoId = doc.videoId || "";
-                const title = doc.title || "-";
-                const sector = doc.sector || "-";
-                const skillName = doc.skill_name || "-";
-                const ingested = doc.ingested_timing || "-";
-                const publishedAt = doc.publishedAt || "-";
-                const actions = videoId
-                    ? `
-                        <div class="actions">
-                            <button type="button" data-action="copy-video-id" data-video-id="${esc(videoId)}">Copy ID</button>
-                            <a class="link-button" href="${esc(youtubeWatchUrl(videoId))}" target="_blank" rel="noopener noreferrer">Open on YouTube</a>
-                        </div>
-                    `
-                    : "";
-                return `
+        if (collection === 'videos') {
+            mongoBrowserResults.innerHTML = docs
+                .map((doc) => {
+                    const videoId = doc.videoId || "";
+                    const title = doc.title || "-";
+                    const sector = doc.sector || "-";
+                    const skillName = doc.skill_name || "-";
+                    const ingested = doc.ingested_timing || "-";
+                    const publishedAt = doc.publishedAt || "-";
+                    const actions = videoId
+                        ? `
+                            <div class="actions">
+                                <button type="button" data-action="copy-video-id" data-video-id="${esc(videoId)}">Copy ID</button>
+                                <a class="link-button" href="${esc(youtubeWatchUrl(videoId))}" target="_blank" rel="noopener noreferrer">Open on YouTube</a>
+                            </div>
+                        `
+                        : "";
+                    return `
+                        <article class="doc-card">
+                            <div class="doc-meta">
+                                <div><strong>Video ID</strong><div class="mono">${esc(videoId || "-")}</div></div>
+                                <div><strong>Skill</strong><div>${esc(skillName)}</div></div>
+                                <div><strong>Sector</strong><div>${esc(sector)}</div></div>
+                                <div><strong>Published</strong><div>${esc(publishedAt)}</div></div>
+                                <div><strong>Ingested</strong><div>${esc(ingested)}</div></div>
+                            </div>
+                            <div class="doc-title"><strong>Title</strong><div>${esc(title)}</div></div>
+                            ${actions}
+                            <details>
+                                <summary>Raw JSON</summary>
+                                <pre>${esc(JSON.stringify(doc, null, 2))}</pre>
+                            </details>
+                        </article>
+                    `;
+                })
+                .join("");
+        } else if (collection === 'ingestion_runs') {
+            mongoBrowserResults.innerHTML = docs
+                .map((doc) => {
+                    const runId = doc.run_id || "";
+                    const timestamp = doc.started_at || doc.timestamp || "-";
+                    const status = doc.status || "-";
+                    const details = doc.details ? JSON.stringify(doc.details) : "-";
+                    return `
+                        <article class="doc-card">
+                            <div class="doc-meta">
+                                <div><strong>Run ID</strong><div class="mono">${esc(runId || "-")}</div></div>
+                                <div><strong>Timestamp</strong><div>${esc(timestamp)}</div></div>
+                                <div><strong>Status</strong><div>${esc(status)}</div></div>
+                            </div>
+                            <div class="doc-title"><strong>Details</strong><div>${esc(details)}</div></div>
+                            <details>
+                                <summary>Raw JSON</summary>
+                                <pre>${esc(JSON.stringify(doc, null, 2))}</pre>
+                            </details>
+                        </article>
+                    `;
+                })
+                .join("");
+        } else {
+            // Fallback for other collections: just show raw JSON
+            mongoBrowserResults.innerHTML = docs
+                .map((doc) => `
                     <article class="doc-card">
-                        <div class="doc-meta">
-                            <div><strong>Video ID</strong><div class="mono">${esc(videoId || "-")}</div></div>
-                            <div><strong>Skill</strong><div>${esc(skillName)}</div></div>
-                            <div><strong>Sector</strong><div>${esc(sector)}</div></div>
-                            <div><strong>Published</strong><div>${esc(publishedAt)}</div></div>
-                            <div><strong>Ingested</strong><div>${esc(ingested)}</div></div>
-                        </div>
-                        <div class="doc-title"><strong>Title</strong><div>${esc(title)}</div></div>
-                        ${actions}
-                        <details>
+                        <details open>
                             <summary>Raw JSON</summary>
                             <pre>${esc(JSON.stringify(doc, null, 2))}</pre>
                         </details>
                     </article>
-                `;
-            })
-            .join("");
+                `)
+                .join("");
+        }
     }
 
 
@@ -147,7 +184,7 @@
                     : "No documents found.",
                 docs.length ? "success" : "warning"
             );
-            renderMongoDocs(docs);
+            renderMongoDocs(docs, mongoCollectionSelect.value);
             mongoPrevBtn.disabled = skip <= 0;
             mongoNextBtn.disabled = !mongoBrowserHasMore;
         } catch (error) {
