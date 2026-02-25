@@ -1,10 +1,17 @@
 import json
 import re
+import sys
 from datetime import datetime, timedelta
+from pathlib import Path
 from uuid import uuid4
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, Response, jsonify, render_template, request, stream_with_context
 from bson import ObjectId
+
+# Make pipelines.quiz_gen importable when the app runs from this subdirectory
+_ROOT = Path(__file__).resolve().parents[2]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
 
 from youtube_config import (
     ALLOWED_SEARCH_ORDERS,
@@ -258,6 +265,15 @@ def create_app():
     def mongo_browser():
         return render_template("mongo_browser.html")
 
+    @app.route("/quiz_gen")
+    def quiz_gen():
+        try:
+            sectors = fetch_sectors_and_skills()
+            sectors_list = list(sectors.keys())
+        except Exception:
+            sectors_list = []
+        return render_template("quiz.html", sectors_list=sectors_list)
+
     @app.route("/search_skills", methods=["POST"])
     def search_skills_route():
         data = request.get_json(silent=True) or {}
@@ -271,7 +287,8 @@ def create_app():
         data = request.get_json(silent=True) or {}
         sector = data.get("sector")
         skill = data.get("skill")
-        competencies = search_competencies(sector, skill)
+        proficiency_level = data.get("proficiency_level")
+        competencies = search_competencies(sector, skill, proficiency_level)
         return jsonify(competencies)
 
     @app.route("/search_proficiency_levels", methods=["POST"])
@@ -279,8 +296,7 @@ def create_app():
         data = request.get_json(silent=True) or {}
         sector = data.get("sector")
         skill = data.get("skill")
-        competency = data.get("competency")
-        levels = search_proficiency_levels(sector, skill, competency)
+        levels = search_proficiency_levels(sector, skill)
         return jsonify(levels)
 
     @app.route("/get_requirement", methods=["POST"])
@@ -288,10 +304,47 @@ def create_app():
         data = request.get_json(silent=True) or {}
         sector = data.get("sector")
         skill = data.get("skill")
+        proficiency_level = data.get("proficiency_level")
         competency = data.get("competency")
-        proficiency = data.get("proficiency")
-        requirements = get_requirement(sector, skill, competency, proficiency)
+        requirements = get_requirement(sector, skill, proficiency_level, competency)
         return jsonify({"requirements": requirements})
+
+    @app.route("/generate_quiz_stream", methods=["POST"])
+    def generate_quiz_stream_route():
+        """
+        Streaming (NDJSON) version of /generate_quiz.
+        Yields one JSON object per line as Ollama generates each question.
+        Event shapes:
+          {"type":"context", "quiz_key":str, ...context fields}
+          {"type":"question", "question_number":int, ...question fields}
+          {"type":"error",   "message":str}
+          {"type":"done",    "quiz_key":str}
+        """
+        from pipelines.quiz_gen.quiz_store import stream_or_cached_quiz  # lazy import
+
+        data = request.get_json(silent=True) or {}
+        sector               = (data.get("sector")               or "").strip()
+        skill                = (data.get("skill")                or "").strip()
+        competency           = (data.get("competency")           or "").strip()
+        proficiency_level    = (data.get("proficiency_level")    or "").strip()
+        proficiency_description = (data.get("proficiency_description") or "").strip()
+
+        if not all([sector, skill, competency, proficiency_level]):
+            def _err():
+                yield json.dumps({"type": "error", "message": "sector, skill, competency and proficiency_level are required."}) + "\n"
+            return Response(stream_with_context(_err()), mimetype="application/x-ndjson"), 400
+
+        def _generate():
+            for event in stream_or_cached_quiz(
+                sector, skill, competency, proficiency_level, proficiency_description
+            ):
+                yield json.dumps(event, ensure_ascii=False) + "\n"
+
+        return Response(
+            stream_with_context(_generate()),
+            mimetype="application/x-ndjson",
+            headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
+        )
 
     @app.route("/quota_estimate", methods=["POST"])
     def quota_estimate():

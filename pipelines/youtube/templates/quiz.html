@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Quiz Generation</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+    <h1>Quiz Generation</h1>
+    <div class="nav">
+        <a class="link-button" href="/">YouTube Ingestion Console</a>
+        <a class="link-button" href="/mongo_browser">MongoDB Browser</a>
+    </div>
+
+    <div class="quiz-page-layout">
+
+        <!-- ── Left: Selection Panel ──────────────────────────────── -->
+        <div class="card">
+            <h2 class="title">Select Your Topic</h2>
+            <p class="hint">Make selections from top to bottom to load your quiz.</p>
+
+            <div class="field">
+                <label for="q_sector_select">Sector</label>
+                <select id="q_sector_select">
+                    {% for sector in sectors_list %}
+                    <option value="{{ sector }}">{{ sector }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            <div class="field">
+                <label for="q_search_skills">Search Skills</label>
+                <input type="text" id="q_search_skills" placeholder="Type to filter skills…">
+            </div>
+
+            <h3 class="subheader">Skill</h3>
+            <div class="field">
+                <div class="skills" id="q_skills_container">
+                    <span class="cascade-hint">Select a sector above.</span>
+                </div>
+            </div>
+
+            <h3 class="subheader">Proficiency Level</h3>
+            <div class="field">
+                <div class="proficiency-levels" id="q_proficiency_container">
+                    <span class="cascade-hint">Select a skill above.</span>
+                </div>
+            </div>
+
+            <h3 class="subheader">Competency</h3>
+            <div class="field">
+                <div class="competencies" id="q_competencies_container">
+                    <span class="cascade-hint">Select a proficiency level above.</span>
+                </div>
+            </div>
+
+            <h3 class="subheader">Requirement / Proficiency Description</h3>
+            <div class="field">
+                <div class="requirements" id="q_requirements_container">
+                    <span class="cascade-hint">Select a competency above.</span>
+                </div>
+            </div>
+
+            <div class="field" id="q_quiz_trigger_area" style="display:none;">
+                <button type="button" id="q_take_quiz_btn" class="primary quiz-trigger-btn">
+                    &#9654;&nbsp; Generate Quiz
+                </button>
+            </div>
+
+            <!-- Current selection summary -->
+            <div id="q_selection_summary" style="display:none;">
+                <h3 class="subheader">Current Selection</h3>
+                <div id="q_selection_display" class="quiz-context-banner"></div>
+            </div>
+        </div>
+
+        <!-- ── Right: Quiz Panel ──────────────────────────────────── -->
+        <div class="card quiz-card" id="q_quiz_card">
+            <div id="q_quiz_idle" class="quiz-idle-state">
+                <div class="quiz-idle-icon">&#9998;</div>
+                <p class="quiz-idle-text">Complete the selection on the left to generate your quiz.</p>
+                <ul class="quiz-idle-steps">
+                    <li>1. Choose a <strong>Sector</strong></li>
+                    <li>2. Pick a <strong>Skill</strong></li>
+                    <li>3. Select a <strong>Proficiency Level</strong></li>
+                    <li>4. Choose a <strong>Competency</strong></li>
+                    <li>5. Select the <strong>Requirement</strong></li>
+                    <li>6. Click <strong>Generate Quiz</strong></li>
+                </ul>
+            </div>
+
+            <div id="q_quiz_panel" style="display:none;">
+                <div class="quiz-header">
+                    <h2 class="title" style="margin:0;">Quiz</h2>
+                    <button type="button" id="q_reset_quiz_btn" class="quiz-close-btn" title="Reset quiz and change selection">&#8635;</button>
+                </div>
+
+                <div id="q_quiz_context_banner" class="quiz-context-banner"></div>
+
+                <div id="q_quiz_loading" class="status running" style="display:none;">
+                    <span class="spinner"></span><span id="q_loading_text">Generating quiz&hellip;</span>
+                </div>
+                <div id="q_quiz_error" class="status error" style="display:none;"></div>
+
+                <!-- Questions -->
+                <div id="q_quiz_questions"></div>
+
+                <div id="q_quiz_actions" style="display:none;">
+                    <button type="button" id="q_submit_quiz_btn" class="primary">Submit Answers</button>
+                </div>
+
+                <!-- Results -->
+                <div id="q_quiz_results" style="display:none;">
+                    <div id="q_quiz_score_banner" class="quiz-score-banner"></div>
+                    <div id="q_quiz_review"></div>
+                    <div style="display:flex; gap:10px; margin-top:12px; flex-wrap:wrap;">
+                        <button type="button" id="q_retry_quiz_btn" class="secondary">&#8635;&nbsp; Retake Quiz</button>
+                        <button type="button" id="q_new_selection_btn" class="secondary">&#8592;&nbsp; Change Selection</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    </div><!-- /.quiz-page-layout -->
+
+    <script src="{{ url_for('static', filename='quiz.js') }}"></script>
+</body>
+</html>

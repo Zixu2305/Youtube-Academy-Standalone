@@ -2,5 +2,12 @@
 /.venv
 /data/
 /out
-__pycache__/
+__pycache__
 .DS_Store
+
+# Quiz generation cache (auto-generated at runtime)
+pipelines/quiz_gen/data/quiz_cache.json
+
+# Removed unused code:
+# - Old rule-based quiz generation logic (replaced with LLM-based)
+# - Old /generate_quiz Flask route (replaced with /generate_quiz_stream for better UX)

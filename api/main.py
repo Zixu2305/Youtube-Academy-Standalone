@@ -9,3 +9,9 @@ app = FastAPI(title="SkillsFuture & YouTube Vector Search API")
 app.include_router(search_skills_router, prefix="/api", tags=["search-skills"])
 app.include_router(search_videos_router, prefix="/api", tags=["search-videos"])
 app.include_router(recommend_router, prefix="/api", tags=["recommend"])
+from api.routes.quiz import router as quiz_router
+
+
+app = FastAPI(title="SkillsFuture Vector Search API")
+app.include_router(search_skills_router, prefix="/api", tags=["search"])
+app.include_router(quiz_router, prefix="/api", tags=["quiz"])

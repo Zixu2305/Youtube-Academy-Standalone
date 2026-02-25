@@ -107,10 +107,10 @@
                     skillButton.className = "skill-name selected";
                 }
                 // Clear downstream selections
-                selectedCompetency = null;
                 selectedProficiency = null;
+                selectedCompetency = null;
                 selectedRequirement = null;
-                loadCompetencies();
+                loadProficiencyLevels();
                 updateQuotaEstimate();
             });
 
@@ -121,13 +121,11 @@
 
     async function loadCompetencies() {
         competenciesContainer.innerHTML = "";
-        proficiencyContainer.innerHTML = "";
         requirementsContainer.innerHTML = "";
         selectedCompetency = null;
-        selectedProficiency = null;
         selectedRequirement = null;
-        if (!selectedSkill) {
-            competenciesContainer.textContent = "Select a skill first";
+        if (!selectedSkill || !selectedProficiency) {
+            competenciesContainer.textContent = "Select a proficiency level first";
             return;
         }
 
@@ -135,7 +133,7 @@
             const response = await fetch("/search_competencies", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ sector: sectorSelect.value, skill: selectedSkill })
+                body: JSON.stringify({ sector: sectorSelect.value, skill: selectedSkill, proficiency_level: selectedProficiency })
             });
             const competencies = await response.json();
             if (!competencies.length) {
@@ -163,9 +161,8 @@
                         compButton.className = "competency-name selected";
                     }
                     // Clear downstream
-                    selectedProficiency = null;
                     selectedRequirement = null;
-                    loadProficiencyLevels();
+                    loadRequirements();
                     updateQuotaEstimate();
                 });
 
@@ -179,11 +176,13 @@
 
     async function loadProficiencyLevels() {
         proficiencyContainer.innerHTML = "";
+        competenciesContainer.innerHTML = "";
         requirementsContainer.innerHTML = "";
         selectedProficiency = null;
+        selectedCompetency = null;
         selectedRequirement = null;
-        if (!selectedSkill || !selectedCompetency) {
-            proficiencyContainer.textContent = "Select a competency first";
+        if (!selectedSkill) {
+            proficiencyContainer.textContent = "Select a skill first";
             return;
         }
 
@@ -191,7 +190,7 @@
             const response = await fetch("/search_proficiency_levels", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ sector: sectorSelect.value, skill: selectedSkill, competency: selectedCompetency })
+                body: JSON.stringify({ sector: sectorSelect.value, skill: selectedSkill })
             });
             const levels = await response.json();
             if (!levels.length) {
@@ -219,8 +218,9 @@
                         levelButton.className = "proficiency-name selected";
                     }
                     // Clear downstream
+                    selectedCompetency = null;
                     selectedRequirement = null;
-                    loadRequirements();
+                    loadCompetencies();
                     updateQuotaEstimate();
                 });
 
@@ -235,8 +235,8 @@
     async function loadRequirements() {
         requirementsContainer.innerHTML = "";
         selectedRequirement = null;
-        if (!selectedSkill || !selectedCompetency || !selectedProficiency) {
-            requirementsContainer.textContent = "Select proficiency level first";
+        if (!selectedSkill || !selectedProficiency || !selectedCompetency) {
+            requirementsContainer.textContent = "Select competency first";
             return;
         }
 
@@ -244,7 +244,7 @@
             const response = await fetch("/get_requirement", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ sector: sectorSelect.value, skill: selectedSkill, competency: selectedCompetency, proficiency: selectedProficiency })
+                body: JSON.stringify({ sector: sectorSelect.value, skill: selectedSkill, proficiency_level: selectedProficiency, competency: selectedCompetency })
             });
             const data = await response.json();
             const requirements = data.requirements || [];
@@ -727,7 +727,10 @@
         selectedCompetency = null;
         selectedProficiency = null;
         selectedRequirement = null;
-        loadCompetencies();
+        skillsContainer.innerHTML = "";
+        competenciesContainer.innerHTML = "";
+        proficiencyContainer.innerHTML = "";
+        requirementsContainer.innerHTML = "";
         try {
             await loadSkills(sectorSelect.value, searchInput.value);
             await updateQuotaEstimate();
@@ -881,7 +884,6 @@
         if (sectorSelect.value) {
             try {
                 await loadSkills(sectorSelect.value, "");
-                await loadCompetencies();
             } catch (error) {
                 setRunState(`Initial skill loading failed: ${error.message}`, "error");
             }

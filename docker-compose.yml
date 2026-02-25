@@ -82,7 +82,9 @@ services:
       mysql:
         condition: service_healthy
       mongodb:
-        condition: service_started  # MongoDB doesn't have a healthcheck
+        condition: service_started
+      ollama:
+        condition: service_started
     environment:
       DB_HOST: mysql
       DB_PORT: 3306
@@ -94,16 +96,39 @@ services:
       MONGO_ROOT_USERNAME: ${MONGO_ROOT_USERNAME}
       MONGO_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD}
       MONGO_DATABASE: ${MONGO_DATABASE}
+      OLLAMA_HOST: http://ollama:11434
     ports:
       - "5001:5000"
     volumes:
       - ./.env:/app/.env:ro
+      - ./pipelines/__init__.py:/app/pipelines/__init__.py:ro
       - ./pipelines/youtube:/app/pipelines/youtube:ro
+      - ./pipelines/quiz_gen:/app/pipelines/quiz_gen
+
+  ollama:
+    image: ollama/ollama
+    container_name: yta-ollama
+    restart: unless-stopped
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+
+  ollama-init:
+    image: ollama/ollama
+    container_name: yta-ollama-init
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+    depends_on:
+      - ollama
+    entrypoint: ["/bin/sh", "-c", "sleep 8 && ollama pull llama3.2:3b"]
+    restart: "no"
 
 
 volumes:
   mysql_data:
   mongodb_data:
   qdrant_data:
+  ollama_data:
 
 

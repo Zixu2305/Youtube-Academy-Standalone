@@ -82,7 +82,7 @@ def search_skills(sector, search_term):
         return []
 
 
-def search_competencies(sector, skill):
+def search_competencies(sector, skill, proficiency_level):
     try:
         conn = get_mysql_conn()
         cur = conn.cursor()
@@ -90,8 +90,30 @@ def search_competencies(sector, skill):
             SELECT DISTINCT CONCAT(sci.item_type, ': ', sci.item_text) AS competency
             FROM map_sf_to_cat_skill m
             JOIN sf_competency_item sci ON m.sf_skill_id = sci.sf_skill_id
-            WHERE m.sector_name_raw = %s AND m.source_skill_title = %s
+            WHERE m.sector_name_raw = %s 
+              AND m.source_skill_title = %s
+              AND sci.proficiency_level = %s
             ORDER BY competency
+        """
+        cur.execute(query, (sector, skill, proficiency_level))
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        return [row[0] for row in rows]
+    except Exception:
+        return []
+
+
+def search_proficiency_levels(sector, skill):
+    try:
+        conn = get_mysql_conn()
+        cur = conn.cursor()
+        query = """
+            SELECT DISTINCT m.proficiency_level
+            FROM map_sf_to_cat_skill m
+            WHERE m.sector_name_raw = %s
+              AND m.source_skill_title = %s
+            ORDER BY m.proficiency_level
         """
         cur.execute(query, (sector, skill))
         rows = cur.fetchall()
@@ -102,52 +124,26 @@ def search_competencies(sector, skill):
         return []
 
 
-def search_proficiency_levels(sector, skill, competency):
+def get_requirement(sector, skill, proficiency_level, competency):
     try:
         conn = get_mysql_conn()
         cur = conn.cursor()
         query = """
-                        SELECT DISTINCT sl.proficiency_level
+            SELECT DISTINCT sl.proficiency_description
             FROM map_sf_to_cat_skill m
-            JOIN sf_competency_item sci ON m.sf_skill_id = sci.sf_skill_id
-                        JOIN sf_skill_level sl
-                            ON sl.sf_skill_id = sci.sf_skill_id
-                         AND sl.proficiency_level = sci.proficiency_level
+            JOIN sf_skill_level sl ON m.sf_skill_id = sl.sf_skill_id
             WHERE m.sector_name_raw = %s
               AND m.source_skill_title = %s
-              AND CONCAT(sci.item_type, ': ', sci.item_text) = %s
-                        ORDER BY sl.proficiency_level
+              AND sl.proficiency_level = %s
         """
-        cur.execute(query, (sector, skill, competency))
-        rows = cur.fetchall()
-        cur.close()
-        conn.close()
-        return [row[0] for row in rows]
-    except Exception:
-        return []
-
-
-def get_requirement(sector, skill, competency, proficiency):
-    try:
-        conn = get_mysql_conn()
-        cur = conn.cursor()
-        query = """
-                        SELECT DISTINCT sl.proficiency_description
-            FROM map_sf_to_cat_skill m
-            JOIN sf_competency_item sci ON m.sf_skill_id = sci.sf_skill_id
-                        JOIN sf_skill_level sl
-                            ON sl.sf_skill_id = sci.sf_skill_id
-                         AND sl.proficiency_level = sci.proficiency_level
-            WHERE m.sector_name_raw = %s
-              AND m.source_skill_title = %s
-              AND CONCAT(sci.item_type, ': ', sci.item_text) = %s
-                            AND sl.proficiency_level = %s
-        """
-        cur.execute(query, (sector, skill, competency, proficiency))
+        cur.execute(query, (sector, skill, proficiency_level))
         row = cur.fetchone()
         cur.close()
         conn.close()
         description = row[0] if row and row[0] else ""
+        return [description] if description else []
+    except Exception:
+        return []
         return [description] if description else []
     except Exception:
         return []
