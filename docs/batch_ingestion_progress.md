@@ -1,9 +1,10 @@
 # Batch YouTube Ingestion Progress
 
 ## Status: Paused (API Quota Exceeded)
-**Date:** 2026-02-24
-**Processed:** 16/350 competencies (quota hit at competency 16)
-**Total videos ingested:** 24 (embedded into Qdrant)
+**Date:** 2026-02-25
+**Processed:** 17/350 competencies (quota hit at competency 17)
+**Total videos in MongoDB:** 42
+**Total videos embedded in Qdrant:** 42
 
 ## Target Skills (Infocomm Technology)
 1. Artificial Intelligence Ethics and Governance
@@ -41,11 +42,12 @@
 | knowledge: AI Ethics and Governance principles and market best practices | 3 |
 | knowledge: Organisation's AI ethical culture | 1 |
 
-#### Level 4 (2 competencies - PARTIAL, quota hit)
+#### Level 4 (3 competencies - PARTIAL, quota hit)
 | Competency | Videos |
 |---|---|
 | ability: Articulate how AI should be used to stakeholders | 5 |
-| ability: Evaluate deployed models for transparency | 1 (quota hit mid-fetch) |
+| ability: Evaluate deployed models for transparency for ease of explanation | 5 |
+| ability: Interpret and implement AI Ethics and Governance principles | quota hit |
 
 ## Remaining Skills (NOT YET STARTED)
 | Skill | Competencies | Status |
