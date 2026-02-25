@@ -92,8 +92,25 @@ def ensure_payload_indexes(client: QdrantClient, collection_name: str) -> None:
         print(f"Ensured payload index: {field_name}")
 
 
+def ensure_yt_payload_indexes(client: QdrantClient, collection_name: str) -> None:
+    payload_indexes = (
+        ("sector", models.PayloadSchemaType.KEYWORD),
+        ("skill_name", models.PayloadSchemaType.KEYWORD),
+        ("video_id", models.PayloadSchemaType.KEYWORD),
+        ("channel_title", models.PayloadSchemaType.KEYWORD),
+    )
+
+    for field_name, field_schema in payload_indexes:
+        client.create_payload_index(
+            collection_name=collection_name,
+            field_name=field_name,
+            field_schema=field_schema,
+            wait=True,
+        )
+        print(f"  Ensured payload index: {field_name}")
+
+
 def main() -> None:
-    collection_name = env("QDRANT_COLLECTION", DEFAULT_COLLECTION_NAME)
     vector_dim = int(env("EMBEDDING_VECTOR_DIM", str(DEFAULT_VECTOR_DIM)))
 
     client = get_qdrant_client()
@@ -101,8 +118,16 @@ def main() -> None:
     collections = client.get_collections()
     print(f"Connected to Qdrant. Existing collections: {len(collections.collections)}")
 
-    ensure_collection(client, collection_name, vector_dim)
-    ensure_payload_indexes(client, collection_name)
+    # SkillsFuture collection
+    sf_collection = env("QDRANT_COLLECTION", DEFAULT_COLLECTION_NAME)
+    ensure_collection(client, sf_collection, vector_dim)
+    ensure_payload_indexes(client, sf_collection)
+
+    # YouTube videos collection
+    yt_collection = env("QDRANT_YT_COLLECTION", "youtube_videos__bge_base__768")
+    ensure_collection(client, yt_collection, vector_dim)
+    ensure_yt_payload_indexes(client, yt_collection)
+
     print("Qdrant collection setup complete.")
 
 
