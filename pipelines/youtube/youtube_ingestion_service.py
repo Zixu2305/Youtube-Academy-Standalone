@@ -1,4 +1,6 @@
 from datetime import datetime, timedelta
+import json
+import os
 import re
 
 import requests
@@ -14,6 +16,47 @@ QUOTA_ERROR_REASONS = {
     "dailyLimitExceededUnreg",
     "rateLimitExceeded",
 }
+
+# --- OLLAMA CONFIGURATION ---
+_OLLAMA_MODEL = "llama3.2:3b"
+_OLLAMA_TIMEOUT = 10  # Fast timeout for keywords
+
+def _ollama_host() -> str:
+    return os.getenv("OLLAMA_HOST", "http://ollama:11434")
+
+def _get_llm_keywords(text: str, count: int = 3) -> str:
+    """
+    Asks Ollama to extract the {count} scariest/most important technical terms.
+    Returns a space-separated string of keywords.
+    """
+    if not text:
+        return ""
+        
+    prompt = (
+        f"Extract exactly {count} most important technical search terms from the text below "
+        f"to find a YouTube tutorial. Return ONLY the keywords separated by spaces. No quotes.\n"
+        f"Text: \"{text}\""
+    )
+
+    url = f"{_ollama_host()}/api/generate"
+    payload = {
+        "model": _OLLAMA_MODEL,
+        "prompt": prompt,
+        "stream": False,
+        "options": {
+            "temperature": 0.1, 
+            "num_predict": 50
+        },
+    }
+    
+    try:
+        response = requests.post(url, json=payload, timeout=_OLLAMA_TIMEOUT)
+        if response.status_code == 200:
+            return response.json().get("response", "").strip()
+    except Exception:
+        # If Ollama is down or times out, return empty string to trigger fallback
+        pass
+    return ""
 
 STOPWORDS = {
     "a", "an", "the", "and", "or", "but", "is", "are", "was", "were",
@@ -219,44 +262,32 @@ def _build_advanced_queries(
     sector: str,
     skill: str,
     competency: str,
-    proficiency_description: str,
     additional_query: str,
 ):
     """
-    Builds 3 advanced query variants as requested.
-    Q1: sector + skill + "(tutorial|...) + negatives
-    Q2: skill + "(tutorial|...) + negatives
-    Q3: skill + keywordize(competency, 6) + keywordize(proficiency_description, 8) + "(tutorial|...) + negatives
+    Builds the single advanced query variant:
+    Query: skill + (LLM Keywords OR Regex Keywords) + Base Terms + Negatives
     """
     base_terms = "(tutorial|course|guide|explained|basics|hands-on|project|demo)"
     negatives = "-music -podcast -mix -asmr -trailer -highlights -shorts"
 
     # Clean inputs
-    s_clean = sector.strip()
     sk_clean = skill.strip()
-    add_q = additional_query.strip()
     
-    # Q1
-    q1_parts = [s_clean, sk_clean, base_terms, negatives]
-    if add_q:
-        q1_parts.append(add_q)
-    q1 = " ".join(filter(None, q1_parts))
+    # 1. Try LLM for intelligent keyword extraction
+    comp_keywords = _get_llm_keywords(competency, 3)
+    
+    # 2. Fallback to regex if LLM fails
+    if not comp_keywords:
+        comp_keywords = keywordize(competency, 3)
 
-    # Q2
-    q2_parts = [sk_clean, base_terms, negatives]
-    if add_q:
-        q2_parts.append(add_q)
-    q2 = " ".join(filter(None, q2_parts))
+    parts = [sk_clean, comp_keywords, base_terms, negatives]
+    if additional_query:
+        parts.append(additional_query.strip())
+        
+    query = " ".join(filter(None, parts))
 
-    # Q3
-    comp_k = keywordize(competency, 6)
-    prof_k = keywordize(proficiency_description, 8)
-    q3_parts = [sk_clean, comp_k, prof_k, base_terms, negatives]
-    if add_q:
-        q3_parts.append(add_q)
-    q3 = " ".join(filter(None, q3_parts))
-
-    return [q1, q2, q3]
+    return [query]
 
 
 def _search_youtube_for_skill(
@@ -387,15 +418,12 @@ def fetch_videos_for_preview(
 
         summary["skills_processed"] += 1
 
-        # Use 3 query variants
-        # 1) sector + skill + "(tutorial|...) + negatives
-        # 2) skill + "(tutorial|...) + negatives
-        # 3) skill + keywordize(competency, 6) + keywordize(proficiency_description, 8) + "(tutorial|...) + negatives
+        # Use 1 query variant
+        # 3) skill + keywordize(competency, 3) + "(tutorial|...) + negatives
         queries = _build_advanced_queries(
             sector=sector,
             skill=skill,
             competency=competency,
-            proficiency_description=requirement,
             additional_query=additional_query,
         )
 
@@ -579,7 +607,6 @@ def run_ingestion(
             sector=sector,
             skill=skill,
             competency=competency,
-            proficiency_description=requirement,
             additional_query=additional_query,
         )
 

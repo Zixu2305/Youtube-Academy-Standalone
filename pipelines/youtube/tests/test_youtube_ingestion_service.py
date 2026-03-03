@@ -179,9 +179,21 @@ class YoutubeIngestionServiceTests(unittest.TestCase):
     def test_run_ingestion_with_additional_query(self, mock_request_json):
         def _side_effect(url, params):
             if "search" in url:
-                # Verify the query includes sector, skill, and additional query
-                self.assertEqual(params["q"], "Accountancy Skill A tutorial")
+                # With new Ollama logic, fallback query is different:
+                # {skill} {keywordize(comp)} {base_terms} {negatives} {additional}
+                # since comp is empty, it becomes: "Skill A  (tutorial|...)" with an extra space or just cleaned by filter(None)
+                
+                # Check for key components loosely
+                q = params["q"]
+                self.assertIn("Skill A", q)
+                self.assertIn("tutorial", q)
+                # Ensure our hardcoded negatives are there
+                self.assertIn("-shorts", q)
+                
                 return _FakeResponse(200), {
+    
+    # ...existing code...
+    
                     "items": [{
                         "id": {"videoId": "video1"},
                         "snippet": {
@@ -289,9 +301,14 @@ class YoutubeIngestionServiceTests(unittest.TestCase):
     def test_run_ingestion_with_competency(self, mock_request_json):
         def _side_effect(url, params):
             if "search" in url:
-                # Verify the query includes sector, skill, competency, proficiency description, and additional query
-                expected_query = "Accountancy Skill A Financial Accounting Apply basic accounting principles advanced tutorial"
-                self.assertEqual(params["q"], expected_query)
+                # With Q3 only: skill + keywordize(comp) + keywordize(prof) + base + negatives + additional
+                # Skill A + (accounting financial) + (accounting principles apply basic) + base + negatives + advanced tutorial
+                q = params["q"]
+                self.assertTrue(q.startswith("Skill A"))
+                self.assertIn("accounting", q)
+                self.assertIn("financial", q)
+                self.assertIn("advanced tutorial", q)
+                
                 return _FakeResponse(200), {
                     "items": [{
                         "id": {"videoId": "video1"},
@@ -342,13 +359,30 @@ class YoutubeIngestionServiceTests(unittest.TestCase):
         self.assertEqual(summary["upserts_attempted"], 1)
         self.assertEqual(summary["constraints"]["proficiency"], "Intermediate")
         self.assertEqual(summary["constraints"]["competency"], "Financial Accounting")
-        self.assertEqual(summary["constraints"]["query"], "Accountancy Skill A Financial Accounting Apply basic accounting principles advanced tutorial")
+        # Updated assertion: Q3 logic does not use exact string concatenation anymore but 'keywordize' + base terms
+        # Just check it starts with Skill A and contains the additional query
+        q = summary["constraints"]["query"]
+        self.assertTrue(q.startswith("Skill A"))
+        self.assertTrue(q.endswith("advanced tutorial"))
 
     @patch("youtube_ingestion_service.request_json")
     def test_run_ingestion_with_query_include_flags(self, mock_request_json):
         def _side_effect(url, params):
             if "search" in url:
-                self.assertEqual(params["q"], "Skill A Apply basic accounting principles tutorial")
+                # With Q3 only: "Skill A" + keywordize(comp, 3) + base + negatives + additional
+                # competency="Financial Accounting", requirement="Apply basic accounting principles"
+                # Query should contain: Skill A, accounting, financial, tutorial
+                # It should NOT contain "principles" (from requirement which is removed)
+                q = params["q"]
+                self.assertIn("Skill A", q)
+                self.assertIn("accounting", q)
+                self.assertIn("financial", q)
+                self.assertIn("tutorial", q)
+                
+                # Verify requirement words are NOT in query if they are unique to requirement
+                # "principles" is in requirement but not competency
+                self.assertNotIn("principles", q)
+
                 return _FakeResponse(200), {
                     "items": [{
                         "id": {"videoId": "video1"},
@@ -400,7 +434,13 @@ class YoutubeIngestionServiceTests(unittest.TestCase):
         self.assertEqual(summary["skills_processed"], 1)
         self.assertEqual(summary["videos_found"], 1)
         self.assertEqual(summary["upserts_attempted"], 1)
-        self.assertEqual(summary["constraints"]["query"], "Skill A Apply basic accounting principles tutorial")
+        
+        q = summary["constraints"]["query"]
+        self.assertIn("Skill A", q)
+        self.assertIn("accounting", q)
+        self.assertIn("financial", q)
+        self.assertIn("tutorial", q)
+        self.assertNotIn("principles", q)
 
 
 if __name__ == "__main__":
