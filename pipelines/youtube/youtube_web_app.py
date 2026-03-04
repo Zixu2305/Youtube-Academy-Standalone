@@ -328,6 +328,12 @@ def create_app():
         competency           = (data.get("competency")           or "").strip()
         proficiency_level    = (data.get("proficiency_level")    or "").strip()
         proficiency_description = (data.get("proficiency_description") or "").strip()
+        force_regenerate     = data.get("force_regenerate", False)
+        question_types       = data.get("question_types", ["Conceptual", "Application", "Scenario-Based", "Technical", "Evaluation"])
+        try:
+            num_questions = int(data.get("num_questions", 5))
+        except (TypeError, ValueError):
+            num_questions = 5
 
         if not all([sector, skill, competency, proficiency_level]):
             def _err():
@@ -336,7 +342,7 @@ def create_app():
 
         def _generate():
             for event in stream_or_cached_quiz(
-                sector, skill, competency, proficiency_level, proficiency_description
+                sector, skill, competency, proficiency_level, proficiency_description, force_regenerate, question_types, num_questions
             ):
                 yield json.dumps(event, ensure_ascii=False) + "\n"
 
@@ -345,6 +351,72 @@ def create_app():
             mimetype="application/x-ndjson",
             headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
         )
+
+    @app.route("/store_quiz", methods=["POST"])
+    def store_quiz_route():
+        """
+        Store a generated quiz in MongoDB after user confirmation.
+
+        Expects JSON payload:
+        {
+          "sector": str,
+          "skill": str,
+          "competency": str,
+          "proficiency_level": str,
+          "proficiency_description": str,
+          "item_type": "knowledge" | "ability",
+          "questions": [
+            {
+              "question_number": int,
+              "question": str,
+              "question_type": str,
+              "options": {"A": str, "B": str, "C": str, "D": str},
+              "correct": str,
+              "explanation": str
+            },
+            ...
+          ]
+        }
+
+        Returns:
+        {
+          "success": bool,
+          "mongo_id": str or null,
+          "message": str
+        }
+        """
+        from pipelines.quiz_gen.quiz_store import store_quiz_submission  # lazy import
+
+        data = request.get_json(silent=True) or {}
+
+        # Validate required fields
+        required_fields = ["sector", "skill", "competency", "proficiency_level", "item_type", "questions"]
+        missing = [f for f in required_fields if not data.get(f)]
+        if missing:
+            return jsonify({
+                "success": False,
+                "mongo_id": None,
+                "message": f"Missing required fields: {', '.join(missing)}"
+            }), 400
+
+        try:
+            result = store_quiz_submission(
+                sector=data.get("sector", "").strip(),
+                skill=data.get("skill", "").strip(),
+                competency=data.get("competency", "").strip(),
+                proficiency_level=data.get("proficiency_level", "").strip(),
+                proficiency_description=data.get("proficiency_description", "").strip(),
+                item_type=data.get("item_type", "").strip(),
+                questions=data.get("questions", []),
+            )
+            status_code = 200 if result.get("success") else 400
+            return jsonify(result), status_code
+        except Exception as exc:
+            return jsonify({
+                "success": False,
+                "mongo_id": None,
+                "message": f"Error storing quiz: {str(exc)}"
+            }), 500
 
     @app.route("/quota_estimate", methods=["POST"])
     def quota_estimate():
@@ -393,12 +465,18 @@ def create_app():
             limit = max(1, min(limit, 100))
             skip = to_int(request.args.get("skip", 0), 0)
             skip = max(0, skip)
+            
+            # Set default sort field and allowed sorts based on collection
             if collection_name == "ingestion_runs":
                 default_sort = "started_at"
                 allowed_sorts = {"started_at", "status", "run_id"}
+            elif collection_name == "Quiz_Generation":
+                default_sort = "ingested_at"
+                allowed_sorts = {"ingested_at", "sector", "skill", "competency", "proficiency_level"}
             else:
                 default_sort = "ingested_timing"
                 allowed_sorts = {"ingested_timing", "publishedAt", "viewCount", "likeCount", "title"}
+            
             sort_field = request.args.get("sort", default_sort).strip()
             if sort_field not in allowed_sorts:
                 sort_field = default_sort

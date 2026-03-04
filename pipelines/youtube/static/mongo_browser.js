@@ -102,6 +102,37 @@
                     `;
                 })
                 .join("");
+        } else if (collection === 'Quiz_Generation') {
+            mongoBrowserResults.innerHTML = docs
+                .map((doc) => {
+                    const docId = doc._id || "-";
+                    const sector = doc.sector || "-";
+                    const skill = doc.skill || "-";
+                    const proficiencyLevel = doc.proficiency_level || "-";
+                    const proficiencyDesc = doc.proficiency_description || "-";
+                    const competency = doc.competency || "-";
+                    const itemType = doc.item_type || "-";
+                    const questionCount = doc.questions ? doc.questions.length : 0;
+                    return `
+                        <article class="doc-card">
+                            <div class="doc-meta">
+                                <div><strong>ID</strong><div class="mono">${esc(docId)}</div></div>
+                                <div><strong>Sector</strong><div>${esc(sector)}</div></div>
+                                <div><strong>Skill</strong><div>${esc(skill)}</div></div>
+                                <div><strong>Proficiency Level</strong><div>${esc(proficiencyLevel)}</div></div>
+                                <div><strong>Item Type</strong><div>${esc(itemType)}</div></div>
+                                <div><strong>Questions</strong><div>${esc(String(questionCount))}</div></div>
+                                <div><strong>Competency</strong><div>${esc(competency)}</div></div>
+                            </div>
+                            <div class="doc-title"><strong>Proficiency Description</strong><div>${esc(proficiencyDesc)}</div></div>
+                            <details>
+                                <summary>Raw JSON</summary>
+                                <pre>${esc(JSON.stringify(doc, null, 2))}</pre>
+                            </details>
+                        </article>
+                    `;
+                })
+                .join("");
         } else {
             // Fallback for other collections: just show raw JSON
             mongoBrowserResults.innerHTML = docs

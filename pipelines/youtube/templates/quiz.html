@@ -48,17 +48,54 @@
                 </div>
             </div>
 
-            <h3 class="subheader">Competency</h3>
+            <h3 class="subheader">Requirement / Proficiency Description</h3>
             <div class="field">
-                <div class="competencies" id="q_competencies_container">
+                <div class="requirements" id="q_requirements_container">
                     <span class="cascade-hint">Select a proficiency level above.</span>
                 </div>
             </div>
 
-            <h3 class="subheader">Requirement / Proficiency Description</h3>
+            <h3 class="subheader">Competency</h3>
             <div class="field">
-                <div class="requirements" id="q_requirements_container">
-                    <span class="cascade-hint">Select a competency above.</span>
+                <div class="competencies" id="q_competencies_container">
+                    <span class="cascade-hint">Select a requirement above.</span>
+                </div>
+            </div>
+
+            <!-- Quiz Configuration -->
+            <div id="q_quiz_config_area" style="display:none;">
+                <h3 class="subheader">Quiz Configuration</h3>
+                
+                <div class="field">
+                    <label style="display:block; margin-bottom:8px; font-weight:500;">Question Types (select at least one):</label>
+                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px;">
+                        <label style="display:flex; align-items:center; gap:6px;">
+                            <input type="checkbox" id="q_type_conceptual" class="q_question_type_cb" value="Conceptual" checked>
+                            <span>Conceptual</span>
+                        </label>
+                        <label style="display:flex; align-items:center; gap:6px;">
+                            <input type="checkbox" id="q_type_application" class="q_question_type_cb" value="Application" checked>
+                            <span>Application</span>
+                        </label>
+                        <label style="display:flex; align-items:center; gap:6px;">
+                            <input type="checkbox" id="q_type_scenario" class="q_question_type_cb" value="Scenario-Based" checked>
+                            <span>Scenario-Based</span>
+                        </label>
+                        <label style="display:flex; align-items:center; gap:6px;">
+                            <input type="checkbox" id="q_type_technical" class="q_question_type_cb" value="Technical" checked>
+                            <span>Technical</span>
+                        </label>
+                        <label style="display:flex; align-items:center; gap:6px;">
+                            <input type="checkbox" id="q_type_evaluation" class="q_question_type_cb" value="Evaluation" checked>
+                            <span>Evaluation</span>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="field">
+                    <label for="q_num_questions" style="display:block; margin-bottom:6px; font-weight:500;">Number of Questions to Generate (Min: 5, Max: 15):</label>
+                    <input type="number" id="q_num_questions" min="5" max="15" value="5" style="width:100%; padding:8px; border:1px solid #ccc; border-radius:4px;">
+                    <small id="q_num_questions_error" style="color:#d32f2f; display:none; margin-top:4px;">Please enter a value between 5 and 15.</small>
                 </div>
             </div>
 
@@ -87,6 +124,7 @@
                     <li>4. Choose a <strong>Competency</strong></li>
                     <li>5. Select the <strong>Requirement</strong></li>
                     <li>6. Click <strong>Generate Quiz</strong></li>
+                    <li>7. (Optional) Click <strong>Regenerate Questions</strong> if unsatisfied</li>
                 </ul>
             </div>
 
@@ -107,14 +145,24 @@
                 <div id="q_quiz_questions"></div>
 
                 <div id="q_quiz_actions" style="display:none;">
-                    <button type="button" id="q_submit_quiz_btn" class="primary">Submit Answers</button>
+                    <div style="display:flex; gap:10px; flex-wrap:wrap;">
+                        <button type="button" id="q_submit_quiz_btn" class="primary">Submit Answers</button>
+                        <button type="button" id="q_regenerate_quiz_btn" class="secondary">🔄 Regenerate Questions</button>
+                    </div>
                 </div>
 
                 <!-- Results -->
                 <div id="q_quiz_results" style="display:none;">
                     <div id="q_quiz_score_banner" class="quiz-score-banner"></div>
+                    
+                    <div style="display:flex; gap:10px; margin-bottom:12px; flex-wrap:wrap;">
+                        <button type="button" id="q_select_all_btn" class="secondary" style="font-size:0.9em;">☑ Select All Questions</button>
+                        <button type="button" id="q_select_none_btn" class="secondary" style="font-size:0.9em;">☐ Select None</button>
+                    </div>
+                    
                     <div id="q_quiz_review"></div>
                     <div style="display:flex; gap:10px; margin-top:12px; flex-wrap:wrap;">
+                        <button type="button" id="q_store_quiz_btn" class="primary">💾 Store Quiz in MongoDB</button>
                         <button type="button" id="q_retry_quiz_btn" class="secondary">&#8635;&nbsp; Retake Quiz</button>
                         <button type="button" id="q_new_selection_btn" class="secondary">&#8592;&nbsp; Change Selection</button>
                     </div>

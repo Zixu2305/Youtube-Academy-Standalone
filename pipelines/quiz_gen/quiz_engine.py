@@ -39,6 +39,9 @@ def _call_ollama(prompt: str) -> dict[str, Any]:
     POST to Ollama generate endpoint with JSON format enforced.
     Returns the parsed response dict.
     Raises RuntimeError on connectivity or parse failures.
+    
+    Note: No fixed seed is used, allowing different outputs on subsequent calls.
+    The JSON cache in quiz_store.py ensures determinism on first generation.
     """
     url = f"{_ollama_host()}/api/generate"
     payload = {
@@ -47,9 +50,8 @@ def _call_ollama(prompt: str) -> dict[str, Any]:
         "stream": False,
         "format": "json",
         "options": {
-            "temperature": 0.0,
-            "seed": 42,
-            "num_predict": 600,
+            "temperature": 0.7,  # Allow some randomness for diverse questions
+            "num_predict": 250,  # Optimized for faster generation without quality loss
         },
     }
     try:
@@ -268,12 +270,30 @@ def generate_quiz(ctx: dict[str, Any]) -> list[dict[str, Any]]:
     return list(generate_quiz_stream(ctx))
 
 
-def generate_quiz_stream(ctx: dict[str, Any]):
+def generate_quiz_stream(ctx: dict[str, Any], question_types: list[str] | None = None, num_questions: int = 5):
     """
     Generator version of generate_quiz.
     Yields each question dict as soon as Ollama returns it.
     Use this for streaming responses so the browser doesn't time out.
+    
+    Args:
+        ctx: Quiz context dict (sector, skill, competency, etc.)
+        question_types: List of question types to include (default: all 5 types).
+        num_questions: Number of questions to generate (default: 5).
     """
-    for idx, (q_type, prompt_fn) in enumerate(_QUESTION_TYPES, start=1):
-        q = _build_question(idx, q_type, prompt_fn, ctx)
+    if question_types is None:
+        question_types = ["Conceptual", "Application", "Scenario-Based", "Technical", "Evaluation"]
+    num_questions = max(1, min(num_questions, 20))  # clamp to 1-20
+    
+    # Filter question types to only those requested
+    filtered_types = [(q_type, prompt_fn) for q_type, prompt_fn in _QUESTION_TYPES if q_type in question_types]
+    
+    # Generate only the requested number of questions, cycling through types if needed
+    question_count = 0
+    type_idx = 0
+    while question_count < num_questions and filtered_types:
+        q_type, prompt_fn = filtered_types[type_idx % len(filtered_types)]
+        q = _build_question(question_count + 1, q_type, prompt_fn, ctx)
         yield q
+        question_count += 1
+        type_idx += 1

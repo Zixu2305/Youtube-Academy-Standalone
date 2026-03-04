@@ -8,6 +8,7 @@
     const competenciesContainer = document.getElementById("q_competencies_container");
     const proficiencyContainer  = document.getElementById("q_proficiency_container");
     const requirementsContainer = document.getElementById("q_requirements_container");
+    const quizConfigArea     = document.getElementById("q_quiz_config_area");
     const quizTriggerArea    = document.getElementById("q_quiz_trigger_area");
     const takeQuizBtn        = document.getElementById("q_take_quiz_btn");
     const selectionSummary   = document.getElementById("q_selection_summary");
@@ -22,12 +23,16 @@
     const quizQuestionsEl    = document.getElementById("q_quiz_questions");
     const quizActions        = document.getElementById("q_quiz_actions");
     const submitQuizBtn      = document.getElementById("q_submit_quiz_btn");
+    const regenerateQuizBtn  = document.getElementById("q_regenerate_quiz_btn");
     const quizResults        = document.getElementById("q_quiz_results");
     const quizScoreBanner    = document.getElementById("q_quiz_score_banner");
     const quizReview         = document.getElementById("q_quiz_review");
     const retryQuizBtn       = document.getElementById("q_retry_quiz_btn");
     const resetQuizBtn       = document.getElementById("q_reset_quiz_btn");
     const newSelectionBtn    = document.getElementById("q_new_selection_btn");
+    const storeQuizBtn       = document.getElementById("q_store_quiz_btn");
+    const selectAllBtn       = document.getElementById("q_select_all_btn");
+    const selectNoneBtn      = document.getElementById("q_select_none_btn");
 
     // ── Selection state ───────────────────────────────────────────
     let selectedSkill        = null;
@@ -35,9 +40,15 @@
     let selectedProficiency  = null;
     let selectedRequirement  = null;
 
+    // ── Quiz configuration state ───────────────────────────────────
+    let selectedQuestionTypes = new Set(["Conceptual", "Application", "Scenario-Based", "Technical", "Evaluation"]);
+    let numQuestionsToGenerate = 5;
+
     // ── Quiz state ────────────────────────────────────────────────
     let currentQuiz  = null;
     let userAnswers  = {};
+    let selectedQuestions = new Set();  // Track which questions are selected for storage
+    let quizGenerationAbort = null;  // AbortController for canceling in-progress generation
 
     // ── Utilities ─────────────────────────────────────────────────
     function esc(text) {
@@ -60,9 +71,9 @@
         const rows = [
             ["Sector",      sectorSelect.value],
             ["Skill",       selectedSkill],
-            ["Competency",  selectedCompetency || "—"],
             ["Proficiency", selectedProficiency || "—"],
             ["Requirement", selectedRequirement || "—"],
+            ["Competency",  selectedCompetency || "—"],
         ];
         selectionDisplay.innerHTML = rows.map(([label, val]) => `
             <div class="quiz-context-row">
@@ -73,14 +84,15 @@
     }
 
     function updateTrigger() {
-        const ready = !!(selectedSkill && selectedProficiency && selectedCompetency && selectedRequirement);
+        const ready = !!(selectedSkill && selectedProficiency && selectedRequirement && selectedCompetency);
+        quizConfigArea.style.display = ready ? "block" : "none";
         quizTriggerArea.style.display = ready ? "block" : "none";
         updateSelectionSummary();
     }
 
     // ── Cascading loader helpers ──────────────────────────────────
     function clearBelow(level) {
-        // level: "skill" | "proficiency" | "competency" | "requirement"
+        // level: "skill" | "proficiency" | "competency"
         if (level === "skill") {
             selectedSkill = null;
             skillsContainer.innerHTML = '<span class="cascade-hint">Select a sector above.</span>';
@@ -90,12 +102,12 @@
             proficiencyContainer.innerHTML = '<span class="cascade-hint">Select a skill above.</span>';
         }
         if (level === "skill" || level === "proficiency") {
+            selectedRequirement = null;
+            requirementsContainer.innerHTML = '<span class="cascade-hint">Select a proficiency level above.</span>';
+        }
+        if (level === "skill" || level === "proficiency") {
             selectedCompetency = null;
             competenciesContainer.innerHTML = '<span class="cascade-hint">Select a proficiency level above.</span>';
-        }
-        if (level === "skill" || level === "proficiency" || level === "competency") {
-            selectedRequirement = null;
-            requirementsContainer.innerHTML = '<span class="cascade-hint">Select a competency above.</span>';
         }
         updateTrigger();
     }
@@ -146,10 +158,8 @@
         });
     }
 
-    // ── Competencies loader ───────────────────────────────────────
     async function loadCompetencies() {
         competenciesContainer.innerHTML = '<span class="cascade-hint">Loading…</span>';
-        clearBelow("competency");
         try {
             const res = await fetch("/search_competencies", {
                 method: "POST",
@@ -189,8 +199,7 @@
                     selectedCompetency = comp;
                     btn.className = "competency-name selected";
                 }
-                clearBelow("competency");
-                if (selectedCompetency) loadRequirements();
+                updateTrigger();
             });
             row.appendChild(btn);
             competenciesContainer.appendChild(row);
@@ -239,19 +248,20 @@
                     selectedProficiency = level;
                     btn.className = "proficiency-name selected";
                 }
-                clearBelow("competency");
-                if (selectedProficiency) loadCompetencies();
+                clearBelow("proficiency");
+                if (selectedProficiency) {
+                    loadProficiencyDescription();
+                    loadCompetencies();
+                }
             });
             row.appendChild(btn);
             proficiencyContainer.appendChild(row);
         });
     }
 
-    // ── Requirements loader ───────────────────────────────────────
-    async function loadRequirements() {
+    // ── Proficiency Description loader ───────────────────────────
+    async function loadProficiencyDescription() {
         requirementsContainer.innerHTML = '<span class="cascade-hint">Loading…</span>';
-        selectedRequirement = null;
-        updateTrigger();
         try {
             const res = await fetch("/get_requirement", {
                 method: "POST",
@@ -260,51 +270,32 @@
                     sector: sectorSelect.value,
                     skill: selectedSkill,
                     proficiency_level: selectedProficiency,
-                    competency: selectedCompetency,
+                    competency: "", // empty for fetching description only
                 }),
             });
             const data = await res.json();
-            renderRequirements(data.requirements || []);
+            renderProficiencyDescription(data.requirements || []);
         } catch {
-            requirementsContainer.innerHTML = '<span class="cascade-hint cascade-error">Error loading requirements.</span>';
+            requirementsContainer.innerHTML = '<span class="cascade-hint cascade-error">Error loading proficiency description.</span>';
         }
     }
 
-    function renderRequirements(reqs) {
+    function renderProficiencyDescription(descriptions) {
         requirementsContainer.innerHTML = "";
-        if (!reqs.length) {
-            requirementsContainer.innerHTML = '<span class="cascade-hint">No requirements found.</span>';
+        if (!descriptions.length || !descriptions[0]) {
+            requirementsContainer.innerHTML = '<span class="cascade-hint">No description available.</span>';
+            selectedRequirement = null;
+            updateTrigger();
             return;
         }
-        reqs.forEach((req) => {
-            const row = document.createElement("div");
-            row.className = "requirement-item";
-            const btn = document.createElement("span");
-            btn.className = "requirement-name" + (selectedRequirement === req ? " selected" : "");
-            btn.textContent = req;
-            btn.addEventListener("click", () => {
-                if (selectedRequirement === req) {
-                    selectedRequirement = null;
-                    btn.className = "requirement-name";
-                } else {
-                    document.querySelectorAll("#q_requirements_container .requirement-name.selected")
-                        .forEach(el => el.classList.remove("selected"));
-                    selectedRequirement = req;
-                    btn.className = "requirement-name selected";
-                }
-                updateTrigger();
-            });
-            row.appendChild(btn);
-            requirementsContainer.appendChild(row);
-        });
-        // Auto-select single option
-        if (reqs.length === 1) {
-            selectedRequirement = reqs[0];
-            requirementsContainer.querySelector(".requirement-name").classList.add("selected");
-            updateTrigger();
-        }
+        const description = descriptions[0];
+        selectedRequirement = description;
+        const row = document.createElement("div");
+        row.className = "requirement-item";
+        row.innerHTML = `<div class="requirement-text">${esc(description)}</div>`;
+        requirementsContainer.appendChild(row);
+        updateTrigger();
     }
-
     // ── Sector / search wiring ────────────────────────────────────
     sectorSelect.addEventListener("change", async () => {
         clearBelow("skill");
@@ -413,6 +404,7 @@
         const questions = currentQuiz.questions;
         let correct = 0;
         quizReview.innerHTML = "";
+        selectedQuestions.clear();  // Reset selected questions
 
         questions.forEach((q) => {
             const userAns   = userAnswers[q.question_number];
@@ -421,6 +413,36 @@
 
             const rDiv = document.createElement("div");
             rDiv.className = `quiz-review-item ${isCorrect ? "quiz-review-correct" : "quiz-review-wrong"}`;
+
+            // Checkbox for selecting question to store
+            const checkboxContainer = document.createElement("div");
+            checkboxContainer.style.display = "flex";
+            checkboxContainer.style.alignItems = "center";
+            checkboxContainer.style.gap = "8px";
+            checkboxContainer.style.marginBottom = "8px";
+            
+            const checkbox = document.createElement("input");
+            checkbox.type = "checkbox";
+            checkbox.checked = true;  // Default to checked
+            checkbox.id = `q_store_${q.question_number}`;
+            checkbox.addEventListener("change", () => {
+                if (checkbox.checked) {
+                    selectedQuestions.add(q.question_number);
+                } else {
+                    selectedQuestions.delete(q.question_number);
+                }
+            });
+            selectedQuestions.add(q.question_number);  // Add to selected by default
+
+            const label = document.createElement("label");
+            label.htmlFor = checkbox.id;
+            label.style.margin = "0";
+            label.style.cursor = "pointer";
+            label.textContent = "Include in MongoDB";
+
+            checkboxContainer.appendChild(checkbox);
+            checkboxContainer.appendChild(label);
+            rDiv.appendChild(checkboxContainer);
 
             // Question type badge in review
             if (q.question_type) {
@@ -472,15 +494,39 @@
 
     // ── Generate quiz (streaming NDJSON) ──────────────────────────
     async function generateQuiz() {
+        // Validate at least one question type is selected
+        if (selectedQuestionTypes.size === 0) {
+            alert("Please select at least one question type.");
+            return;
+        }
+        
+        // Validate number of questions is in valid range
+        const numQuestionsInput = document.getElementById("q_num_questions");
+        const numVal = parseInt(numQuestionsInput.value, 10);
+        if (isNaN(numVal) || numVal < 5 || numVal > 15) {
+            alert("Number of questions must be between 5 and 15. Please correct the value before generating.");
+            return;
+        }
+        
+        numQuestionsToGenerate = numVal;  // Update the state variable with the validated value
+        
+        // Abort any in-progress generation and start fresh
+        if (quizGenerationAbort) {
+            quizGenerationAbort.abort();
+        }
+        quizGenerationAbort = new AbortController();
+        
         showQuizPanel();
         resetQuizPanel();
         renderContextBanner();
-        if (quizLoadingText) quizLoadingText.textContent = "Generating question 1 / 5\u2026";
+        if (quizLoadingText) quizLoadingText.textContent = "Generating question 1 / " + numVal + "\u2026";
         quizLoading.style.display = "flex";
+        quizError.style.display = "none";  // Clear any previous errors
         quizPanel.scrollIntoView({ behavior: "smooth" });
 
         currentQuiz = null;
         userAnswers = {};
+        selectedQuestions.clear();
         let collectedQuestions = [];
         let quizKey = null;
 
@@ -488,12 +534,15 @@
             const res = await fetch("/generate_quiz_stream", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
+                signal: quizGenerationAbort.signal,
                 body: JSON.stringify({
                     sector:                  sectorSelect.value,
                     skill:                   selectedSkill,
                     competency:              selectedCompetency,
                     proficiency_level:       selectedProficiency,
                     proficiency_description: selectedRequirement || "",
+                    question_types:          Array.from(selectedQuestionTypes),
+                    num_questions:           numQuestionsToGenerate,
                 }),
             });
 
@@ -531,8 +580,8 @@
                         collectedQuestions.push(event);
                         appendQuestion(event);
                         const next = collectedQuestions.length + 1;
-                        if (quizLoadingText && next <= 5) {
-                            quizLoadingText.textContent = `Generating question ${next} / 5\u2026`;
+                        if (quizLoadingText && next <= numVal) {
+                            quizLoadingText.textContent = `Generating question ${next} / ${numVal}\u2026`;
                         }
                     }
                     if (event.type === "done") {
@@ -554,9 +603,208 @@
             quizActions.style.display = "block";
 
         } catch (err) {
+            // Don't show error if this was an abort (user clicked to regenerate)
+            if (err.name === "AbortError") {
+                return;  // Silently exit, new generation is starting
+            }
             quizLoading.style.display = "none";
             quizError.textContent    = `Error: ${err.message}`;
             quizError.style.display  = "block";
+        }
+    }
+
+    // ── Regenerate quiz (skip cache) ────────────────────────────
+    async function regenerateQuiz() {
+        if (!currentQuiz) {
+            alert("No quiz to regenerate.");
+            return;
+        }
+
+        // Validate at least one question type is selected
+        if (selectedQuestionTypes.size === 0) {
+            alert("Please select at least one question type.");
+            return;
+        }
+        
+        // Validate number of questions is in valid range
+        const numQuestionsInput = document.getElementById("q_num_questions");
+        const numVal = parseInt(numQuestionsInput.value, 10);
+        if (isNaN(numVal) || numVal < 5 || numVal > 15) {
+            alert("Number of questions must be between 5 and 15. Please correct the value before regenerating.");
+            return;
+        }
+        
+        numQuestionsToGenerate = numVal;  // Update the state variable with the validated value
+
+        // Confirm regeneration
+        if (!confirm("This will generate new questions. Current answers will be lost. Continue?")) {
+            return;
+        }
+
+        // Abort any in-progress generation and start fresh
+        if (quizGenerationAbort) {
+            quizGenerationAbort.abort();
+        }
+        quizGenerationAbort = new AbortController();
+
+        showQuizPanel();
+        resetQuizPanel();
+        renderContextBanner();
+        if (quizLoadingText) quizLoadingText.textContent = "Regenerating question 1 / " + numVal + "\u2026";
+        quizLoading.style.display = "flex";
+        quizError.style.display = "none";  // Clear any previous errors
+        quizPanel.scrollIntoView({ behavior: "smooth" });
+
+        currentQuiz = null;
+        userAnswers = {};
+        selectedQuestions.clear();
+        let collectedQuestions = [];
+        let quizKey = null;
+
+        try {
+            const res = await fetch("/generate_quiz_stream", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                signal: quizGenerationAbort.signal,
+                body: JSON.stringify({
+                    sector:                  sectorSelect.value,
+                    skill:                   selectedSkill,
+                    competency:              selectedCompetency,
+                    proficiency_level:       selectedProficiency,
+                    proficiency_description: selectedRequirement || "",
+                    force_regenerate:        true,  // Skip cache, generate fresh questions
+                    question_types:          Array.from(selectedQuestionTypes),
+                    num_questions:           numQuestionsToGenerate,
+                }),
+            });
+
+            if (!res.ok) {
+                throw new Error(`Server error ${res.status}`);
+            }
+
+            const reader  = res.body.getReader();
+            const decoder = new TextDecoder();
+            let   buffer  = "";
+
+            while (true) {
+                const { value, done } = await reader.read();
+                if (done) break;
+                buffer += decoder.decode(value, { stream: true });
+
+                const lines = buffer.split("\n");
+                buffer = lines.pop();
+
+                for (const line of lines) {
+                    const trimmed = line.trim();
+                    if (!trimmed) continue;
+
+                    let event;
+                    try { event = JSON.parse(trimmed); }
+                    catch { continue; }
+
+                    if (event.type === "error") {
+                        throw new Error(event.message || "Quiz generation failed.");
+                    }
+                    if (event.type === "context") {
+                        quizKey = event.quiz_key;
+                    }
+                    if (event.type === "question") {
+                        collectedQuestions.push(event);
+                        if (quizLoadingText) quizLoadingText.textContent = `Regenerating question ${collectedQuestions.length} / ${numVal}\u2026`;
+                        appendQuestion(event);
+                    }
+                    if (event.type === "done") {
+                        // Quiz generation complete
+                    }
+                }
+            }
+
+            if (collectedQuestions.length === 0) {
+                throw new Error("No questions received from server.");
+            }
+
+            currentQuiz = {
+                quiz_key:   quizKey,
+                questions:  collectedQuestions,
+            };
+
+            quizLoading.style.display = "none";
+            quizActions.style.display = "block";
+
+        } catch (err) {
+            // Don't show error if this was an abort (user clicked to regenerate again)
+            if (err.name === "AbortError") {
+                return;  // Silently exit, new regeneration is starting
+            }
+            quizLoading.style.display = "none";
+            quizError.textContent    = `Error: ${err.message}`;
+            quizError.style.display  = "block";
+        }
+    }
+
+    // ── Store quiz to MongoDB ──────────────────────────────────────
+    async function storeQuiz() {
+        if (!currentQuiz) {
+            alert("No quiz to store.");
+            return;
+        }
+
+        // Collect only selected questions and remove question_number
+        const selectedQuestionObjects = currentQuiz.questions
+            .filter(q => selectedQuestions.has(q.question_number))
+            .map(q => {
+                const { question_number, ...qWithoutNumber } = q;
+                return qWithoutNumber;
+            });
+
+        if (selectedQuestionObjects.length === 0) {
+            alert("Please select at least one question to store.");
+            return;
+        }
+
+        // Get competency item type from the competency string (format: "type: text")
+        const competencyParts = selectedCompetency.split(": ");
+        const itemType = competencyParts.length > 1 ? competencyParts[0].toLowerCase() : "knowledge";
+
+        const payload = {
+            sector:                  sectorSelect.value,
+            skill:                   selectedSkill,
+            competency:              selectedCompetency,
+            proficiency_level:       selectedProficiency,
+            proficiency_description: selectedRequirement || "",
+            item_type:               itemType,
+            questions:               selectedQuestionObjects,
+        };
+
+        storeQuizBtn.disabled = true;
+        storeQuizBtn.textContent = "Storing...";
+
+        try {
+            const res = await fetch("/store_quiz", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload),
+            });
+
+            const result = await res.json();
+
+            if (result.success) {
+                alert(
+                    `✓ Quiz stored successfully!\n` +
+                    `Questions stored: ${selectedQuestionObjects.length}\n` +
+                    `MongoDB ID: ${result.mongo_id}`
+                );
+                storeQuizBtn.textContent = "✓ Stored";
+                storeQuizBtn.style.opacity = "0.6";
+            } else {
+                alert(`✗ Failed to store quiz:\n${result.message}`);
+                storeQuizBtn.textContent = "💾 Store Quiz in MongoDB";
+                storeQuizBtn.disabled = false;
+            }
+        } catch (err) {
+            alert(`✗ Error storing quiz:\n${err.message}`);
+            storeQuizBtn.textContent = "💾 Store Quiz in MongoDB";
+            storeQuizBtn.disabled = false;
         }
     }
 
@@ -574,9 +822,12 @@
         renderQuizResults();
     });
 
+    regenerateQuizBtn.addEventListener("click", regenerateQuiz);
+
     retryQuizBtn.addEventListener("click", () => {
         if (!currentQuiz) return;
         userAnswers = {};
+        selectedQuestions.clear();
         quizResults.style.display = "none";
         renderQuizQuestions(currentQuiz.questions);
     });
@@ -584,15 +835,66 @@
     resetQuizBtn.addEventListener("click", () => {
         currentQuiz = null;
         userAnswers = {};
+        selectedQuestions.clear();
         showQuizIdle();
     });
 
     newSelectionBtn.addEventListener("click", () => {
         currentQuiz = null;
         userAnswers = {};
+        selectedQuestions.clear();
         showQuizIdle();
         // Scroll back to the selection panel
         document.getElementById("q_sector_select").scrollIntoView({ behavior: "smooth" });
+    });
+
+    storeQuizBtn.addEventListener("click", storeQuiz);
+
+    selectAllBtn.addEventListener("click", () => {
+        if (!currentQuiz) return;
+        currentQuiz.questions.forEach(q => selectedQuestions.add(q.question_number));
+        // Update all checkboxes
+        document.querySelectorAll('[id^="q_store_"]').forEach(cb => {
+            cb.checked = true;
+        });
+    });
+
+    selectNoneBtn.addEventListener("click", () => {
+        if (!currentQuiz) return;
+        selectedQuestions.clear();
+        // Update all checkboxes
+        document.querySelectorAll('[id^="q_store_"]').forEach(cb => {
+            cb.checked = false;
+        });
+    });
+
+    // ── Quiz configuration listeners ─────────────────────────────
+    document.querySelectorAll(".q_question_type_cb").forEach(checkbox => {
+        checkbox.addEventListener("change", () => {
+            selectedQuestionTypes.clear();
+            document.querySelectorAll(".q_question_type_cb").forEach(cb => {
+                if (cb.checked) {
+                    selectedQuestionTypes.add(cb.value);
+                }
+            });
+            
+            // Ensure at least one is selected
+            if (selectedQuestionTypes.size === 0) {
+                checkbox.checked = true;
+                selectedQuestionTypes.add(checkbox.value);
+            }
+        });
+    });
+
+    document.getElementById("q_num_questions").addEventListener("input", (e) => {
+        const val = parseInt(e.target.value, 10);
+        const errorMsg = document.getElementById("q_num_questions_error");
+        if (!isNaN(val) && val >= 5 && val <= 15) {
+            numQuestionsToGenerate = val;
+            errorMsg.style.display = "none";
+        } else if (!isNaN(val)) {
+            errorMsg.style.display = "block";
+        }
     });
 
     // ── Bootstrap ─────────────────────────────────────────────────
