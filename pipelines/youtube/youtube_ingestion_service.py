@@ -507,13 +507,21 @@ def fetch_videos_for_preview(
                 continue
 
             snippet = video_item.get("snippet", {}) if video_item else {}
-
+            # Extract item_type from competency (formatted as "item_type: text")
+            item_type = ""
+            if competency and ":" in competency:
+                item_type = competency.split(":", 1)[0].strip()
+            
+            # Get proficiency description from database
+            proficiency_description = get_proficiency_description(sector, skill, proficiency.strip())
+            
             video_doc = {
                 "sector": sector,
                 "skill_name": skill,
                 "competency": competency,
-                "proficiency": proficiency,
-                "requirement": requirement,
+                "item_type": item_type,
+                "proficiency_level": proficiency,
+                "proficiency_description": proficiency_description,
                 "videoId": video_id,
                 "publishedAt": snippet.get("publishedAt", ""),
                 "title": snippet.get("title", ""),
@@ -527,7 +535,6 @@ def fetch_videos_for_preview(
                 "thumbnailUrl": snippet.get("thumbnails", {}).get("default", {}).get("url", ""),
             }
             videos.append(video_doc)
-
     summary["error_count"] = len(summary["errors"])
     summary["errors"] = summary["errors"][:MAX_ERROR_DETAILS]
     return videos, summary

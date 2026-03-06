@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Delete Question and Video</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+    <h1>Delete Question and Video</h1>
+    <div class="nav">
+        <a class="link-button" href="/">YouTube Ingestion Console</a>
+        <a class="link-button" href="/quiz_gen">Quiz Generation</a>
+        <a class="link-button" href="/mongo_browser">MongoDB Browser</a>
+    </div>
+
+    <div class="card" style="max-width: 600px; margin: 20px auto;">
+        <h2 class="title">Delete Question from MongoDB</h2>
+        <p class="hint">Enter the MongoDB Object ID (_id) to delete a question.</p>
+        
+        <div class="field">
+            <label for="question_id_input" style="display:block; margin-bottom:6px; font-weight:500;">_id:</label>
+            <input type="text" id="question_id_input" placeholder="Paste MongoDB _id here" style="width:100%; padding:8px; border:1px solid #ccc; border-radius:4px; box-sizing:border-box;">
+        </div>
+
+        <div class="field">
+            <button type="button" id="delete_question_btn" class="danger" style="width:100%;">
+                🗑️ Delete Question
+            </button>
+        </div>
+
+        <div id="delete_status" style="margin-top:10px; padding:10px; border-radius:4px; text-align:center; font-weight:500; display:none;"></div>
+    </div>
+
+    <div class="card" style="max-width: 600px; margin: 20px auto;">
+        <h2 class="title">Delete Video from MongoDB</h2>
+        <p class="hint">Enter the MongoDB Object ID (_id) to delete a video.</p>
+        
+        <div class="field">
+            <label for="video_id_input" style="display:block; margin-bottom:6px; font-weight:500;">_id:</label>
+            <input type="text" id="video_id_input" placeholder="Paste MongoDB _id here" style="width:100%; padding:8px; border:1px solid #ccc; border-radius:4px; box-sizing:border-box;">
+        </div>
+
+        <div class="field">
+            <button type="button" id="delete_video_btn" class="danger" style="width:100%;">
+                🗑️ Delete Video
+            </button>
+        </div>
+
+        <div id="delete_video_status" style="margin-top:10px; padding:10px; border-radius:4px; text-align:center; font-weight:500; display:none;"></div>
+    </div>
+
+    <script src="{{ url_for('static', filename='delete.js') }}"></script>
+</body>
+</html>

@@ -9,12 +9,14 @@
 <body>
     <h1>YouTube Ingestion Console</h1>
     <div class="nav">
-        <a class="link-button" href="/mongo_browser">MongoDB Browser</a>
         <a class="link-button" href="/quiz_gen">Quiz Generation</a>
+        <a class="link-button" href="/mongo_browser">MongoDB Browser</a>
+        <a class="link-button danger" href="/delete">Delete Question and Video</a>
     </div>
     <div class="layout">
         <div class="card">
             <h2 class="title">Fetch And Upsert</h2>
+            <p class="hint">Make selections from top to bottom to load your videos.</p>
             <form id="fetch_form">
                 <div class="field">
                     <label for="sector_select">Sector</label>
@@ -28,20 +30,21 @@
                     <label for="search_skills">Search Skills</label>
                     <input type="text" id="search_skills" placeholder="Type to filter skills">
                 </div>
+                <h3 class="subheader">Skill</h3>
                 <div class="field">
                     <div class="skills" id="skills_container"></div>
                 </div>
                 <h3 class="subheader">Proficiency Level</h3>
                 <div class="field">
-                    <div class="proficiency-levels" id="proficiency_container"></div>
+                    <div class="proficiency-levels" id="proficiency_container"><span class="cascade-hint">Select a skill above.</span></div>
                 </div>
-                <h3 class="subheader">Competencies</h3>
+                <h3 class="subheader">Requirement / Proficiency Description</h3>
                 <div class="field">
-                    <div class="competencies" id="competencies_container"></div>
+                    <div class="requirements" id="requirements_container"><span class="cascade-hint">Select a proficiency level above.</span></div>
                 </div>
-                <h3 class="subheader">Requirement</h3>
+                <h3 class="subheader">Competency</h3>
                 <div class="field">
-                    <div class="requirements" id="requirements_container"></div>
+                    <div class="competencies" id="competencies_container"><span class="cascade-hint">Select a proficiency level above.</span></div>
                 </div>
                 <div class="field">
                     <label for="api_key">YouTube API Key</label>

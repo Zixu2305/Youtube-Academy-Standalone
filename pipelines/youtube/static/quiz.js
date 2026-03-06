@@ -92,11 +92,8 @@
 
     // ── Cascading loader helpers ──────────────────────────────────
     function clearBelow(level) {
-        // level: "skill" | "proficiency" | "competency"
-        if (level === "skill") {
-            selectedSkill = null;
-            skillsContainer.innerHTML = '<span class="cascade-hint">Select a sector above.</span>';
-        }
+        // level: "skill" | "proficiency"
+        // Clear all dependent selections below the given level
         if (level === "skill") {
             selectedProficiency = null;
             proficiencyContainer.innerHTML = '<span class="cascade-hint">Select a skill above.</span>';
@@ -150,7 +147,7 @@
                     selectedSkill = skill;
                     btn.className = "skill-name selected";
                 }
-                clearBelow("proficiency");
+                clearBelow("skill");
                 if (selectedSkill) loadProficiencyLevels();
             });
             row.appendChild(btn);
@@ -298,6 +295,7 @@
     }
     // ── Sector / search wiring ────────────────────────────────────
     sectorSelect.addEventListener("change", async () => {
+        selectedSkill = null;
         clearBelow("skill");
         await loadSkills(sectorSelect.value);
     });
@@ -792,7 +790,7 @@
                 alert(
                     `✓ Quiz stored successfully!\n` +
                     `Questions stored: ${selectedQuestionObjects.length}\n` +
-                    `MongoDB ID: ${result.mongo_id}`
+                    `MongoDB IDs: ${result.mongo_ids.join(", ")}`
                 );
                 storeQuizBtn.textContent = "✓ Stored";
                 storeQuizBtn.style.opacity = "0.6";

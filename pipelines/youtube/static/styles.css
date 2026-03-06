@@ -26,6 +26,17 @@ body {
     background: #f3f4f6;
 }
 
+.link-button.danger {
+    background: #dc2626;
+    color: white;
+    border-color: #dc2626;
+}
+
+.link-button.danger:hover {
+    background: #b91c1c;
+    border-color: #b91c1c;
+}
+
 .layout {
     display: grid;
     grid-template-columns: 2fr 1fr;
@@ -228,6 +239,18 @@ button.primary {
     border-color: #0b5fff;
     color: white;
     font-weight: 600;
+}
+
+button.danger {
+    background: #dc2626;
+    border-color: #dc2626;
+    color: white;
+    font-weight: 600;
+}
+
+button.danger:hover {
+    background: #b91c1c;
+    border-color: #b91c1c;
 }
 
 button:disabled {

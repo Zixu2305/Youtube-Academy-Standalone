@@ -121,9 +121,7 @@
 
     async function loadCompetencies() {
         competenciesContainer.innerHTML = "";
-        requirementsContainer.innerHTML = "";
         selectedCompetency = null;
-        selectedRequirement = null;
         if (!selectedSkill || !selectedProficiency) {
             competenciesContainer.textContent = "Select a proficiency level first";
             return;
@@ -160,9 +158,6 @@
                         selectedCompetency = comp;
                         compButton.className = "competency-name selected";
                     }
-                    // Clear downstream
-                    selectedRequirement = null;
-                    loadRequirements();
                     updateQuotaEstimate();
                 });
 
@@ -172,6 +167,41 @@
         } catch (error) {
             competenciesContainer.textContent = "Error loading competencies";
         }
+    }
+
+    async function loadProficiencyDescription() {
+        requirementsContainer.innerHTML = "Loading…";
+        try {
+            const response = await fetch("/get_requirement", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    sector: sectorSelect.value,
+                    skill: selectedSkill,
+                    proficiency_level: selectedProficiency,
+                    competency: ""
+                })
+            });
+            const data = await response.json();
+            renderProficiencyDescription(data.requirements || []);
+        } catch (error) {
+            requirementsContainer.textContent = "Error loading proficiency description";
+        }
+    }
+
+    function renderProficiencyDescription(descriptions) {
+        requirementsContainer.innerHTML = "";
+        if (!descriptions.length || !descriptions[0]) {
+            requirementsContainer.textContent = "No description available.";
+            selectedRequirement = null;
+            return;
+        }
+        const description = descriptions[0];
+        selectedRequirement = description;
+        const row = document.createElement("div");
+        row.className = "requirement-item";
+        row.innerHTML = `<div class="requirement-text">${esc(description)}</div>`;
+        requirementsContainer.appendChild(row);
     }
 
     async function loadProficiencyLevels() {
@@ -220,7 +250,10 @@
                     // Clear downstream
                     selectedCompetency = null;
                     selectedRequirement = null;
-                    loadCompetencies();
+                    if (selectedProficiency) {
+                        loadProficiencyDescription();
+                        loadCompetencies();
+                    }
                     updateQuotaEstimate();
                 });
 
@@ -233,60 +266,9 @@
     }
 
     async function loadRequirements() {
-        requirementsContainer.innerHTML = "";
-        selectedRequirement = null;
-        if (!selectedSkill || !selectedProficiency || !selectedCompetency) {
-            requirementsContainer.textContent = "Select competency first";
-            return;
-        }
-
-        try {
-            const response = await fetch("/get_requirement", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ sector: sectorSelect.value, skill: selectedSkill, proficiency_level: selectedProficiency, competency: selectedCompetency })
-            });
-            const data = await response.json();
-            const requirements = data.requirements || [];
-            if (!requirements.length) {
-                requirementsContainer.textContent = "No requirements found.";
-                return;
-            }
-            requirements.forEach((req) => {
-                const row = document.createElement("div");
-                row.className = "requirement-item";
-
-                const reqButton = document.createElement("span");
-                reqButton.className = selectedRequirement === req ? "requirement-name selected" : "requirement-name";
-                reqButton.textContent = req;
-                reqButton.addEventListener("click", () => {
-                    if (selectedRequirement === req) {
-                        selectedRequirement = null;
-                        reqButton.className = "requirement-name";
-                    } else {
-                        // Clear previous selection
-                        const prevSelected = document.querySelector(".requirement-name.selected");
-                        if (prevSelected) {
-                            prevSelected.className = "requirement-name";
-                        }
-                        selectedRequirement = req;
-                        reqButton.className = "requirement-name selected";
-                    }
-                    updateQuotaEstimate();
-                });
-
-                row.appendChild(reqButton);
-                requirementsContainer.appendChild(row);
-            });
-            if (requirements.length === 1) {
-                // Auto-select if only one
-                const firstButton = requirementsContainer.querySelector(".requirement-name");
-                firstButton.className = "requirement-name selected";
-                selectedRequirement = requirements[0];
-            }
-        } catch (error) {
-            requirementsContainer.textContent = "Error loading requirements";
-        }
+        // Requirement is auto-loaded by loadProficiencyDescription (called from proficiency click)
+        // This function is here for reference but not called directly
+        return;
     }
 
     async function loadSkills(sector, searchTerm = "") {
@@ -682,8 +664,8 @@
             return;
         }
 
-        if (!selectedSkill) {
-            setRunState("Select a skill before running.", "error");
+        if (!selectedSkill || !selectedProficiency || !selectedRequirement || !selectedCompetency) {
+            setRunState("Select all required fields: Skill, Proficiency Level, Requirement, and Competency.", "error");
             return;
         }
 

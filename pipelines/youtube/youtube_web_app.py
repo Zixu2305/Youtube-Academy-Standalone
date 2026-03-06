@@ -274,6 +274,11 @@ def create_app():
             sectors_list = []
         return render_template("quiz.html", sectors_list=sectors_list)
 
+    @app.route("/delete")
+    def delete_page():
+        """Render the delete question page."""
+        return render_template("delete.html")
+
     @app.route("/search_skills", methods=["POST"])
     def search_skills_route():
         data = request.get_json(silent=True) or {}
@@ -381,7 +386,8 @@ def create_app():
         Returns:
         {
           "success": bool,
-          "mongo_id": str or null,
+          "mongo_ids": list[str] or None,
+          "question_count": int,
           "message": str
         }
         """
@@ -395,7 +401,7 @@ def create_app():
         if missing:
             return jsonify({
                 "success": False,
-                "mongo_id": None,
+                "mongo_ids": None,
                 "message": f"Missing required fields: {', '.join(missing)}"
             }), 400
 
@@ -414,8 +420,126 @@ def create_app():
         except Exception as exc:
             return jsonify({
                 "success": False,
-                "mongo_id": None,
+                "mongo_ids": None,
                 "message": f"Error storing quiz: {str(exc)}"
+            }), 500
+
+    @app.route("/delete_question", methods=["POST"])
+    def delete_question_route():
+        """
+        Delete a quiz question from MongoDB (soft delete).
+
+        Expects JSON payload:
+        {
+          "question_id": str  (MongoDB _id)
+        }
+
+        Returns:
+        {
+          "success": bool,
+          "message": str
+        }
+        """
+        from pipelines.quiz_gen.quiz_mongo import delete_question  # lazy import
+
+        data = request.get_json(silent=True) or {}
+        question_id = data.get("question_id", "").strip()
+
+        print(f"\n{'='*60}")
+        print(f"DELETE_QUESTION_ROUTE called")
+        print(f"Question ID: {question_id}")
+        print(f"{'='*60}")
+
+        if not question_id:
+            print(f"❌ No question_id provided")
+            return jsonify({
+                "success": False,
+                "message": "question_id is required."
+            }), 400
+
+        try:
+            print(f"🔄 Calling delete_question({question_id})...")
+            result = delete_question(question_id)
+            print(f"📤 delete_question() returned: {result}")
+            
+            if result.get("success"):
+                print(f"✅ Delete successful, returning 200")
+                return jsonify({
+                    "success": True,
+                    "message": result.get("message", "Question deleted successfully.")
+                }), 200
+            else:
+                print(f"❌ Delete returned False, returning 400")
+                return jsonify({
+                    "success": False,
+                    "message": result.get("message", "Failed to delete question.")
+                }), 400
+        except Exception as exc:
+            print(f"❌ Exception: {exc}")
+            import traceback
+            print(traceback.format_exc())
+            return jsonify({
+                "success": False,
+                "message": f"Error deleting question: {str(exc)}"
+            }), 500
+
+    @app.route("/delete_video", methods=["POST"])
+    def delete_video_route():
+        """
+        Delete a video from MongoDB (soft delete).
+
+        Expects JSON payload:
+        {
+          "video_id": str  (MongoDB _id)
+        }
+
+        Returns:
+        {
+          "success": bool,
+          "message": str
+        }
+        """
+        from pipelines.quiz_gen.quiz_mongo import delete_video  # lazy import
+
+        data = request.get_json(silent=True) or {}
+        video_id = data.get("video_id", "").strip()
+
+        print(f"\n{'='*60}")
+        print(f"DELETE_VIDEO_ROUTE called")
+        print(f"Video ID: {video_id}")
+        print(f"{'='*60}")
+
+        if not video_id:
+            print(f"❌ No video_id provided")
+            return jsonify({
+                "success": False,
+                "message": "video_id is required."
+            }), 400
+
+        try:
+            print(f"🔄 Calling delete_video({video_id})...")
+            result = delete_video(video_id)
+            print(f"📤 delete_video() returned: {result}")
+            
+            if result.get("success"):
+                print(f"✅ Delete successful, returning 200")
+                return jsonify({
+                    "success": True,
+                    "message": result.get("message", "Video deleted successfully.")
+                }), 200
+            else:
+                print(f"❌ Delete returned False, returning 400")
+                return jsonify({
+                    "success": False,
+                    "message": result.get("message", "Failed to delete video.")
+                }), 400
+        except Exception as exc:
+            print(f"❌ Exception: {exc}")
+            import traceback
+            print(traceback.format_exc())
+            return jsonify({
+                "success": False,
+                "message": f"Error deleting video: {str(exc)}"
             }), 500
 
     @app.route("/quota_estimate", methods=["POST"])
@@ -491,6 +615,14 @@ def create_app():
 
             collection = db[collection_name]
             query = _build_mongo_filter(filter_field, filter_value)
+            
+            # For Quiz_Generation, exclude deleted questions
+            if collection_name == "Quiz_Generation":
+                query["deleted"] = {"$ne": True}
+            # For videos collection, exclude deleted videos
+            elif collection_name == "videos":
+                query["deleted"] = {"$ne": True}
+            
             projection = None
 
             cursor = (

@@ -46,16 +46,22 @@
         if (collection === 'videos') {
             mongoBrowserResults.innerHTML = docs
                 .map((doc) => {
+                    const docId = doc._id || "-";
                     const videoId = doc.videoId || "";
                     const title = doc.title || "-";
                     const sector = doc.sector || "-";
                     const skillName = doc.skill_name || "-";
+                    const competency = doc.competency || "-";
+                    const proficiencyLevel = doc.proficiency_level || "-";
+                    const proficiencyDescription = doc.proficiency_description || "-";
+                    const itemType = doc.item_type || "-";
                     const ingested = doc.ingested_timing || "-";
                     const publishedAt = doc.publishedAt || "-";
                     const actions = videoId
                         ? `
                             <div class="actions">
-                                <button type="button" data-action="copy-video-id" data-video-id="${esc(videoId)}">Copy ID</button>
+                                <button type="button" data-action="copy-video-id" data-video-id="${esc(videoId)}">Copy Video ID</button>
+                                <button type="button" data-action="copy-mongo-id" data-mongo-id="${esc(docId)}">Copy MongoDB ID</button>
                                 <a class="link-button" href="${esc(youtubeWatchUrl(videoId))}" target="_blank" rel="noopener noreferrer">Open on YouTube</a>
                             </div>
                         `
@@ -63,7 +69,12 @@
                     return `
                         <article class="doc-card">
                             <div class="doc-meta">
+                                <div><strong>ID</strong><div class="mono">${esc(docId)}</div></div>
                                 <div><strong>Video ID</strong><div class="mono">${esc(videoId || "-")}</div></div>
+                                <div><strong>Competency</strong><div>${esc(competency)}</div></div>
+                                <div><strong>Proficiency Level</strong><div>${esc(proficiencyLevel)}</div></div>
+                                <div><strong>Proficiency Description</strong><div>${esc(proficiencyDescription)}</div></div>
+                                <div><strong>Item Type</strong><div>${esc(itemType)}</div></div>
                                 <div><strong>Skill</strong><div>${esc(skillName)}</div></div>
                                 <div><strong>Sector</strong><div>${esc(sector)}</div></div>
                                 <div><strong>Published</strong><div>${esc(publishedAt)}</div></div>
@@ -112,7 +123,9 @@
                     const proficiencyDesc = doc.proficiency_description || "-";
                     const competency = doc.competency || "-";
                     const itemType = doc.item_type || "-";
-                    const questionCount = doc.questions ? doc.questions.length : 0;
+                    const questionType = doc.question_type || "-";
+                    const question = doc.question || "-";
+                    const correct = doc.correct || "-";
                     return `
                         <article class="doc-card">
                             <div class="doc-meta">
@@ -121,9 +134,11 @@
                                 <div><strong>Skill</strong><div>${esc(skill)}</div></div>
                                 <div><strong>Proficiency Level</strong><div>${esc(proficiencyLevel)}</div></div>
                                 <div><strong>Item Type</strong><div>${esc(itemType)}</div></div>
-                                <div><strong>Questions</strong><div>${esc(String(questionCount))}</div></div>
+                                <div><strong>Question Type</strong><div>${esc(questionType)}</div></div>
                                 <div><strong>Competency</strong><div>${esc(competency)}</div></div>
                             </div>
+                            <div class="doc-title"><strong>Question</strong><div>${esc(question)}</div></div>
+                            <div class="doc-title"><strong>Correct Answer</strong><div>${esc(correct)}</div></div>
                             <div class="doc-title"><strong>Proficiency Description</strong><div>${esc(proficiencyDesc)}</div></div>
                             <details>
                                 <summary>Raw JSON</summary>
@@ -278,15 +293,24 @@
         const button = event.target.closest("button[data-action]");
         if (!button) return;
         const action = button.getAttribute("data-action");
-        const videoId = (button.getAttribute("data-video-id") || "").trim();
-        if (!videoId) return;
-
+        
         if (action === "copy-video-id") {
+            const videoId = (button.getAttribute("data-video-id") || "").trim();
+            if (!videoId) return;
             try {
                 await copyToClipboard(videoId);
-                setMongoBrowserState(`Copied ${videoId}.`, "success");
+                setMongoBrowserState(`Copied video ID: ${videoId}.`, "success");
             } catch (_error) {
                 setMongoBrowserState("Unable to copy video ID.", "error");
+            }
+        } else if (action === "copy-mongo-id") {
+            const mongoId = (button.getAttribute("data-mongo-id") || "").trim();
+            if (!mongoId) return;
+            try {
+                await copyToClipboard(mongoId);
+                setMongoBrowserState(`Copied MongoDB ID: ${mongoId}.`, "success");
+            } catch (_error) {
+                setMongoBrowserState("Unable to copy MongoDB ID.", "error");
             }
         }
     });

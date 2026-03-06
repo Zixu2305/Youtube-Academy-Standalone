@@ -251,7 +251,7 @@ def store_quiz_submission(
     questions: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """
-    Store a generated quiz in MongoDB after user confirmation.
+    Store generated quiz questions in MongoDB after user confirmation (1 doc per question).
 
     Args:
         sector: Selected sector
@@ -265,7 +265,8 @@ def store_quiz_submission(
     Returns:
         {
           "success": bool,
-          "mongo_id": str or None,
+          "mongo_ids": list of str or None,
+          "question_count": int,
           "message": str
         }
     """
@@ -284,26 +285,29 @@ def store_quiz_submission(
             "questions": questions,
         }
 
-        # Store in MongoDB
-        mongo_id = store_quiz_in_mongo(quiz_data)
+        # Store in MongoDB (now returns list of IDs)
+        mongo_ids = store_quiz_in_mongo(quiz_data)
 
-        if mongo_id:
+        if mongo_ids:
             return {
                 "success": True,
-                "mongo_id": mongo_id,
-                "message": "Quiz stored successfully in MongoDB.",
+                "mongo_ids": mongo_ids,
+                "question_count": len(mongo_ids),
+                "message": f"Stored {len(mongo_ids)} questions successfully in MongoDB.",
             }
         else:
             return {
                 "success": False,
-                "mongo_id": None,
+                "mongo_ids": None,
+                "question_count": 0,
                 "message": "Failed to store quiz in MongoDB.",
             }
 
     except Exception as exc:
         return {
             "success": False,
-            "mongo_id": None,
+            "mongo_ids": None,
+            "question_count": 0,
             "message": f"Error storing quiz: {str(exc)}",
         }
 

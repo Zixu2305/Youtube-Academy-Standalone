@@ -11,6 +11,7 @@
     <div class="nav">
         <a class="link-button" href="/">YouTube Ingestion Console</a>
         <a class="link-button" href="/mongo_browser">MongoDB Browser</a>
+        <a class="link-button" href="/delete">Delete Question and Video</a>
     </div>
 
     <div class="quiz-page-layout">
@@ -99,16 +100,16 @@
                 </div>
             </div>
 
-            <div class="field" id="q_quiz_trigger_area" style="display:none;">
-                <button type="button" id="q_take_quiz_btn" class="primary quiz-trigger-btn">
-                    &#9654;&nbsp; Generate Quiz
-                </button>
-            </div>
-
             <!-- Current selection summary -->
             <div id="q_selection_summary" style="display:none;">
                 <h3 class="subheader">Current Selection</h3>
                 <div id="q_selection_display" class="quiz-context-banner"></div>
+            </div>
+
+            <div class="field" id="q_quiz_trigger_area" style="display:none;">
+                <button type="button" id="q_take_quiz_btn" class="primary quiz-trigger-btn">
+                    &#9654;&nbsp; Generate Quiz
+                </button>
             </div>
         </div>
 
