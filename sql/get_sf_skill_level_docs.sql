@@ -9,6 +9,7 @@ SELECT
   CONCAT(sl.sf_skill_id, ':', sl.proficiency_level) AS point_id,
   sl.sf_skill_id,
   sl.proficiency_level,
+  sl.proficiency_description,
   s.tsc_ccs_code,
   s.title AS skill_title,
   s.category,

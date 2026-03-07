@@ -77,45 +77,44 @@ def load_videos_from_mongo() -> list[dict]:
 
 
 def build_embed_text(doc: dict) -> str:
-    """Construct the text to embed from a MongoDB video document."""
-    parts = []
+    """Build field-weighted embedding text for a YouTube video document.
 
+    Weighting: title 3x, skill_name 2x, tags 2x, everything else 1x.
+    Repeating high-priority fields nudges the encoder to give them
+    more influence in the resulting vector.
+    """
     title = (doc.get("title") or "").strip()
-    if title:
-        parts.append(f"Video title: {title}")
-
-    description = (doc.get("description") or "").strip()
-    if description:
-        parts.append(f"Description: {description[:500]}")
-
+    skill = (doc.get("skill_name") or "").strip()
     tags = doc.get("tags") or []
-    if tags:
-        parts.append(f"Tags: {', '.join(tags[:20])}")
+    tags_str = ", ".join(tags[:20])
 
+    parts: list[str] = []
+    # 3x weight on title
+    for _ in range(3):
+        parts.append(f"Video title: {title}")
+    # 2x weight on skill
+    for _ in range(2):
+        parts.append(f"Skill: {skill}")
+    # 2x weight on tags
+    for _ in range(2):
+        parts.append(f"Tags: {tags_str}")
+    # 1x for remaining metadata
+    description = (doc.get("description") or "").strip()
+    parts.append(f"Description: {description[:500]}")
     channel = (doc.get("channelTitle") or "").strip()
-    if channel:
-        parts.append(f"Channel: {channel}")
-
+    parts.append(f"Channel: {channel}")
     sector = (doc.get("sector") or "").strip()
     if sector:
         parts.append(f"Sector: {sector}")
-
-    skill = (doc.get("skill_name") or "").strip()
-    if skill:
-        parts.append(f"Skill: {skill}")
-
     competency = (doc.get("competency") or "").strip()
     if competency:
         parts.append(f"Competency: {competency}")
-
     prof_level = (doc.get("proficiency_level") or "").strip()
     if prof_level:
         parts.append(f"Proficiency level: {prof_level}")
-
     prof_desc = (doc.get("proficiency_description") or "").strip()
     if prof_desc:
         parts.append(f"Proficiency description: {prof_desc[:300]}")
-
     return "\n\n".join(parts)
 
 

@@ -107,6 +107,38 @@ def ensure_collection_compatibility(
         )
 
 
+def build_weighted_sf_text(row: dict) -> str:
+    """Build field-weighted embedding text.
+
+    Weighting: skill_title 3x, category 2x, everything else 1x.
+    Repeating high-priority fields nudges the encoder to give them
+    more influence in the resulting vector.
+    """
+    skill_title = row.get("skill_title") or ""
+    category = row.get("category") or ""
+
+    parts: list[str] = []
+    # 3x weight on skill_title
+    for _ in range(3):
+        parts.append(f"Skill title: {skill_title}")
+    # 2x weight on category
+    for _ in range(2):
+        parts.append(f"Category: {category}")
+    # 1x for remaining metadata
+    parts.append(f"Skill type: {row.get('skill_type', '')}")
+    parts.append(f"TSC/CCS code: {row.get('tsc_ccs_code', '')}")
+    parts.append(f"Proficiency level: {row.get('proficiency_level', '')}")
+    prof_desc = row.get("proficiency_description") or ""
+    parts.append(f"Proficiency description: {prof_desc}")
+    knowledge = row.get("knowledge_block") or ""
+    if knowledge:
+        parts.append(f"Knowledge items:\n{knowledge}")
+    ability = row.get("ability_block") or ""
+    if ability:
+        parts.append(f"Ability items:\n{ability}")
+    return "\n\n".join(parts)
+
+
 def build_payload(row: dict) -> dict:
     return {
         "point_id": row["point_id"],
@@ -132,7 +164,7 @@ def upsert_docs(
 
     for start in range(0, total, batch_size):
         batch = rows[start : start + batch_size]
-        texts = [row["embed_text"] or "" for row in batch]
+        texts = [build_weighted_sf_text(row) for row in batch]
         vectors = model.encode(
             texts,
             batch_size=batch_size,
