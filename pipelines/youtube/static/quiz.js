@@ -61,6 +61,16 @@
             .replaceAll("'", "&#39;");
     }
 
+    function normalizeProficiencyOption(option) {
+        if (typeof option === "string") {
+            return { level: option, description: "" };
+        }
+        return {
+            level: String(option?.proficiency_level || option?.level || "").trim(),
+            description: String(option?.proficiency_description || option?.description || "").trim(),
+        };
+    }
+
     // ── Selection summary card ────────────────────────────────────
     function updateSelectionSummary() {
         if (!selectedSkill) {
@@ -229,25 +239,30 @@
             proficiencyContainer.innerHTML = '<span class="cascade-hint">No levels found.</span>';
             return;
         }
-        levels.forEach((level) => {
+        levels.forEach((option) => {
+            const { level, description } = normalizeProficiencyOption(option);
+            if (!level) return;
             const row = document.createElement("div");
             row.className = "proficiency-item";
             const btn = document.createElement("span");
             btn.className = "proficiency-name" + (selectedProficiency === level ? " selected" : "");
-            btn.textContent = level;
+            btn.textContent = description ? `${level} — ${description}` : level;
             btn.addEventListener("click", () => {
-                if (selectedProficiency === level) {
+                const isDeselecting = selectedProficiency === level;
+                clearBelow("proficiency");
+
+                if (isDeselecting) {
                     selectedProficiency = null;
+                    selectedRequirement = null;
                     btn.className = "proficiency-name";
+                    loadProficiencyDescription("");
                 } else {
                     document.querySelectorAll("#q_proficiency_container .proficiency-name.selected")
                         .forEach(el => el.classList.remove("selected"));
                     selectedProficiency = level;
+                    selectedRequirement = description || null;
                     btn.className = "proficiency-name selected";
-                }
-                clearBelow("proficiency");
-                if (selectedProficiency) {
-                    loadProficiencyDescription();
+                    loadProficiencyDescription(selectedRequirement || "");
                     loadCompetencies();
                 }
             });
@@ -257,24 +272,8 @@
     }
 
     // ── Proficiency Description loader ───────────────────────────
-    async function loadProficiencyDescription() {
-        requirementsContainer.innerHTML = '<span class="cascade-hint">Loading…</span>';
-        try {
-            const res = await fetch("/get_requirement", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    sector: sectorSelect.value,
-                    skill: selectedSkill,
-                    proficiency_level: selectedProficiency,
-                    competency: "", // empty for fetching description only
-                }),
-            });
-            const data = await res.json();
-            renderProficiencyDescription(data.requirements || []);
-        } catch {
-            requirementsContainer.innerHTML = '<span class="cascade-hint cascade-error">Error loading proficiency description.</span>';
-        }
+    function loadProficiencyDescription(description = "") {
+        renderProficiencyDescription(description ? [description] : []);
     }
 
     function renderProficiencyDescription(descriptions) {

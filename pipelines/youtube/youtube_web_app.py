@@ -62,11 +62,59 @@ def _serialize(value):
     return value
 
 
-def _build_mongo_filter(field: str, value: str) -> dict:
-    allowed_fields = {"sector", "skill_name", "videoId", "title"}
-    if not field or not value or field not in allowed_fields:
+def _build_mongo_filter(field: str, value: str, collection_name: str = "") -> dict:
+    filter_field = (field or "").strip()
+    filter_value = (value or "").strip()
+    selected_collection = (collection_name or "").strip()
+
+    if not filter_field or not filter_value:
         return {}
-    return {field: {"$regex": re.escape(value), "$options": "i"}}
+
+    # Backward-compatible aliases from UI field names.
+    if filter_field == "skill":
+        filter_field = "skill_name" if selected_collection == "videos" else "skill"
+    elif filter_field == "video_id":
+        filter_field = "videoId"
+
+    allowed_fields_by_collection = {
+        "videos": {
+            "sector",
+            "skill_name",
+            "videoId",
+            "title",
+            "competency",
+            "proficiency_level",
+        },
+        "Quiz_Generation": {
+            "sector",
+            "skill",
+            "competency",
+            "proficiency_level",
+            "question",
+        },
+        "ingestion_runs": {
+            "run_id",
+            "status",
+        },
+    }
+    fallback_allowed_fields = {
+        "sector",
+        "skill_name",
+        "skill",
+        "videoId",
+        "title",
+        "competency",
+        "proficiency_level",
+        "question",
+        "run_id",
+        "status",
+    }
+
+    allowed_fields = allowed_fields_by_collection.get(selected_collection, fallback_allowed_fields)
+    if filter_field not in allowed_fields:
+        return {}
+
+    return {filter_field: {"$regex": re.escape(filter_value), "$options": "i"}}
 
 
 def _to_bool(value, default: bool = False) -> bool:
@@ -614,7 +662,7 @@ def create_app():
                 return jsonify({"ok": False, "error": "Collection not found."}), 404
 
             collection = db[collection_name]
-            query = _build_mongo_filter(filter_field, filter_value)
+            query = _build_mongo_filter(filter_field, filter_value, collection_name)
             
             # For Quiz_Generation, exclude deleted questions
             if collection_name == "Quiz_Generation":

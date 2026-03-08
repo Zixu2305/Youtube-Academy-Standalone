@@ -10,6 +10,32 @@
     const mongoNextBtn = document.getElementById("mongo_next_btn");
     let mongoBrowserSkip = 0;
     let mongoBrowserHasMore = false;
+    const FILTER_OPTIONS_BY_COLLECTION = {
+        videos: [
+            { value: "sector", label: "sector" },
+            { value: "skill", label: "skill" },
+            { value: "competency", label: "competency" },
+            { value: "proficiency_level", label: "proficiency_level" },
+            { value: "title", label: "title" },
+            { value: "video_id", label: "videoId" },
+        ],
+        Quiz_Generation: [
+            { value: "sector", label: "sector" },
+            { value: "skill", label: "skill" },
+            { value: "competency", label: "competency" },
+            { value: "proficiency_level", label: "proficiency_level" },
+            { value: "question", label: "question" },
+        ],
+        ingestion_runs: [
+            { value: "run_id", label: "run_id" },
+            { value: "status", label: "status" },
+        ],
+        _default: [
+            { value: "sector", label: "sector" },
+            { value: "skill", label: "skill" },
+            { value: "title", label: "title" },
+        ],
+    };
 
     function esc(text) {
         const value = String(text ?? "");
@@ -36,6 +62,35 @@
 
     function youtubeWatchUrl(videoId) {
         return `https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`;
+    }
+
+    function getFilterOptionsForCollection(collectionName) {
+        return FILTER_OPTIONS_BY_COLLECTION[collectionName] || FILTER_OPTIONS_BY_COLLECTION._default;
+    }
+
+    function refreshFilterFieldOptions(options = {}) {
+        const { resetSelection = false } = options;
+        const collectionName = mongoCollectionSelect.value || "";
+        const availableFields = getFilterOptionsForCollection(collectionName);
+        const previousField = mongoFilterField.value || "";
+
+        const htmlOptions = ['<option value="">(none)</option>']
+            .concat(
+                availableFields.map(
+                    (item) => `<option value="${esc(item.value)}">${esc(item.label)}</option>`
+                )
+            )
+            .join("");
+        mongoFilterField.innerHTML = htmlOptions;
+
+        const canKeepPrevious =
+            !resetSelection && availableFields.some((item) => item.value === previousField);
+        const nextField = canKeepPrevious ? previousField : "";
+        mongoFilterField.value = nextField;
+
+        if (nextField !== previousField) {
+            mongoFilterValue.value = "";
+        }
     }
 
     function renderMongoDocs(docs, collection) {
@@ -198,6 +253,7 @@
             mongoCollectionSelect.value = collections.includes("videos")
                 ? "videos"
                 : collections[0];
+            refreshFilterFieldOptions({ resetSelection: true });
             setMongoBrowserState("Collections loaded.", "success");
         } catch (error) {
             setMongoBrowserState(`Collection load failed: ${error.message}`, "error");
@@ -210,6 +266,7 @@
             mongoBrowserResults.textContent = "";
             return;
         }
+        refreshFilterFieldOptions();
         setMongoBrowserState("Loading documents...", "running");
         try {
             const params = buildMongoQueryParams();
@@ -274,6 +331,12 @@
     });
 
     mongoCollectionSelect.addEventListener("change", () => {
+        refreshFilterFieldOptions({ resetSelection: true });
+        resetMongoPagination();
+        loadMongoDocuments();
+    });
+
+    mongoFilterField.addEventListener("change", () => {
         resetMongoPagination();
         loadMongoDocuments();
     });

@@ -109,8 +109,13 @@ def search_proficiency_levels(sector, skill):
         conn = get_mysql_conn()
         cur = conn.cursor()
         query = """
-            SELECT DISTINCT m.proficiency_level
+            SELECT DISTINCT
+                m.proficiency_level,
+                COALESCE(sl.proficiency_description, '') AS proficiency_description
             FROM map_sf_to_cat_skill m
+            LEFT JOIN sf_skill_level sl
+              ON sl.sf_skill_id = m.sf_skill_id
+             AND sl.proficiency_level = m.proficiency_level
             WHERE m.sector_name_raw = %s
               AND m.source_skill_title = %s
             ORDER BY m.proficiency_level
@@ -119,7 +124,14 @@ def search_proficiency_levels(sector, skill):
         rows = cur.fetchall()
         cur.close()
         conn.close()
-        return [row[0] for row in rows]
+        return [
+            {
+                "proficiency_level": row[0],
+                "proficiency_description": row[1] or "",
+            }
+            for row in rows
+            if row and row[0]
+        ]
     except Exception:
         return []
 

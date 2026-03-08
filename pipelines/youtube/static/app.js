@@ -48,6 +48,16 @@
             .replaceAll("'", "&#39;");
     }
 
+    function normalizeProficiencyOption(option) {
+        if (typeof option === "string") {
+            return { level: option, description: "" };
+        }
+        return {
+            level: String(option?.proficiency_level || option?.level || "").trim(),
+            description: String(option?.proficiency_description || option?.description || "").trim(),
+        };
+    }
+
     function setRunState(message, statusType = "idle", showSpinner = false) {
         runState.className = "status";
         if (statusType === "running") runState.classList.add("running");
@@ -169,24 +179,8 @@
         }
     }
 
-    async function loadProficiencyDescription() {
-        requirementsContainer.innerHTML = "Loading…";
-        try {
-            const response = await fetch("/get_requirement", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    sector: sectorSelect.value,
-                    skill: selectedSkill,
-                    proficiency_level: selectedProficiency,
-                    competency: ""
-                })
-            });
-            const data = await response.json();
-            renderProficiencyDescription(data.requirements || []);
-        } catch (error) {
-            requirementsContainer.textContent = "Error loading proficiency description";
-        }
+    function loadProficiencyDescription(description = "") {
+        renderProficiencyDescription(description ? [description] : []);
     }
 
     function renderProficiencyDescription(descriptions) {
@@ -227,16 +221,19 @@
                 proficiencyContainer.textContent = "No proficiency levels found.";
                 return;
             }
-            levels.forEach((level) => {
+            levels.forEach((option) => {
+                const { level, description } = normalizeProficiencyOption(option);
+                if (!level) return;
                 const row = document.createElement("div");
                 row.className = "proficiency-item";
 
                 const levelButton = document.createElement("span");
                 levelButton.className = selectedProficiency === level ? "proficiency-name selected" : "proficiency-name";
-                levelButton.textContent = level;
+                levelButton.textContent = description ? `${level} — ${description}` : level;
                 levelButton.addEventListener("click", () => {
                     if (selectedProficiency === level) {
                         selectedProficiency = null;
+                        selectedRequirement = null;
                         levelButton.className = "proficiency-name";
                     } else {
                         // Clear previous selection
@@ -245,14 +242,16 @@
                             prevSelected.className = "proficiency-name";
                         }
                         selectedProficiency = level;
+                        selectedRequirement = description || null;
                         levelButton.className = "proficiency-name selected";
                     }
                     // Clear downstream
                     selectedCompetency = null;
-                    selectedRequirement = null;
                     if (selectedProficiency) {
-                        loadProficiencyDescription();
+                        loadProficiencyDescription(selectedRequirement || "");
                         loadCompetencies();
+                    } else {
+                        loadProficiencyDescription("");
                     }
                     updateQuotaEstimate();
                 });
@@ -603,7 +602,7 @@
                 const competency = run.params?.competency || "-";
                 const proficiency = run.params?.proficiency || "-";
                 const requirement = run.params?.requirement || "-";
-                const skillsDetails = `<strong>Sector:</strong> ${sector}, <strong>Skills:</strong> ${skills}, <strong>Competency:</strong> ${competency}, <strong>Proficiency:</strong> ${proficiency}, <strong>Requirement:</strong> ${requirement}`;
+                const skillsDetails = `<strong>Sector:</strong> ${esc(sector)}, <strong>Skills:</strong> ${esc(skills)}, <strong>Competency:</strong> ${esc(competency)}, <strong>Proficiency:</strong> ${esc(proficiency)}, <strong>Requirement:</strong> ${esc(requirement)}`;
                 const upserts = run.params?.videos_to_upsert ?? run.summary?.upserts_attempted ?? "-";
                 return `
                     <tr>
