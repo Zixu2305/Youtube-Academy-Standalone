@@ -27,7 +27,8 @@ _ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from pipelines.quiz_gen.quiz_store import get_or_create_quiz, get_cached_quiz, store_quiz_submission  # noqa: E402
+from pipelines.quiz_gen.quiz_store import make_quiz_key, store_quiz_submission  # noqa: E402
+from pipelines.quiz_gen.quiz_mongo import get_quiz_from_mongo  # noqa: E402
 
 router = APIRouter()
 
@@ -52,6 +53,7 @@ class QuizGenerateRequest(BaseModel):
         default="",
         description="Proficiency description / requirement text for the selected level.",
     )
+    quiz_mode: str = Field(..., description="Quiz mode: competency, knowledge, ability, proficiency, skill.")
 
 
 class QuizOption(BaseModel):
@@ -109,47 +111,45 @@ class QuizStoreResponse(BaseModel):
 @router.post("/quiz/generate", response_model=QuizResponse, tags=["quiz"])
 def generate_quiz(payload: QuizGenerateRequest) -> dict:
     """
-    Generate or retrieve the fixed 5-question MCQ quiz for the given
-    selection path.
+    Retrieve the quiz from MongoDB Quiz_Generation collection for the given
+    selection path (sector → skill → proficiency_level → competency) and quiz mode.
 
-    The quiz is generated once and then cached permanently.
-    The same inputs will always return exactly the same questions and answers.
+    The quiz must already exist in MongoDB. If not found, returns 404.
     """
-    try:
-        result = get_or_create_quiz(
-            sector=payload.sector.strip(),
-            skill=payload.skill.strip(),
-            competency=payload.competency.strip(),
-            proficiency_level=payload.proficiency_level.strip(),
-            proficiency_description=payload.proficiency_description.strip(),
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except Exception as exc:
+    result = get_quiz_from_mongo(
+        quiz_mode=payload.quiz_mode,
+        sector=payload.sector.strip(),
+        skill=payload.skill.strip(),
+        proficiency_level=payload.proficiency_level.strip(),
+        competency=payload.competency.strip(),
+    )
+    if result is None:
         raise HTTPException(
-            status_code=500,
-            detail=f"Quiz generation failed: {exc}",
-        ) from exc
-
+            status_code=404,
+            detail=f"No quiz found in MongoDB for the selected criteria and mode '{payload.quiz_mode}'. "
+                   f"Please ensure the quiz has been generated and stored first.",
+        )
+    
     return result
 
 
 @router.get("/quiz/{quiz_key}", response_model=QuizResponse, tags=["quiz"])
 def get_quiz(quiz_key: str) -> dict:
     """
-    Retrieve a previously generated quiz by its stable cache key.
+    Retrieve a previously stored quiz from MongoDB by its stable quiz key.
+    
+    For backwards compatibility. Uses quiz_key directly.
 
-    Returns 404 if the quiz has not been generated yet.
-    You can obtain the quiz_key from the POST /api/quiz/generate response.
+    Returns 404 if the quiz has not been stored in MongoDB yet.
     """
-    entry = get_cached_quiz(quiz_key)
-    if entry is None:
+    result = get_quiz_from_mongo(quiz_key=quiz_key)
+    if result is None:
         raise HTTPException(
             status_code=404,
-            detail=f"No quiz found for key '{quiz_key}'. "
-                   f"Generate it first via POST /api/quiz/generate.",
+            detail=f"No quiz found in MongoDB for key '{quiz_key}'. "
+                   f"Ensure the quiz has been generated and stored first.",
         )
-    return entry
+    return result
 
 
 @router.post("/quiz/store", response_model=QuizStoreResponse, tags=["quiz"])

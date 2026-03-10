@@ -262,36 +262,128 @@ def delete_question(question_id: str) -> dict[str, Any]:
                 print(f"⚠️ Error closing client: {e}")
 
 
-def delete_quiz_questions(quiz_key: str) -> int:
+def get_quiz_from_mongo(
+    quiz_key: str = "",
+    quiz_mode: str = "competency",
+    sector: str = "",
+    skill: str = "",
+    proficiency_level: str = "",
+    competency: str = "",
+) -> dict[str, Any] | None:
     """
-    Soft-delete all questions for a quiz.
-
+    Retrieve a complete quiz from MongoDB filtered by hierarchy: sector → skill → proficiency_level → competency.
+    
     Args:
-        quiz_key: The quiz_key identifying the quiz
-
+        quiz_key: (Deprecated) The unique key identifying the quiz - kept for backwards compatibility
+        quiz_mode: The quiz mode determining the filter scope:
+                  - "competency": Filter by sector + skill + proficiency_level + competency
+                  - "knowledge": Filter by sector + skill + proficiency_level + item_type="knowledge" (all competencies of knowledge type)
+                  - "ability": Filter by sector + skill + proficiency_level + item_type="ability" (all competencies of ability type)
+                  - "proficiency": Filter by sector + skill + proficiency_level (all competencies)
+                  - "skill": Filter by sector + skill (all proficiency_levels & competencies)
+        sector: Sector/industry name
+        skill: Skill name
+        proficiency_level: Proficiency level (e.g., "Level 1", "Level 2")
+        competency: Competency description (e.g., "knowledge: ...", "ability: ...")
+        
     Returns:
-        Number of questions deleted.
+        Quiz dictionary with structure:
+        {
+          "quiz_key": str,
+          "sector": str,
+          "skill": str,
+          "competency": str or null,
+          "proficiency_level": str or null,
+          "proficiency_description": str,
+          "questions": [ {question_number, question, options, correct, explanation, question_type}, … ]
+        }
+        or None if not found
     """
     try:
         client = get_mongo_client()
         db = client.get_default_database()
         collection = db["Quiz_Generation"]
 
-        result = collection.update_many(
-            {"quiz_key": quiz_key, "deleted": False},
-            {
-                "$set": {
-                    "deleted": True,
-                    "deleted_at": datetime.utcnow(),
-                }
-            },
-        )
+        # Build query filters based on hierarchy: sector → skill → proficiency → competency
+        query = {"deleted": {"$ne": True}}
+        
+        # Always require sector and skill (the top two levels)
+        if sector:
+            query["sector"] = sector
+        if skill:
+            query["skill"] = skill
 
-        return result.modified_count
+        # Apply mode-specific filters
+        if quiz_mode == "competency":
+            # Per Competency: sector + skill + proficiency_level + competency
+            if proficiency_level:
+                query["proficiency_level"] = proficiency_level
+            if competency:
+                query["competency"] = competency
+                
+        elif quiz_mode == "knowledge":
+            # Knowledge Only: sector + skill + proficiency_level + item_type="knowledge" (all competencies of knowledge type)
+            if proficiency_level:
+                query["proficiency_level"] = proficiency_level
+            query["item_type"] = "knowledge"
+            # No competency filter - get all knowledge competencies at this proficiency level
+            
+        elif quiz_mode == "ability":
+            # Ability Only: sector + skill + proficiency_level + item_type="ability" (all competencies of ability type)
+            if proficiency_level:
+                query["proficiency_level"] = proficiency_level
+            query["item_type"] = "ability"
+            # No competency filter - get all ability competencies at this proficiency level
+            
+        elif quiz_mode == "proficiency":
+            # Per Proficiency Level: sector + skill + proficiency_level (all competencies)
+            if proficiency_level:
+                query["proficiency_level"] = proficiency_level
+            # No competency filter - get all competencies at this proficiency level
+            
+        elif quiz_mode == "skill":
+            # Per Skill: sector + skill (all proficiency_levels & competencies)
+            # No proficiency_level or competency filter - get all for this skill
+            pass
+        
+        # For backwards compatibility, use quiz_key if provided and no other filters
+        if quiz_key and not sector and not skill:
+            query["quiz_key"] = quiz_key
+
+        # Get all matching questions
+        questions = list(collection.find(query).sort("ingested_at", 1))
+
+        if not questions:
+            return None
+
+        # Take metadata from the first question
+        first_q = questions[0]
+        quiz = {
+            "quiz_key": first_q.get("quiz_key", ""),
+            "sector": first_q.get("sector", ""),
+            "skill": first_q.get("skill", ""),
+            "competency": first_q.get("competency", None),
+            "proficiency_level": first_q.get("proficiency_level", None),
+            "proficiency_description": first_q.get("proficiency_description", ""),
+            "questions": []
+        }
+
+        # Build questions list
+        for i, q in enumerate(questions, 1):
+            quiz["questions"].append({
+                "question_number": i,
+                "question": q.get("question", ""),
+                "options": q.get("options", {}),
+                "correct": q.get("correct", ""),
+                "explanation": q.get("explanation", ""),
+                "question_type": q.get("question_type", "")
+            })
+
+        return quiz
 
     except Exception as exc:
-        print(f"Error deleting quiz questions from MongoDB: {exc}")
-        return 0
+        print(f"Error retrieving quiz from MongoDB: {exc}")
+        return None
     finally:
         client.close()
 

@@ -2,8 +2,9 @@
 # Rule-based MCQ quiz generation for the SkillsFuture selection pathway.
 #
 # Public API surface:
-#   from pipelines.quiz_gen import get_or_create_quiz
 #   from pipelines.quiz_gen import make_quiz_key
-from .quiz_store import get_or_create_quiz, make_quiz_key
+#   from pipelines.quiz_gen import store_quiz_submission
+#   from pipelines.quiz_gen import stream_quiz
+from .quiz_store import make_quiz_key, store_quiz_submission, stream_quiz
 
-__all__ = ["get_or_create_quiz", "make_quiz_key"]
+__all__ = ["make_quiz_key", "store_quiz_submission", "stream_quiz"]

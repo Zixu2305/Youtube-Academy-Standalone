@@ -15,16 +15,24 @@ Implemented now:
 2. Mapping table population (`map_sf_to_cat_skill`) + reconciliation reports in `out/`.
 3. YouTube ingestion UI/backend with preview/upsert, Mongo browser, and soft-delete tools.
 4. Ollama-assisted query enhancement during YouTube ingestion.
-5. Quiz generation flow (UI + APIs) with cache + MongoDB storage.
-6. SkillsFuture embedding pipeline into Qdrant.
-7. YouTube embedding pipeline into Qdrant.
-8. FastAPI endpoints:
+5. Quiz generation flow (admin UI at `/quiz_gen` + APIs) with MongoDB storage.
+   - Hierarchical filtering: sector → skill → proficiency level → competency.
+   - Five quiz modes: competency, knowledge, ability, proficiency, skill.
+   - Ollama-assisted question generation (llama3.2).
+   - Button state management (generate → store → reset).
+6. Learner quiz taking interface (FastAPI academy portal at `/academy`).
+   - Interactive quiz taking with question navigation.
+   - Visual feedback: question count, selected answers, result display.
+   - Quiz mode filtering applied at retrieval time.
+7. SkillsFuture embedding pipeline into Qdrant.
+8. YouTube embedding pipeline into Qdrant.
+9. FastAPI endpoints:
    - `POST /api/search/skills`
    - `POST /api/search/videos`
    - `POST /api/recommend/videos`
-   - `POST /api/quiz/generate`
-   - `GET /api/quiz/{quiz_key}`
-   - `POST /api/quiz/store`
+   - `POST /api/quiz/generate` (hierarchical filtering by sector/skill/proficiency/competency)
+   - `GET /api/quiz/{quiz_key}` (fetch previously stored quiz)
+   - `POST /api/quiz/store` (persist quiz to MongoDB)
    - `GET /api/public/sectors`
    - `GET /api/public/skills`
    - `GET /api/public/skill-map`
@@ -194,8 +202,53 @@ Open `http://localhost:5000`.
 - Calls YouTube Data API v3 for videos/comments.
 - Uses Ollama to enrich query generation (sector/skill/competency/requirement aware).
 - Upserts documents into MongoDB (`videos`, `ingestion_runs`).
-- Supports quiz generation/storage and soft-delete operations.
-- Provides pages at `/mongo_browser`, `/quiz_gen`, and `/delete`.
+- Provides Mongo browser and soft-delete tools at `/mongo_browser` and `/delete`.
+
+### Admin Quiz Generation (Included in this Workflow)
+
+Access the admin quiz interface at `http://localhost:5001/quiz_gen`.
+
+**Steps:**
+1. Select **Sector** (e.g., "Infocomm")
+2. Select **Skill** within that sector (e.g., "Data Analysis")
+3. Select **Proficiency Level** (e.g., "Intermediate")
+4. (Optional) Select **Competency** to narrow further
+5. Select **Quiz Mode** to control filtering:
+   - **Competency Mode**: Filter by sector → skill → proficiency → competency (all 4 levels)
+   - **Knowledge Mode**: Filter by sector → skill → proficiency (excludes competency; returns all knowledge questions at that level)
+   - **Ability Mode**: Filter by sector → skill → proficiency (excludes competency; returns all ability questions at that level)
+   - **Proficiency Mode**: Filter by sector → skill → proficiency (includes both knowledge and ability)
+   - **Skill Mode**: Filter by sector → skill only (returns all questions for that skill across all proficiency levels)
+6. Click **Generate Quiz** → Ollama generates 5 questions using llama3.2
+7. Review generated questions
+8. Click **Store Quiz in MongoDB** → Button shows "✓ Stored" (disabled) on success
+
+**Button State Management:**
+- **Generate**: Enabled by default; disabled while generating
+- **Store**: Disabled until quiz is generated; enabled when generation completes
+- **Reset States**: Automatically resets when generating a new quiz
+
+**Quiz Data Storage (MongoDB):**
+Quiz questions are stored in the `Quiz_Generation` collection with this structure:
+
+```json
+{
+  "_id": ObjectId,
+  "sector": "Infocomm",
+  "skill": "Data Analysis",
+  "proficiency_level": "Intermediate",
+  "competency": "Statistical Analysis",
+  "question_type": "knowledge",
+  "question": "What is a hypothesis test?",
+  "options": ["A option", "B option", "C option", "D option"],
+  "correct_answer": "A option",
+  "deleted": false,
+  "created_at": ISODate,
+  "updated_at": ISODate
+}
+```
+
+**Soft Delete Pattern**: Documents are marked with `deleted: true` instead of being removed.
 
 ## Workflow B: Vector Indexing + Search/Recommend API + Learner Portal (Implemented)
 
@@ -258,15 +311,38 @@ uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
   - `POST /api/search/skills`
   - `POST /api/search/videos`
   - `POST /api/recommend/videos`
-  - `POST /api/quiz/generate`
-  - `GET /api/quiz/{quiz_key}`
-  - `POST /api/quiz/store`
   - `GET /api/public/sectors`
   - `GET /api/public/skills`
   - `GET /api/public/skill-map`
   - `POST /api/public/recommend/videos`
 
-Example request:
+### Learner Quiz Taking (Included in this Workflow)
+
+The learner portal at `http://localhost:8000/academy` includes interactive quiz taking.
+
+**Steps:**
+1. Select **Sector** and **Skill**
+2. Select **Quiz Mode** and other filters
+3. Click **Take Quiz** → Loads questions from MongoDB via `/api/quiz/generate`
+4. Navigate questions using arrow buttons or selector
+5. Select answers (visual feedback on selection)
+6. Click **Submit** → Displays results with score
+7. Optionally click **Regenerate** to get a new quiz for the same filters
+
+**Quiz Mode Filtering at Retrieval Time:**
+The learner's selected quiz mode determines which MongoDB documents are retrieved:
+- **Competency Mode**: `{sector, skill, proficiency_level, competency}` must all match
+- **Knowledge Mode**: Filters by sector → skill → proficiency; returns only knowledge-type questions (excludes competency filter)
+- **Ability Mode**: Filters by sector → skill → proficiency; returns only ability-type questions (excludes competency filter)
+- **Proficiency Mode**: Filters by sector → skill → proficiency; mixes knowledge + ability questions
+- **Skill Mode**: Filters by sector → skill only; ignores proficiency and competency
+
+**Quiz API Endpoints (called by learner portal):**
+- `POST /api/quiz/generate` (retrieve questions with hierarchical filtering)
+- `GET /api/quiz/{quiz_key}` (fetch previously stored quiz)
+- `POST /api/quiz/store` (persist quiz to MongoDB)
+
+Example request (search skills):
 
 ```json
 {
@@ -277,6 +353,61 @@ Example request:
   "category": null,
   "include_details": true
 }
+```
+
+### Quiz API Examples
+
+**Generate Quiz (Hierarchical Filtering):**
+
+```bash
+curl -X POST "http://localhost:8000/api/quiz/generate" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"sector\": \"Infocomm\",
+    \"skill\": \"Data Analysis\",
+    \"proficiency_level\": \"Intermediate\",
+    \"competency\": \"Statistical Analysis\",
+    \"quiz_mode\": \"competency\"
+  }"
+```
+
+Response:
+
+```json
+{
+  "quiz_key": "infocomm_data-analysis_intermediate_statistical-analysis_competency",
+  "sector": "Infocomm",
+  "skill": "Data Analysis",
+  "proficiency_level": "Intermediate",
+  "competency": "Statistical Analysis",
+  "quiz_mode": "competency",
+  "questions": [
+    {
+      "question_id": 0,
+      "question": "What is a hypothesis test?",
+      "options": ["..."],
+      "correct_answer": "..."
+    }
+  ],
+  "generated_at": "2026-03-10T10:30:00Z"
+}
+```
+
+**Retrieve Stored Quiz:**
+
+```bash
+curl "http://localhost:8000/api/quiz/infocomm_data-analysis_intermediate_statistical-analysis_competency"
+```
+
+**Store Quiz:**
+
+```bash
+curl -X POST "http://localhost:8000/api/quiz/store" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"quiz_key\": \"infocomm_data-analysis_intermediate_statistical-analysis_competency\",
+    \"user_answers\": {\"0\": \"...\", \"1\": \"...\"}
+  }"
 ```
 
 Versioning notes:
@@ -346,6 +477,19 @@ Quiz generation or query enhancement fails:
 - Confirm Ollama is running and reachable at `OLLAMA_HOST`.
 - Confirm model `llama3.2:3b` is available (`curl http://localhost:11434/api/tags`).
 
+Quiz not found when taking ("Quiz not found, please contact admin"):
+
+- The selected sector/skill/proficiency/competency combination may not have stored questions.
+- Check MongoDB `Quiz_Generation` collection for matching documents (non-deleted).
+- Ensure admin has generated and stored a quiz for this exact hierarchy.
+- If quiz mode is restrictive (e.g., knowledge-only), ensure questions of that type exist.
+
+Quiz not found when storing to MongoDB:
+
+- Check that MongoDB connection is configured in `.env` (`MONGO_HOST`, `MONGO_PORT`, `MONGO_DB`).
+- Verify MongoDB service is running (`docker compose ps`).
+- Quiz store endpoint requires valid `quiz_key` matching generated quiz.
+
 Embedding model/dimension mismatch:
 
 - Ensure `.env` values match collection config:
@@ -378,9 +522,13 @@ Embedding model/dimension mismatch:
 │   ├── skillsfuture/
 │   └── youtube/
 ├── pipelines/
+│   ├── quiz_gen/
+│   │   ├── quiz_engine.py (Ollama-based question generation)
+│   │   ├── quiz_mongo.py (hierarchical MongoDB retrieval)
+│   │   ├── quiz_store.py (quiz persistence)
+│   │   └── quiz_data_access.py (MongoDB CRUD)
 │   ├── skillsfuture/
 │   ├── youtube/
-│   └── quiz_gen/
 ├── qdrant/create_collections.py
 ├── requirements/
 │   ├── dev.txt

@@ -320,6 +320,10 @@
         quizQuestionsEl.innerHTML = "";
         quizActions.style.display = "none";
         quizResults.style.display = "none";
+        // Reset store button to ready state for new questions
+        storeQuizBtn.disabled = false;
+        storeQuizBtn.textContent = "💾 Store Quiz in MongoDB";
+        storeQuizBtn.style.opacity = "1";
     }
 
     function renderContextBanner() {
@@ -487,6 +491,10 @@
         quizActions.style.display = "none";
         quizResults.style.display = "block";
         quizReview.scrollIntoView({ behavior: "smooth" });
+        // Reset store button to ready state for this quiz attempt
+        storeQuizBtn.disabled = false;
+        storeQuizBtn.textContent = "💾 Store Quiz in MongoDB";
+        storeQuizBtn.style.opacity = "1";
     }
 
     // ── Generate quiz (streaming NDJSON) ──────────────────────────
@@ -792,6 +800,7 @@
                     `MongoDB IDs: ${result.mongo_ids.join(", ")}`
                 );
                 storeQuizBtn.textContent = "✓ Stored";
+                storeQuizBtn.disabled = true;
                 storeQuizBtn.style.opacity = "0.6";
             } else {
                 alert(`✗ Failed to store quiz:\n${result.message}`);

@@ -249,6 +249,7 @@ def fetch_quiz_context(
             proficiency_description = lvl["proficiency_description"]
             break
 
+    # Fetch all items at this level (for cross-filtering and distractors)
     items_at_level = fetch_competency_items_at_level(sf_skill_id, proficiency_level)
     knowledge_items = [r["item_text"] for r in items_at_level if r["item_type"] == "knowledge"]
     ability_items = [r["item_text"] for r in items_at_level if r["item_type"] == "ability"]

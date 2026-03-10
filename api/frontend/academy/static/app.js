@@ -35,6 +35,17 @@ function clampNumber(value, fallback, min, max) {
   return Math.min(max, Math.max(min, numeric));
 }
 
+function getQuizModeLabel(mode) {
+  const labels = {
+    competency: "Per Competency",
+    knowledge: "Knowledge Only",
+    ability: "Ability Only",
+    proficiency: "Per Proficiency Level",
+    skill: "Per Skill"
+  };
+  return labels[mode] || mode;
+}
+
 function App() {
   const [sectors, setSectors] = useState([]);
   const [selectedSector, setSelectedSector] = useState("");
@@ -58,6 +69,15 @@ function App() {
   const [skillStatus, setSkillStatus] = useState({ text: "Pick an industry to start.", tone: "" });
   const [mapStatus, setMapStatus] = useState({ text: "", tone: "" });
   const [recommendStatus, setRecommendStatus] = useState({ text: "", tone: "" });
+
+  const [quizOpen, setQuizOpen] = useState(false);
+  const [quizModeSelectionOpen, setQuizModeSelectionOpen] = useState(false);
+  const [quizData, setQuizData] = useState(null);
+  const [quizMode, setQuizMode] = useState("competency");
+  const [quizStatus, setQuizStatus] = useState({ text: "", tone: "" });
+  const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
+  const [userAnswers, setUserAnswers] = useState({});
+  const [quizSubmitted, setQuizSubmitted] = useState(false);
 
   useEffect(() => {
     const loadSectors = async () => {
@@ -153,6 +173,103 @@ function App() {
 
     loadMapping();
   }, [overlayOpen, selectedSector, selectedSkill]);
+
+  const loadQuiz = async (mode) => {
+    if (!selectedSector || !selectedSkill || !selectedProficiency || !selectedCompetency) {
+      setQuizStatus({ text: "Missing required selections.", tone: "error" });
+      return;
+    }
+
+    setQuizMode(mode);
+    setQuizOpen(true);
+    setQuizModeSelectionOpen(false);
+    setQuizStatus({ text: "Loading quiz...", tone: "" });
+    setCurrentQuestionIndex(0);
+    setUserAnswers({});
+    setQuizSubmitted(false);
+
+    try {
+      // Get proficiency description from mapData
+      const proficiencyMappings = mapData && Array.isArray(mapData.mappings) ? mapData.mappings : [];
+      const selectedEntry = proficiencyMappings.find((entry) => entry.proficiency_level === selectedProficiency) || null;
+      const proficiencyDesc = selectedEntry?.proficiency_description || "";
+
+      const payload = {
+        sector: selectedSector,
+        skill: selectedSkill,
+        competency: selectedCompetency,
+        proficiency_level: selectedProficiency,
+        proficiency_description: proficiencyDesc,
+        quiz_mode: mode,
+      };
+
+      const quiz = await fetchJson("/api/quiz/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      setQuizData(quiz);
+      setQuizStatus({ text: "Quiz loaded successfully.", tone: "success" });
+    } catch (error) {
+      setQuizStatus({ text: "Quiz not found, please contact admin.", tone: "error" });
+    }
+  };
+
+  const openQuizModeSelector = () => {
+    setQuizModeSelectionOpen(true);
+  };
+
+  const closeQuizModeSelection = () => {
+    setQuizModeSelectionOpen(false);
+  };
+
+  const closeQuiz = () => {
+    setQuizOpen(false);
+    setQuizData(null);
+    setCurrentQuestionIndex(0);
+    setUserAnswers({});
+    setQuizSubmitted(false);
+    setQuizStatus({ text: "", tone: "" });
+  };
+
+  const handleAnswerSelect = (answer) => {
+    if (!quizSubmitted) {
+      const questionKey = `q${currentQuestionIndex}`;
+      setUserAnswers({ ...userAnswers, [questionKey]: answer });
+    }
+  };
+
+  const goToNextQuestion = () => {
+    if (currentQuestionIndex < quizData.questions.length - 1) {
+      setCurrentQuestionIndex(currentQuestionIndex + 1);
+    }
+  };
+
+  const goToPreviousQuestion = () => {
+    if (currentQuestionIndex > 0) {
+      setCurrentQuestionIndex(currentQuestionIndex - 1);
+    }
+  };
+
+  const submitQuiz = () => {
+    const questions = quizData.questions;
+    let correctCount = 0;
+
+    questions.forEach((question, index) => {
+      const userAnswer = userAnswers[`q${index}`];
+      if (userAnswer === question.correct) {
+        correctCount++;
+      }
+    });
+
+    setQuizSubmitted(true);
+    const score = Math.round((correctCount / questions.length) * 100);
+    setQuizStatus({
+      text: `Quiz completed! Score: ${correctCount}/${questions.length} (${score}%)`,
+      tone: score >= 70 ? "success" : "error",
+    });
+  };
 
   const openOverlayForSector = (sectorName) => {
     if (!sectorName) {
@@ -367,6 +484,17 @@ function App() {
                     <p className="overlay-kicker">Industry</p>
                     <h2>${selectedSector || "Select an industry"}</h2>
                   </div>
+                  ${selectedSkill && selectedProficiency && selectedCompetency
+                    ? html`
+                        <button
+                          type="button"
+                          className="primary-btn quiz-header-btn"
+                          onClick=${openQuizModeSelector}
+                        >
+                          📝 Take Quiz
+                        </button>
+                      `
+                    : html``}
                   <button type="button" className="close-btn" onClick=${closeOverlay}>Close</button>
                 </div>
 
@@ -534,6 +662,233 @@ function App() {
                         `
                       : html`<p className="empty-note">Select a skill to reveal proficiency and competency options.</p>`}
                   </div>
+                </div>
+              </section>
+            </div>
+          `
+        : null}
+
+      ${quizModeSelectionOpen
+        ? html`
+            <div className="quiz-backdrop" onClick=${closeQuizModeSelection}>
+              <section
+                className="quiz-panel"
+                role="dialog"
+                aria-modal="true"
+                aria-label="Quiz Mode Selection"
+                onClick=${(event) => event.stopPropagation()}
+              >
+                <div className="quiz-head">
+                  <div>
+                    <p className="quiz-kicker">Quiz Type</p>
+                    <h2>Select Quiz Mode</h2>
+                  </div>
+                  <button type="button" className="close-btn" onClick=${closeQuizModeSelection}>Close</button>
+                </div>
+
+                <div className="quiz-content">
+                  <div className="quiz-mode-list">
+                    <button
+                      type="button"
+                      className="quiz-mode-btn"
+                      onClick=${() => loadQuiz("competency")}
+                    >
+                      <p className="mode-title">Per Competency</p>
+                      <p className="mode-desc">Quiz based on selected competency for this level</p>
+                    </button>
+                    <button
+                      type="button"
+                      className="quiz-mode-btn"
+                      onClick=${() => loadQuiz("knowledge")}
+                    >
+                      <p className="mode-title">Knowledge Only</p>
+                      <p className="mode-desc">Quiz for Knowledge competencies for this level</p>
+                    </button>
+                    <button
+                      type="button"
+                      className="quiz-mode-btn"
+                      onClick=${() => loadQuiz("ability")}
+                    >
+                      <p className="mode-title">Ability Only</p>
+                      <p className="mode-desc">Quiz for Ability competencies for this level</p>
+                    </button>
+                    <button
+                      type="button"
+                      className="quiz-mode-btn"
+                      onClick=${() => loadQuiz("proficiency")}
+                    >
+                      <p className="mode-title">Per Proficiency Level</p>
+                      <p className="mode-desc">Knowledge + Ability for this level</p>
+                    </button>
+                    <button
+                      type="button"
+                      className="quiz-mode-btn"
+                      onClick=${() => loadQuiz("skill")}
+                    >
+                      <p className="mode-title">Per Skill</p>
+                      <p className="mode-desc">All proficiency levels</p>
+                    </button>
+                  </div>
+                </div>
+              </section>
+            </div>
+          `
+        : null}
+
+      ${quizOpen
+        ? html`
+            <div className="quiz-backdrop" onClick=${closeQuiz}>
+              <section
+                className="quiz-panel"
+                role="dialog"
+                aria-modal="true"
+                aria-label="Quiz"
+                onClick=${(event) => event.stopPropagation()}
+              >
+                <div className="quiz-head">
+                  <div>
+                    <p className="quiz-kicker">Quiz</p>
+                    <h2>${selectedSkill || "Quiz"}</h2>
+                    <p className="quiz-mode-info">
+                      ${getQuizModeLabel(quizMode)} 
+                      ${quizMode === "competency" ? `• ${selectedCompetency}` : ""}
+                      ${quizMode === "proficiency" ? `• ${selectedProficiency}` : ""}
+                      ${quizMode === "skill" ? `• All Proficiency Levels` : ""}
+                    </p>
+                  </div>
+                  <button type="button" className="close-btn" onClick=${closeQuiz}>Close</button>
+                </div>
+
+                <div className="quiz-content">
+                  ${quizStatus.text && !quizData
+                    ? html`
+                        <div className="quiz-loading-state">
+                          <p className="panel-status" data-tone=${quizStatus.tone || undefined}>${quizStatus.text}</p>
+                          ${quizStatus.tone === "error"
+                            ? html`
+                                <button type="button" className="primary-btn" onClick=${closeQuiz}>
+                                  Close
+                                </button>
+                              `
+                            : html`<div className="spinner"></div>`}
+                        </div>
+                      `
+                    : !quizData
+                      ? html`
+                          <div className="quiz-loading-state">
+                            <div className="spinner"></div>
+                            <p>Loading quiz...</p>
+                          </div>
+                        `
+                      : !quizSubmitted
+                        ? html`
+                            <div className="quiz-question-container">
+                              <div className="quiz-progress">
+                                <span>Question ${currentQuestionIndex + 1} of ${quizData.questions.length}</span>
+                                <div className="progress-bar">
+                                  <div 
+                                    className="progress-fill" 
+                                    style=${{width: `${((currentQuestionIndex + 1) / quizData.questions.length) * 100}%`}}
+                                  ></div>
+                                </div>
+                              </div>
+
+                              <div className="question-block">
+                                <p className="question-text">${quizData.questions[currentQuestionIndex].question}</p>
+
+                                <div className="options-block">
+                                  ${['A', 'B', 'C', 'D'].map((option) => {
+                                    const isSelected = userAnswers[`q${currentQuestionIndex}`] === option;
+                                    return html`
+                                      <button
+                                        key=${`opt-${option}`}
+                                        type="button"
+                                        className=${`option-btn ${isSelected ? 'selected' : ''}`}
+                                        onClick=${() => handleAnswerSelect(option)}
+                                      >
+                                        <span className="option-label">${option}</span>
+                                        <span className="option-text">${quizData.questions[currentQuestionIndex].options[option]}</span>
+                                      </button>
+                                    `;
+                                  })}
+                                </div>
+                              </div>
+
+                              <div className="quiz-controls">
+                                <button
+                                  type="button"
+                                  className="nav-btn"
+                                  onClick=${goToPreviousQuestion}
+                                  disabled=${currentQuestionIndex === 0}
+                                >
+                                  ← Previous
+                                </button>
+
+                                ${currentQuestionIndex === quizData.questions.length - 1
+                                  ? html`
+                                      <button
+                                        type="button"
+                                        className="primary-btn"
+                                        onClick=${submitQuiz}
+                                        disabled=${!userAnswers[`q${currentQuestionIndex}`]}
+                                      >
+                                        Submit Quiz
+                                      </button>
+                                    `
+                                  : html`
+                                      <button
+                                        type="button"
+                                        className="nav-btn"
+                                        onClick=${goToNextQuestion}
+                                        disabled=${!userAnswers[`q${currentQuestionIndex}`]}
+                                      >
+                                        Next →
+                                      </button>
+                                    `}
+                              </div>
+                            </div>
+                          `
+                        : html`
+                            <div className="quiz-results">
+                              <div className="results-summary">
+                                <h3>Quiz Completed!</h3>
+                                <p className="results-mode">Mode: ${getQuizModeLabel(quizMode)}</p>
+                                <p className="panel-status" data-tone=${quizStatus.tone || undefined}>${quizStatus.text}</p>
+                              </div>
+
+                              <div className="results-details">
+                                ${quizData.questions.map((question, index) => {
+                                  const userAnswer = userAnswers[`q${index}`];
+                                  const isCorrect = userAnswer === question.correct;
+                                  return html`
+                                    <div key=${index} className="result-item">
+                                      <p className="result-question">${index + 1}. ${question.question}</p>
+                                      <p className="result-your-answer">
+                                        Your answer: <strong>${userAnswer}</strong> 
+                                        <span className=${isCorrect ? 'correct' : 'incorrect'}>
+                                          ${isCorrect ? '✓ Correct' : '✗ Incorrect'}
+                                        </span>
+                                      </p>
+                                      ${!isCorrect
+                                        ? html`<p className="result-correct-answer">Correct answer: <strong>${question.correct}</strong></p>`
+                                        : html``}
+                                      <p className="result-explanation">
+                                        <strong>Explanation:</strong> ${question.explanation}
+                                      </p>
+                                    </div>
+                                  `;
+                                })}
+                              </div>
+
+                              <button
+                                type="button"
+                                className="primary-btn"
+                                onClick=${closeQuiz}
+                              >
+                                Close Quiz
+                              </button>
+                            </div>
+                          `}
                 </div>
               </section>
             </div>

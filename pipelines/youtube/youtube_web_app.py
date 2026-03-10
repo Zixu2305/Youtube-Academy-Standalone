@@ -373,7 +373,7 @@ def create_app():
           {"type":"error",   "message":str}
           {"type":"done",    "quiz_key":str}
         """
-        from pipelines.quiz_gen.quiz_store import stream_or_cached_quiz  # lazy import
+        from pipelines.quiz_gen.quiz_store import stream_quiz  # lazy import
 
         data = request.get_json(silent=True) or {}
         sector               = (data.get("sector")               or "").strip()
@@ -381,7 +381,6 @@ def create_app():
         competency           = (data.get("competency")           or "").strip()
         proficiency_level    = (data.get("proficiency_level")    or "").strip()
         proficiency_description = (data.get("proficiency_description") or "").strip()
-        force_regenerate     = data.get("force_regenerate", False)
         question_types       = data.get("question_types", ["Conceptual", "Application", "Scenario-Based", "Technical", "Evaluation"])
         try:
             num_questions = int(data.get("num_questions", 5))
@@ -394,8 +393,8 @@ def create_app():
             return Response(stream_with_context(_err()), mimetype="application/x-ndjson"), 400
 
         def _generate():
-            for event in stream_or_cached_quiz(
-                sector, skill, competency, proficiency_level, proficiency_description, force_regenerate, question_types, num_questions
+            for event in stream_quiz(
+                sector, skill, competency, proficiency_level, proficiency_description, question_types, num_questions
             ):
                 yield json.dumps(event, ensure_ascii=False) + "\n"
 
