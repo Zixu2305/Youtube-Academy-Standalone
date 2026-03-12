@@ -4,6 +4,7 @@ import os
 from functools import lru_cache
 from pathlib import Path
 
+import numpy as np
 import mysql.connector
 from dotenv import load_dotenv
 from fastapi import APIRouter, HTTPException, Query
@@ -12,6 +13,17 @@ from pydantic import BaseModel, Field
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
 from sentence_transformers import SentenceTransformer
+
+from api.routes.recommend import (
+    get_bm25_index,
+    get_reranker_model,
+    reciprocal_rank_fusion,
+    apply_metadata_boosts,
+    build_yt_rerank_text,
+    SEMANTIC_CANDIDATES,
+    BM25_CANDIDATES,
+    RERANK_TOP_N,
+)
 
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -125,6 +137,8 @@ class PublicRecommendRequest(BaseModel):
 
 class PublicRecommendedVideo(BaseModel):
     score: float
+    rrf_score: float
+    reranker_score: float
     video_id: str
     title: str
     description: str
@@ -398,61 +412,110 @@ def public_recommend_videos(payload: PublicRecommendRequest):
 
     yt_collection = env("QDRANT_YT_COLLECTION", DEFAULT_YT_COLLECTION)
     qdrant = get_qdrant_client()
-    search_limit = max(payload.top_k * 4, payload.top_k)
 
-    def run_search(
-        current_proficiency: str | None,
-        strict_skill_match: bool,
-    ):
-        search_filter = build_video_filter(
-            sector=sector,
-            skill=skill,
-            proficiency_level=current_proficiency,
-            strict_skill_match=strict_skill_match,
-        )
+    # ------------------------------------------------------------------
+    # Path A: Semantic search with sector filter (+ filter relaxation)
+    # ------------------------------------------------------------------
+    active_proficiency = proficiency_level
+    active_strict = payload.strict_skill_match
+
+    def run_semantic(prof: str | None, strict: bool):
         return qdrant.search(
             collection_name=yt_collection,
             query_vector=query_vector,
-            query_filter=search_filter,
-            limit=search_limit,
+            query_filter=build_video_filter(sector, skill, prof, strict),
+            limit=SEMANTIC_CANDIDATES,
             with_payload=True,
             with_vectors=False,
         )
 
-    active_proficiency = proficiency_level
-    active_strict = payload.strict_skill_match
-
     try:
-        hits = run_search(
-            current_proficiency=active_proficiency,
-            strict_skill_match=active_strict,
-        )
-
-        if not hits and active_proficiency:
+        semantic_hits = run_semantic(active_proficiency, active_strict)
+        if not semantic_hits and active_proficiency:
             active_proficiency = None
-            hits = run_search(
-                current_proficiency=active_proficiency,
-                strict_skill_match=active_strict,
-            )
-
-        if not hits and active_strict:
+            semantic_hits = run_semantic(active_proficiency, active_strict)
+        if not semantic_hits and active_strict:
             active_strict = False
-            hits = run_search(
-                current_proficiency=active_proficiency,
-                strict_skill_match=active_strict,
-            )
+            semantic_hits = run_semantic(active_proficiency, active_strict)
     except Exception as exc:
         raise HTTPException(
             status_code=500,
             detail=f"Video recommendation search failed: {exc}",
         ) from exc
 
+    semantic_ids = [str(hit.id) for hit in semantic_hits]
+    semantic_payloads = {str(hit.id): hit.payload or {} for hit in semantic_hits}
+
+    # ------------------------------------------------------------------
+    # Path B: BM25 lexical search (skill name → YT title+tags)
+    # ------------------------------------------------------------------
+    bm25, bm25_point_ids, bm25_payloads = get_bm25_index()
+    skill_tokens = skill.lower().split()
+    bm25_scores = bm25.get_scores(skill_tokens)
+    top_bm25_indices = np.argsort(bm25_scores)[::-1][:BM25_CANDIDATES]
+    bm25_ranked_ids = [bm25_point_ids[i] for i in top_bm25_indices if bm25_scores[i] > 0]
+
+    # ------------------------------------------------------------------
+    # RRF Fusion
+    # ------------------------------------------------------------------
+    rrf_scores = reciprocal_rank_fusion(semantic_ids, bm25_ranked_ids)
+
+    all_payloads: dict[str, dict] = {}
+    all_payloads.update(bm25_payloads)
+    all_payloads.update(semantic_payloads)
+
+    # ------------------------------------------------------------------
+    # Metadata boosts (sector + proficiency alignment)
+    # ------------------------------------------------------------------
+    boosted_scores = apply_metadata_boosts(
+        rrf_scores,
+        all_payloads,
+        skill_category=sector,
+        skill_proficiency=proficiency_level or "",
+    )
+
+    # ------------------------------------------------------------------
+    # Cross-encoder reranking
+    # ------------------------------------------------------------------
+    sorted_candidates = sorted(boosted_scores.items(), key=lambda x: x[1], reverse=True)
+    rerank_candidates = sorted_candidates[:RERANK_TOP_N]
+
+    if not rerank_candidates:
+        return PublicRecommendResponse(
+            query=query_text,
+            applied_filters={"sector": sector},
+            count=0,
+            results=[],
+        )
+
+    reranker = get_reranker_model()
+    sf_text = f"Skill: {skill}. Sector: {sector}. Competency: {competency}."
+
+    rerank_pairs = []
+    rerank_pids = []
+    rerank_rrf_scores = []
+    for pid, rrf_score in rerank_candidates:
+        yt_text = build_yt_rerank_text(all_payloads.get(pid, {}))
+        rerank_pairs.append((sf_text, yt_text))
+        rerank_pids.append(pid)
+        rerank_rrf_scores.append(rrf_score)
+
+    reranker_scores = reranker.predict(rerank_pairs)
+    ranked_indices = np.argsort(reranker_scores)[::-1]
+    final_indices = ranked_indices[: payload.top_k]
+
+    # ------------------------------------------------------------------
+    # Build response
+    # ------------------------------------------------------------------
     results: list[PublicRecommendedVideo] = []
-    for hit in hits[: payload.top_k]:
-        item = hit.payload or {}
+    for idx in final_indices:
+        pid = rerank_pids[idx]
+        item = all_payloads.get(pid, {})
         results.append(
             PublicRecommendedVideo(
-                score=float(hit.score),
+                score=float(reranker_scores[idx]),
+                rrf_score=float(rerank_rrf_scores[idx]),
+                reranker_score=float(reranker_scores[idx]),
                 video_id=str(item.get("video_id") or ""),
                 title=str(item.get("title") or ""),
                 description=str(item.get("description") or ""),

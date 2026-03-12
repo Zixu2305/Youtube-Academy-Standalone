@@ -73,16 +73,7 @@ curl -X POST http://localhost:8000/api/search/skills \
 
 ### Step 1: Ingest YouTube Videos
 
-**Option A: Batch Ingestion (recommended)**
-Automatically ingests videos for all competencies across 8 Infocomm Technology skills:
-```bash
-python scripts/batch_ingest_yt.py --api-key YOUR_YOUTUBE_API_KEY
-```
-- Fetches 5 videos per competency, minimum 5 minutes each
-- 350 competencies total — will take multiple days due to YouTube API daily quota (10,000 units)
-- Idempotent — safe to re-run; picks up where it left off
-
-**Option B: Manual Ingestion (via Flask web app)**
+**Manual Ingestion (via Flask web app)**
 ```bash
 docker compose up -d seed_youtube
 # Open http://localhost:5001
