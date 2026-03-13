@@ -394,7 +394,14 @@ def create_app():
 
         def _generate():
             for event in stream_quiz(
-                sector, skill, competency, proficiency_level, proficiency_description, question_types, num_questions
+                sector=sector,
+                skill=skill,
+                competency=competency,
+                proficiency_level=proficiency_level,
+                proficiency_description=proficiency_description,
+                quiz_mode="competency",  # Admin always uses competency mode for direct generation
+                question_types=question_types,
+                num_questions=num_questions,
             ):
                 yield json.dumps(event, ensure_ascii=False) + "\n"
 

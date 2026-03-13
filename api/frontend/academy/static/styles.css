@@ -1041,6 +1041,40 @@ textarea {
   color: var(--ink);
 }
 
+.result-options {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin: 0.3rem 0;
+  padding: 0.6rem;
+  background: rgba(255, 255, 255, 0.5);
+  border-radius: 8px;
+}
+
+.result-option {
+  margin: 0;
+  padding: 0.5rem 0.6rem;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  line-height: 1.4;
+  background: var(--surface);
+  border: 1px solid var(--line);
+}
+
+.result-option-correct {
+  background: rgba(31, 122, 82, 0.12);
+  border-color: var(--success);
+  color: var(--success);
+  font-weight: 500;
+}
+
+.result-option-wrong {
+  background: rgba(175, 62, 51, 0.12);
+  border-color: var(--error);
+  color: var(--error);
+  font-weight: 500;
+}
+
 .quiz-mode-list {
   display: grid;
   grid-template-columns: 1fr;

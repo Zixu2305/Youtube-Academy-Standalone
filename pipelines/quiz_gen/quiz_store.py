@@ -104,6 +104,7 @@ def stream_quiz(
     competency: str,
     proficiency_level: str,
     proficiency_description: str,
+    quiz_mode: str = "competency",
     question_types: list[str] | None = None,
     num_questions: int = 5,
 ):
@@ -111,6 +112,7 @@ def stream_quiz(
     Generator that streams quiz questions one at a time using LLM generation.
 
     Args:
+        quiz_mode: Quiz mode for context filtering (default: "competency").
         question_types: List of question types to include (default: all 5 types).
         num_questions: Number of questions to generate (default: 5).
 
@@ -132,7 +134,7 @@ def stream_quiz(
 
     # Generate fresh questions via Ollama, stream each question
     try:
-        ctx = fetch_quiz_context(sector, skill, competency, proficiency_level)
+        ctx = fetch_quiz_context(sector, skill, competency, proficiency_level, quiz_mode)
         if proficiency_description:
             ctx["proficiency_description"] = proficiency_description
     except Exception as exc:

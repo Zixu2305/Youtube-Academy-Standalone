@@ -863,6 +863,28 @@ function App() {
                                   return html`
                                     <div key=${index} className="result-item">
                                       <p className="result-question">${index + 1}. ${question.question}</p>
+                                      
+                                      <div className="result-options">
+                                        ${['A', 'B', 'C', 'D'].map((letter) => {
+                                          const optionText = question.options[letter];
+                                          const isUserAnswer = letter === userAnswer;
+                                          const isCorrectAnswer = letter === question.correct;
+                                          
+                                          let optionClass = 'result-option';
+                                          let indicator = '  ';
+                                          
+                                          if (isCorrectAnswer) {
+                                            optionClass += ' result-option-correct';
+                                            indicator = '✓ ';
+                                          } else if (isUserAnswer && !isCorrect) {
+                                            optionClass += ' result-option-wrong';
+                                            indicator = '✗ ';
+                                          }
+                                          
+                                          return html`<p key=${letter} className=${optionClass}>${indicator}${letter}. ${optionText}</p>`;
+                                        })}
+                                      </div>
+                                      
                                       <p className="result-your-answer">
                                         Your answer: <strong>${userAnswer}</strong> 
                                         <span className=${isCorrect ? 'correct' : 'incorrect'}>

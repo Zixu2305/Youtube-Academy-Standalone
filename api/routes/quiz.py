@@ -27,8 +27,10 @@ _ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from pipelines.quiz_gen.quiz_store import make_quiz_key, store_quiz_submission  # noqa: E402
-from pipelines.quiz_gen.quiz_mongo import get_quiz_from_mongo  # noqa: E402
+from pipelines.quiz_gen.quiz_store import make_quiz_key, store_quiz_submission, stream_quiz  # noqa: E402
+from pipelines.quiz_gen.quiz_mongo import get_quiz_from_mongo, add_questions_to_existing_quiz  # noqa: E402
+from pipelines.quiz_gen.quiz_data_access import fetch_quiz_context, parse_competency_string  # noqa: E402
+from pipelines.quiz_gen.quiz_engine import generate_quiz_stream  # noqa: E402
 
 router = APIRouter()
 
@@ -114,23 +116,163 @@ def generate_quiz(payload: QuizGenerateRequest) -> dict:
     Retrieve the quiz from MongoDB Quiz_Generation collection for the given
     selection path (sector → skill → proficiency_level → competency) and quiz mode.
 
-    The quiz must already exist in MongoDB. If not found, returns 404.
-    """
-    result = get_quiz_from_mongo(
-        quiz_mode=payload.quiz_mode,
-        sector=payload.sector.strip(),
-        skill=payload.skill.strip(),
-        proficiency_level=payload.proficiency_level.strip(),
-        competency=payload.competency.strip(),
-    )
-    if result is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"No quiz found in MongoDB for the selected criteria and mode '{payload.quiz_mode}'. "
-                   f"Please ensure the quiz has been generated and stored first.",
-        )
+    If found in MongoDB:
+      - If it has >= 5 questions, return as-is.
+      - If it has < 5 questions, generate additional questions to reach 5 total,
+        save them to MongoDB, and return the combined set.
     
-    return result
+    If not found in MongoDB, generate 5 fresh questions using Ollama, save to MongoDB,
+    and return them.
+    
+    Ensures minimum of 5 questions are always returned.
+    """
+    sector = payload.sector.strip()
+    skill = payload.skill.strip()
+    proficiency_level = payload.proficiency_level.strip()
+    competency = payload.competency.strip()
+    proficiency_description = payload.proficiency_description.strip()
+    quiz_mode = payload.quiz_mode.strip()
+    
+    # Make a deterministic quiz key
+    quiz_key = make_quiz_key(
+        sector, skill, competency, proficiency_level, proficiency_description
+    )
+    
+    # Try to get quiz from MongoDB first
+    result = get_quiz_from_mongo(
+        quiz_mode=quiz_mode,
+        sector=sector,
+        skill=skill,
+        proficiency_level=proficiency_level,
+        competency=competency,
+    )
+    
+    # If found in MongoDB, check if it needs filling
+    if result is not None:
+        current_count = len(result.get("questions", []))
+        
+        if current_count >= 5:
+            # Enough questions, return as-is
+            return result
+        
+        # Need to fill: generate additional questions
+        try:
+            questions_needed = 5 - current_count
+            # Fetch context from MySQL (respecting quiz_mode)
+            ctx = fetch_quiz_context(sector, skill, competency, proficiency_level, quiz_mode)
+            if proficiency_description:
+                ctx["proficiency_description"] = proficiency_description
+            
+            # Generate additional questions (will be 5 total, cycle through types)
+            new_questions = list(generate_quiz_stream(ctx, num_questions=questions_needed))
+            
+            # Determine item_type based on quiz_mode
+            if quiz_mode == "knowledge":
+                item_type = "knowledge"
+            elif quiz_mode == "ability":
+                item_type = "ability"
+            else:
+                # For other modes (competency, proficiency, skill), infer from competency string
+                item_type = "knowledge"
+                if result.get("questions"):
+                    comp_str = result.get("competency", "")
+                    if comp_str.lower().startswith("ability:"):
+                        item_type = "ability"
+            
+            # Save additional questions to MongoDB
+            add_questions_to_existing_quiz(
+                quiz_key=quiz_key,
+                sector=sector,
+                skill=skill,
+                competency=competency,
+                proficiency_level=proficiency_level,
+                proficiency_description=proficiency_description,
+                item_type=item_type,
+                questions=new_questions,
+            )
+            
+            # Combine old and new questions
+            combined_questions = result.get("questions", []) + [
+                {
+                    "question_number": current_count + i + 1,
+                    "question": q.get("question", ""),
+                    "options": q.get("options", {}),
+                    "correct": q.get("correct", ""),
+                    "explanation": q.get("explanation", ""),
+                }
+                for i, q in enumerate(new_questions)
+            ]
+            
+            result["questions"] = combined_questions
+            return result
+            
+        except Exception as exc:
+            # If filling fails, still return what we have (don't error out)
+            print(f"Warning: Failed to fill quiz: {exc}")
+            return result
+    
+    # Quiz not found in MongoDB: generate fresh from scratch
+    try:
+        # Fetch context from MySQL (respecting quiz_mode)
+        ctx = fetch_quiz_context(sector, skill, competency, proficiency_level, quiz_mode)
+        if proficiency_description:
+            ctx["proficiency_description"] = proficiency_description
+        
+        # Generate 5 questions using Ollama
+        questions = list(generate_quiz_stream(ctx, num_questions=5))
+        
+        # Determine item_type based on quiz_mode
+        if quiz_mode == "knowledge":
+            item_type = "knowledge"
+        elif quiz_mode == "ability":
+            item_type = "ability"
+        else:
+            # For other modes (competency, proficiency, skill), infer from competency string
+            item_type = "knowledge"
+            if competency.lower().startswith("ability:"):
+                item_type = "ability"
+        
+        # Build quiz data for storage
+        quiz_data = {
+            "quiz_key": quiz_key,
+            "sector": sector,
+            "skill": skill,
+            "competency": competency,
+            "proficiency_level": proficiency_level,
+            "proficiency_description": proficiency_description,
+            "item_type": item_type,
+            "questions": questions,
+        }
+        
+        # Store to MongoDB for future use
+        from pipelines.quiz_gen.quiz_mongo import store_quiz_in_mongo
+        store_quiz_in_mongo(quiz_data)
+        
+        # Build response
+        return {
+            "quiz_key": quiz_key,
+            "sector": sector,
+            "skill": skill,
+            "competency": competency,
+            "proficiency_level": proficiency_level,
+            "proficiency_description": proficiency_description,
+            "questions": [
+                {
+                    "question_number": i + 1,
+                    "question": q.get("question", ""),
+                    "options": q.get("options", {}),
+                    "correct": q.get("correct", ""),
+                    "explanation": q.get("explanation", ""),
+                }
+                for i, q in enumerate(questions)
+            ]
+        }
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to generate quiz: {str(exc)}. "
+                   f"Ensure Ollama and MySQL are running.",
+        ) from exc
 
 
 @router.get("/quiz/{quiz_key}", response_model=QuizResponse, tags=["quiz"])

@@ -213,9 +213,21 @@ def fetch_quiz_context(
     skill: str,
     competency: str,
     proficiency_level: str,
+    quiz_mode: str = "competency",
 ) -> dict[str, Any]:
     """
     Gather everything the quiz engine needs in one call.
+    
+    Args:
+        sector: Sector name
+        skill: Skill name
+        competency: Competency string (e.g., "knowledge: ...", "ability: ...")
+        proficiency_level: Proficiency level
+        quiz_mode: Quiz mode determining context filtering.
+                  - "competency": Use the passed competency as-is
+                  - "knowledge": Force item_type to "knowledge" (override competency string)
+                  - "ability": Force item_type to "ability" (override competency string)
+                  - "proficiency", "skill": Use competency string to determine item_type
 
     Returns:
         {
@@ -234,7 +246,18 @@ def fetch_quiz_context(
           "video_descriptions": [str, ...],
         }
     """
-    item_type, item_text = parse_competency_string(competency)
+    # Determine item_type based on quiz_mode
+    if quiz_mode == "knowledge":
+        item_type = "knowledge"
+        # Parse to extract text without prefix
+        _, item_text = parse_competency_string(competency)
+    elif quiz_mode == "ability":
+        item_type = "ability"
+        # Parse to extract text without prefix
+        _, item_text = parse_competency_string(competency)
+    else:
+        # For "competency", "proficiency", "skill" modes: parse from competency string
+        item_type, item_text = parse_competency_string(competency)
 
     sf_skill_id = fetch_sf_skill_id(sector, skill)
     if sf_skill_id is None:

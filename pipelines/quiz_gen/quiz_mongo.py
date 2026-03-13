@@ -117,6 +117,67 @@ def store_quiz_in_mongo(quiz_data: dict[str, Any]) -> list[str] | None:
         client.close()
 
 
+def add_questions_to_existing_quiz(
+    quiz_key: str,
+    sector: str,
+    skill: str,
+    competency: str,
+    proficiency_level: str,
+    proficiency_description: str,
+    item_type: str,
+    questions: list[dict[str, Any]],
+) -> list[str] | None:
+    """
+    Add additional questions to an existing quiz (identified by quiz_key).
+    Used when the quiz has fewer than 5 questions and needs to be filled up.
+
+    Args:
+        quiz_key: The quiz key identifying the quiz set
+        sector, skill, competency, proficiency_level, proficiency_description: Quiz metadata
+        item_type: "knowledge" or "ability"
+        questions: List of new question dicts to add
+
+    Returns:
+        List of MongoDB _ids of the newly inserted documents, or None if insertion failed.
+    """
+    try:
+        client = get_mongo_client()
+        db = client.get_default_database()
+        collection = db["Quiz_Generation"]
+
+        inserted_ids = []
+
+        # Store each new question as a separate document with the same quiz metadata
+        for question in questions:
+            doc = {
+                "quiz_key": quiz_key,
+                "sector": sector,
+                "skill": skill,
+                "proficiency_level": proficiency_level,
+                "proficiency_description": proficiency_description,
+                "competency": competency,
+                "item_type": item_type,
+                "question": question.get("question", ""),
+                "question_type": question.get("question_type", ""),
+                "options": question.get("options", {}),
+                "correct": question.get("correct", ""),
+                "explanation": question.get("explanation", ""),
+                "ingested_at": datetime.utcnow(),
+                "deleted": False,
+            }
+
+            result = collection.insert_one(doc)
+            inserted_ids.append(str(result.inserted_id))
+
+        return inserted_ids if inserted_ids else None
+
+    except Exception as exc:
+        print(f"Error adding questions to quiz in MongoDB: {exc}")
+        return None
+    finally:
+        client.close()
+
+
 def get_stored_quizzes(filters: dict[str, str] | None = None) -> list[dict[str, Any]]:
     """
     Retrieve stored quiz questions from MongoDB (organized by quiz_key).
