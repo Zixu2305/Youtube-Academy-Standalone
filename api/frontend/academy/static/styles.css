@@ -126,6 +126,167 @@ body.overlay-open {
   font-size: 1.22rem;
 }
 
+.sector-search-panel {
+  margin-top: 0.72rem;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: linear-gradient(130deg, #f8fbfd, #fffaf5);
+  padding: 0.7rem;
+}
+
+.sector-search-copy .field-label {
+  margin: 0;
+}
+
+.sector-search-note {
+  margin: 0.22rem 0 0;
+  font-size: 0.77rem;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.sector-search-row {
+  margin-top: 0.55rem;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.sector-search-actions {
+  margin-top: 0.45rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.sector-search-substatus {
+  margin-top: 0.45rem;
+}
+
+.utility-btn {
+  border: 1px solid rgba(14, 101, 119, 0.24);
+  border-radius: 10px;
+  background: #ffffff;
+  color: var(--brand-strong);
+  font-family: inherit;
+  font-size: 0.79rem;
+  font-weight: 700;
+  padding: 0.52rem 0.75rem;
+  cursor: pointer;
+  transition: border-color 0.13s ease, background 0.13s ease, transform 0.13s ease;
+  white-space: nowrap;
+}
+
+.utility-btn:hover {
+  border-color: rgba(14, 101, 119, 0.46);
+  background: #eef6f8;
+  transform: translateY(-1px);
+}
+
+.utility-btn-brand {
+  background: rgba(14, 101, 119, 0.08);
+}
+
+.skill-suggestion-panel {
+  margin-top: 0.68rem;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: linear-gradient(135deg, #fdfefe, #f8fbfd);
+  padding: 0.72rem;
+}
+
+.skill-suggestion-head .field-label {
+  margin: 0;
+}
+
+.skill-suggestion-note {
+  margin: 0.24rem 0 0;
+  font-size: 0.77rem;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.skill-suggestion-list {
+  margin-top: 0.58rem;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 0.58rem;
+}
+
+.skill-suggestion-card {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #ffffff;
+  padding: 0.68rem;
+  box-shadow: 0 8px 18px rgba(18, 36, 58, 0.05);
+}
+
+.skill-suggestion-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.55rem;
+}
+
+.skill-suggestion-title {
+  margin: 0;
+  font-size: 0.86rem;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.skill-suggestion-count {
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: #edf5f8;
+  color: var(--brand-strong);
+  font-size: 0.69rem;
+  font-weight: 700;
+  padding: 0.24rem 0.5rem;
+}
+
+.skill-suggestion-meta {
+  margin: 0.32rem 0 0;
+  font-size: 0.73rem;
+  color: var(--muted);
+}
+
+.skill-suggestion-chips {
+  margin-top: 0.56rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.38rem;
+}
+
+.skill-sector-chip {
+  border: 1px solid rgba(14, 101, 119, 0.22);
+  border-radius: 999px;
+  background: #f6fafc;
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 0.74rem;
+  padding: 0.36rem 0.56rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.42rem;
+  cursor: pointer;
+  transition: border-color 0.13s ease, transform 0.13s ease, background 0.13s ease;
+}
+
+.skill-sector-chip:hover {
+  border-color: rgba(14, 101, 119, 0.46);
+  background: #eef6f8;
+  transform: translateY(-1px);
+}
+
+.skill-sector-chip-meta {
+  color: var(--muted);
+  font-size: 0.68rem;
+}
+
 .industry-grid {
   margin-top: 0.68rem;
   display: grid;
@@ -726,6 +887,31 @@ textarea {
 
   .controls-row {
     grid-template-columns: 1fr;
+  }
+
+  .sector-search-row {
+    grid-template-columns: 1fr;
+  }
+
+  .sector-search-actions {
+    align-items: stretch;
+  }
+
+  .utility-btn {
+    width: 100%;
+  }
+
+  .skill-suggestion-list {
+    grid-template-columns: 1fr;
+  }
+
+  .skill-suggestion-top {
+    flex-direction: column;
+  }
+
+  .skill-sector-chip {
+    width: 100%;
+    justify-content: space-between;
   }
 
   .video-card {

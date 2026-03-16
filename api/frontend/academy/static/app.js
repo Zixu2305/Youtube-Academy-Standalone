@@ -46,9 +46,163 @@ function getQuizModeLabel(mode) {
   return labels[mode] || mode;
 }
 
+function normalizeSearchText(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function tokenizeSearchText(value) {
+  const normalized = normalizeSearchText(value);
+  return normalized ? normalized.split(/\s+/).filter(Boolean) : [];
+}
+
+function isOrderedSubsequence(query, target) {
+  if (!query || !target) {
+    return false;
+  }
+
+  let queryIndex = 0;
+  for (const character of target) {
+    if (character === query[queryIndex]) {
+      queryIndex += 1;
+      if (queryIndex === query.length) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function levenshteinDistance(source, target) {
+  if (source === target) {
+    return 0;
+  }
+  if (!source) {
+    return target.length;
+  }
+  if (!target) {
+    return source.length;
+  }
+
+  let previousRow = Array.from({ length: target.length + 1 }, (_, index) => index);
+  for (let sourceIndex = 0; sourceIndex < source.length; sourceIndex += 1) {
+    const currentRow = [sourceIndex + 1];
+    for (let targetIndex = 0; targetIndex < target.length; targetIndex += 1) {
+      const substitutionCost = source[sourceIndex] === target[targetIndex] ? 0 : 1;
+      currentRow[targetIndex + 1] = Math.min(
+        currentRow[targetIndex] + 1,
+        previousRow[targetIndex + 1] + 1,
+        previousRow[targetIndex] + substitutionCost,
+      );
+    }
+    previousRow = currentRow;
+  }
+
+  return previousRow[target.length];
+}
+
+function similarityRatio(source, target) {
+  const longestLength = Math.max(source.length, target.length);
+  if (!longestLength) {
+    return 1;
+  }
+  return 1 - levenshteinDistance(source, target) / longestLength;
+}
+
+function scoreSearchToken(queryToken, candidateToken) {
+  if (!queryToken || !candidateToken) {
+    return 0;
+  }
+  if (candidateToken === queryToken) {
+    return 1;
+  }
+  if (candidateToken.startsWith(queryToken)) {
+    return Math.max(0.82, 0.98 - (candidateToken.length - queryToken.length) * 0.03);
+  }
+  if (candidateToken.includes(queryToken)) {
+    return Math.max(0.7, 0.84 - candidateToken.indexOf(queryToken) * 0.02);
+  }
+  if (queryToken.length >= 3 && isOrderedSubsequence(queryToken, candidateToken)) {
+    return Math.max(0.58, 0.72 - Math.max(0, candidateToken.length - queryToken.length) * 0.02);
+  }
+  if (queryToken.length >= 4 && candidateToken.length > queryToken.length) {
+    const sharedPrefixLength = Math.min(4, queryToken.length);
+    const candidatePrefix = candidateToken.slice(0, queryToken.length + 1);
+    const prefixRatio = similarityRatio(queryToken, candidatePrefix);
+    if (candidateToken.startsWith(queryToken.slice(0, sharedPrefixLength)) && prefixRatio >= 0.68) {
+      return Math.min(0.78, prefixRatio + 0.04);
+    }
+  }
+  if (queryToken.length >= 4) {
+    const ratio = similarityRatio(queryToken, candidateToken);
+    if (ratio >= 0.72) {
+      return ratio * 0.84;
+    }
+  }
+  return 0;
+}
+
+function scoreSectorMatch(query, sectorName) {
+  const normalizedQuery = normalizeSearchText(query);
+  const normalizedSector = normalizeSearchText(sectorName);
+  if (!normalizedQuery) {
+    return { matched: true, score: 1 };
+  }
+  if (!normalizedSector) {
+    return { matched: false, score: 0 };
+  }
+
+  const sectorTokens = tokenizeSearchText(normalizedSector);
+  const compactQuery = normalizedQuery.replace(/\s+/g, "");
+  const compactSector = normalizedSector.replace(/\s+/g, "");
+  const rawQueryTokens = tokenizeSearchText(normalizedQuery);
+  const queryTokens = rawQueryTokens.filter((token) => token.length > 1);
+  const tokensToScore = queryTokens.length ? queryTokens : [normalizedQuery];
+
+  let phraseScore = 0;
+  if (normalizedSector === normalizedQuery) {
+    phraseScore = 5.2;
+  } else if (normalizedSector.startsWith(normalizedQuery)) {
+    phraseScore = 4.4;
+  } else if (normalizedSector.includes(normalizedQuery)) {
+    phraseScore = 3.6;
+  } else if (compactQuery.length >= 3 && isOrderedSubsequence(compactQuery, compactSector)) {
+    phraseScore = 2.6;
+  }
+
+  const tokenScores = tokensToScore.map((queryToken) => {
+    const candidates = [normalizedSector, ...sectorTokens];
+    return candidates.reduce((bestScore, candidate) => Math.max(bestScore, scoreSearchToken(queryToken, candidate)), 0);
+  });
+  const averageTokenScore = tokenScores.length
+    ? tokenScores.reduce((sum, value) => sum + value, 0) / tokenScores.length
+    : 0;
+  const strongTokenMatches = tokenScores.filter((value) => value >= 0.7).length;
+  const compactSimilarity = compactQuery.length >= 4 ? similarityRatio(compactQuery, compactSector) : 0;
+
+  const matched =
+    phraseScore >= 3.6 ||
+    averageTokenScore >= 0.68 ||
+    (tokensToScore.length > 1 && strongTokenMatches >= Math.max(1, tokensToScore.length - 1)) ||
+    compactSimilarity >= 0.74;
+
+  const score =
+    phraseScore +
+    averageTokenScore * 4 +
+    strongTokenMatches * 0.35 +
+    compactSimilarity * 1.8;
+
+  return { matched, score: matched ? score : 0 };
+}
+
 function App() {
   const [sectors, setSectors] = useState([]);
   const [selectedSector, setSelectedSector] = useState("");
+  const [sectorSearch, setSectorSearch] = useState("");
+  const [skillSuggestions, setSkillSuggestions] = useState([]);
+  const [skillSuggestionStatus, setSkillSuggestionStatus] = useState({ text: "", tone: "" });
 
   const [overlayOpen, setOverlayOpen] = useState(false);
   const [skillSearch, setSkillSearch] = useState("");
@@ -104,7 +258,59 @@ function App() {
     };
   }, [overlayOpen]);
 
+  const debouncedSectorSearch = useDebouncedValue(sectorSearch.trim(), 120);
   const debouncedSkillSearch = useDebouncedValue(skillSearch.trim(), 250);
+
+  useEffect(() => {
+    const query = debouncedSectorSearch;
+    if (!query || query.length < 2) {
+      setSkillSuggestions([]);
+      setSkillSuggestionStatus({ text: "", tone: "" });
+      return undefined;
+    }
+
+    const controller = new AbortController();
+    let cancelled = false;
+
+    const loadSkillSuggestions = async () => {
+      setSkillSuggestionStatus({ text: "Searching mapped skills across industries...", tone: "" });
+      try {
+        const params = new URLSearchParams({
+          q: query,
+          limit: "6",
+        });
+        const suggestionRows = await fetchJson(`/api/public/skill-suggestions?${params.toString()}`, {
+          signal: controller.signal,
+        });
+        if (cancelled) {
+          return;
+        }
+
+        setSkillSuggestions(suggestionRows);
+        setSkillSuggestionStatus(
+          suggestionRows.length
+            ? { text: `${suggestionRows.length} skill suggestion(s) mapped across industries.`, tone: "success" }
+            : { text: "", tone: "" },
+        );
+      } catch (error) {
+        if (cancelled || error.name === "AbortError") {
+          return;
+        }
+        setSkillSuggestions([]);
+        setSkillSuggestionStatus({
+          text: `Unable to search mapped skills: ${error.message}`,
+          tone: "error",
+        });
+      }
+    };
+
+    loadSkillSuggestions();
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [debouncedSectorSearch]);
 
   useEffect(() => {
     if (!overlayOpen || !selectedSector) {
@@ -271,33 +477,50 @@ function App() {
     });
   };
 
-  const openOverlayForSector = (sectorName) => {
+  const resetSelectionPath = () => {
+    setMapData(null);
+    setSelectedProficiency("");
+    setSelectedCompetency("");
+    setExtraContext("");
+    setTopK(6);
+    setStrictSkillMatch(true);
+    setRecommendations([]);
+    setHasRecommended(false);
+  };
+
+  const openOverlayForSector = (sectorName, options = {}) => {
     if (!sectorName) {
       return;
     }
 
+    const suggestedSkill = String(options.skill || "").trim();
     const isNewSector = sectorName !== selectedSector;
+    const shouldResetToSuggestedSkill = Boolean(suggestedSkill) && suggestedSkill !== selectedSkill;
+
     setSelectedSector(sectorName);
     setOverlayOpen(true);
-    setSkillSearch("");
-    setSkillStatus({ text: "Loading skills...", tone: "" });
+    setSkillSearch(suggestedSkill);
+    setSkillStatus({
+      text: suggestedSkill ? `Loading ${suggestedSkill}...` : "Loading skills...",
+      tone: "",
+    });
     setMapStatus({ text: "", tone: "" });
     setRecommendStatus({ text: "", tone: "" });
 
-    if (isNewSector) {
+    if (suggestedSkill) {
+      if (isNewSector || shouldResetToSuggestedSkill) {
+        setSelectedSkill(suggestedSkill);
+        resetSelectionPath();
+      }
+    } else if (isNewSector) {
       setSelectedSkill("");
-      setMapData(null);
-      setSelectedProficiency("");
-      setSelectedCompetency("");
-      setExtraContext("");
-      setTopK(6);
-      setStrictSkillMatch(true);
-      setRecommendations([]);
-      setHasRecommended(false);
+      resetSelectionPath();
     }
   };
 
   const closeOverlay = () => setOverlayOpen(false);
+
+  const clearSectorSearch = () => setSectorSearch("");
 
   const onSelectSkill = (skillName) => {
     setSelectedSkill(skillName);
@@ -364,6 +587,70 @@ function App() {
     }
   };
 
+  const sectorSuggestionScores = useMemo(() => {
+    const scores = new Map();
+    skillSuggestions.forEach((suggestion, suggestionIndex) => {
+      const baseScore = Number(suggestion.match_score || 0);
+      suggestion.sectors.forEach((sectorItem, sectorIndex) => {
+        const sectorName = sectorItem.sector || "";
+        if (!sectorName) {
+          return;
+        }
+
+        const rankingScore =
+          baseScore -
+          suggestionIndex * 0.08 -
+          sectorIndex * 0.03 +
+          Math.min(0.6, Number(sectorItem.mapped_proficiency_count || 0) * 0.02);
+        const currentScore = scores.get(sectorName) || 0;
+        if (rankingScore > currentScore) {
+          scores.set(sectorName, rankingScore);
+        }
+      });
+    });
+    return scores;
+  }, [skillSuggestions]);
+
+  const visibleSectors = useMemo(() => {
+    const sectorRows = sectors.map((sector, index) => ({
+      ...sector,
+      _originalIndex: index,
+      _toneIndex: index % 6,
+    }));
+
+    if (!debouncedSectorSearch) {
+      return sectorRows;
+    }
+
+    return sectorRows
+      .map((sector) => {
+        const match = scoreSectorMatch(debouncedSectorSearch, sector.sector);
+        const suggestionScore = sectorSuggestionScores.get(sector.sector) || 0;
+        return {
+          ...sector,
+          _searchScore: Math.max(match.score, suggestionScore),
+          _sectorMatchScore: match.score,
+          _skillSuggestionScore: suggestionScore,
+        };
+      })
+      .filter((sector) => sector._sectorMatchScore >= 3 || sector._skillSuggestionScore > 0)
+      .sort((left, right) => {
+        const scoreDiff = (right._searchScore || 0) - (left._searchScore || 0);
+        if (scoreDiff !== 0) {
+          return scoreDiff;
+        }
+
+        const skillDiff = Number(right.skill_count || 0) - Number(left.skill_count || 0);
+        if (skillDiff !== 0) {
+          return skillDiff;
+        }
+
+        return left._originalIndex - right._originalIndex;
+      });
+  }, [sectors, debouncedSectorSearch, sectorSuggestionScores]);
+
+  const bestSectorMatch = debouncedSectorSearch && visibleSectors.length ? visibleSectors[0] : null;
+
   const proficiencyMappings = mapData && Array.isArray(mapData.mappings) ? mapData.mappings : [];
   const selectedMapEntry =
     proficiencyMappings.find((entry) => entry.proficiency_level === selectedProficiency) ||
@@ -378,9 +665,39 @@ function App() {
     [sectors],
   );
 
+  const sectorSearchFeedback = useMemo(() => {
+    if (!sectors.length) {
+      return { text: "", tone: "" };
+    }
+    if (!debouncedSectorSearch) {
+      return { text: "Search supports industry names, skill titles, and close spellings.", tone: "" };
+    }
+    if (!visibleSectors.length) {
+      return { text: `No close industry matches for "${debouncedSectorSearch}".`, tone: "error" };
+    }
+
+    const noun = visibleSectors.length === 1 ? "industry" : "industries";
+    const skillText = skillSuggestions.length
+      ? ` ${skillSuggestions.length} mapped skill suggestion(s) found.`
+      : "";
+    const actionText = bestSectorMatch ? ` Top industry suggestion: ${bestSectorMatch.sector}. Press Enter to open it.` : "";
+    return {
+      text: `${visibleSectors.length} ${noun} shown.${skillText}${actionText}`,
+      tone: "success",
+    };
+  }, [sectors.length, debouncedSectorSearch, visibleSectors, skillSuggestions.length, bestSectorMatch]);
+
   const selectionSummary = selectedSkill
     ? `${selectedSector} · ${selectedSkill}${selectedProficiency ? ` · ${selectedProficiency}` : ""}`
     : "No skill path selected yet.";
+
+  const handleSectorSearchKeyDown = (event) => {
+    if (event.key !== "Enter" || !bestSectorMatch) {
+      return;
+    }
+    event.preventDefault();
+    openOverlayForSector(bestSectorMatch.sector);
+  };
 
   const recommendationContent = !hasRecommended
     ? html`<p className="empty-note">Run recommendation after selecting a competency.</p>`
@@ -449,23 +766,126 @@ function App() {
           <h2>Choose an Industry</h2>
           <p className="panel-status" data-tone=${sectorStatus.tone || undefined}>${sectorStatus.text}</p>
         </div>
+        <div className="sector-search-panel">
+          <div className="sector-search-copy">
+            <label className="field-label" htmlFor="sector-search-input">Search industries or skills</label>
+            <p className="sector-search-note">
+              Type an industry, a skill title, or an approximate spelling to narrow the sector cards.
+            </p>
+          </div>
+          <div className="sector-search-row">
+            <input
+              id="sector-search-input"
+              type="search"
+              placeholder="Try 'infocom', 'health care', 'data analysis', or 'finace'..."
+              value=${sectorSearch}
+              onInput=${(event) => setSectorSearch(event.target.value)}
+              onKeyDown=${handleSectorSearchKeyDown}
+              aria-label="Search industries or skills"
+            />
+            ${sectorSearch
+              ? html`
+                  <button type="button" className="utility-btn" onClick=${clearSectorSearch}>
+                    Clear
+                  </button>
+                `
+              : null}
+          </div>
+          <div className="sector-search-actions">
+            <p className="panel-status" data-tone=${sectorSearchFeedback.tone || undefined}>
+              ${sectorSearchFeedback.text}
+            </p>
+            ${bestSectorMatch
+              ? html`
+                  <button
+                    type="button"
+                    className="utility-btn utility-btn-brand"
+                    onClick=${() => openOverlayForSector(bestSectorMatch.sector)}
+                  >
+                    Open best match
+                  </button>
+                `
+              : null}
+          </div>
+          ${skillSuggestionStatus.text
+            ? html`
+                <p className="panel-status sector-search-substatus" data-tone=${skillSuggestionStatus.tone || undefined}>
+                  ${skillSuggestionStatus.text}
+                </p>
+              `
+            : null}
+        </div>
+        ${skillSuggestions.length
+          ? html`
+              <section className="skill-suggestion-panel" aria-label="Mapped skill suggestions">
+                <div className="skill-suggestion-head">
+                  <div>
+                    <p className="field-label">Mapped skill suggestions</p>
+                    <p className="skill-suggestion-note">
+                      If you know the skill but not the industry, start from one of these mapped industry paths.
+                    </p>
+                  </div>
+                </div>
+                <div className="skill-suggestion-list">
+                  ${skillSuggestions.map((suggestion) => html`
+                    <article key=${suggestion.skill} className="skill-suggestion-card">
+                      <div className="skill-suggestion-top">
+                        <p className="skill-suggestion-title">${suggestion.skill}</p>
+                        <span className="skill-suggestion-count">
+                          ${suggestion.sector_count} ${suggestion.sector_count === 1 ? "industry" : "industries"}
+                        </span>
+                      </div>
+                      <p className="skill-suggestion-meta">
+                        ${suggestion.total_mapped_proficiency_count} mapped proficiency level(s)
+                      </p>
+                      <div className="skill-suggestion-chips">
+                        ${suggestion.sectors.map((sectorItem) => html`
+                          <button
+                            key=${`${suggestion.skill}-${sectorItem.sector}`}
+                            type="button"
+                            className="skill-sector-chip"
+                            onClick=${() => openOverlayForSector(sectorItem.sector, { skill: suggestion.skill })}
+                          >
+                            <span>${sectorItem.sector}</span>
+                            <span className="skill-sector-chip-meta">
+                              ${sectorItem.mapped_proficiency_count} level${sectorItem.mapped_proficiency_count === 1 ? "" : "s"}
+                            </span>
+                          </button>
+                        `)}
+                      </div>
+                    </article>
+                  `)}
+                </div>
+              </section>
+            `
+          : null}
         <div className="industry-grid">
-          ${sectors.length
-            ? sectors.map((sector, index) => html`
+          ${visibleSectors.length
+            ? visibleSectors.map((sector) => html`
                 <button
                   key=${sector.sector}
                   type="button"
-                  className=${`sector-card tone-${index % 6} ${sector.sector === selectedSector ? "active" : ""}`}
+                  className=${`sector-card tone-${sector._toneIndex} ${sector.sector === selectedSector ? "active" : ""}`}
                   onClick=${() => openOverlayForSector(sector.sector)}
                 >
                   <div className="sector-top">
                     <p className="sector-title">${sector.sector}</p>
                     <span className="sector-count">${sector.skill_count} skills</span>
                   </div>
-                  <p className="sector-cta">Open guided selector</p>
+                  <p className="sector-cta">
+                    ${bestSectorMatch && sector.sector === bestSectorMatch.sector
+                      ? "Best match · open guided selector"
+                      : "Open guided selector"}
+                  </p>
                 </button>
               `)
-            : html`<p className="empty-note">No industries available.</p>`}
+            : html`
+                <p className="empty-note">
+                  ${debouncedSectorSearch
+                    ? "No industries match this search. Try fewer words or a shorter spelling."
+                    : "No industries available."}
+                </p>
+              `}
         </div>
       </section>
 

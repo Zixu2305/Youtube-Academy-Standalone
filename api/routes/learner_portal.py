@@ -101,6 +101,132 @@ def proficiency_sort_key(value: str) -> tuple[int, str]:
     return 9999, value.lower()
 
 
+def normalize_search_text(value: str) -> str:
+    normalized = "".join(ch.lower() if ch.isalnum() else " " for ch in str(value or ""))
+    return " ".join(normalized.split())
+
+
+def tokenize_search_text(value: str) -> list[str]:
+    normalized = normalize_search_text(value)
+    return [token for token in normalized.split() if token]
+
+
+def is_ordered_subsequence(query: str, target: str) -> bool:
+    if not query or not target:
+        return False
+
+    query_index = 0
+    for character in target:
+        if character == query[query_index]:
+            query_index += 1
+            if query_index == len(query):
+                return True
+    return False
+
+
+def levenshtein_distance(source: str, target: str) -> int:
+    if source == target:
+        return 0
+    if not source:
+        return len(target)
+    if not target:
+        return len(source)
+
+    previous_row = list(range(len(target) + 1))
+    for source_index, source_char in enumerate(source):
+        current_row = [source_index + 1]
+        for target_index, target_char in enumerate(target):
+            substitution_cost = 0 if source_char == target_char else 1
+            current_row.append(
+                min(
+                    current_row[target_index] + 1,
+                    previous_row[target_index + 1] + 1,
+                    previous_row[target_index] + substitution_cost,
+                )
+            )
+        previous_row = current_row
+    return previous_row[-1]
+
+
+def similarity_ratio(source: str, target: str) -> float:
+    longest_length = max(len(source), len(target))
+    if longest_length == 0:
+        return 1.0
+    return 1.0 - levenshtein_distance(source, target) / longest_length
+
+
+def score_search_token(query_token: str, candidate_token: str) -> float:
+    if not query_token or not candidate_token:
+        return 0.0
+    if candidate_token == query_token:
+        return 1.0
+    if candidate_token.startswith(query_token):
+        return max(0.82, 0.98 - (len(candidate_token) - len(query_token)) * 0.03)
+    if query_token in candidate_token:
+        return max(0.7, 0.84 - candidate_token.index(query_token) * 0.02)
+    if len(query_token) >= 3 and is_ordered_subsequence(query_token, candidate_token):
+        return max(0.58, 0.72 - max(0, len(candidate_token) - len(query_token)) * 0.02)
+    if len(query_token) >= 4 and len(candidate_token) > len(query_token):
+        shared_prefix_length = min(4, len(query_token))
+        candidate_prefix = candidate_token[: len(query_token) + 1]
+        prefix_ratio = similarity_ratio(query_token, candidate_prefix)
+        if candidate_token.startswith(query_token[:shared_prefix_length]) and prefix_ratio >= 0.68:
+            return min(0.78, prefix_ratio + 0.04)
+    if len(query_token) >= 4:
+        ratio = similarity_ratio(query_token, candidate_token)
+        if ratio >= 0.72:
+            return ratio * 0.84
+    return 0.0
+
+
+def score_label_match(query: str, label: str) -> float:
+    normalized_query = normalize_search_text(query)
+    normalized_label = normalize_search_text(label)
+    if not normalized_query or not normalized_label:
+        return 0.0
+
+    label_tokens = tokenize_search_text(normalized_label)
+    compact_query = normalized_query.replace(" ", "")
+    compact_label = normalized_label.replace(" ", "")
+    raw_query_tokens = tokenize_search_text(normalized_query)
+    query_tokens = [token for token in raw_query_tokens if len(token) > 1] or [normalized_query]
+
+    phrase_score = 0.0
+    if normalized_label == normalized_query:
+        phrase_score = 5.2
+    elif normalized_label.startswith(normalized_query):
+        phrase_score = 4.4
+    elif normalized_query in normalized_label:
+        phrase_score = 3.6
+    elif len(compact_query) >= 3 and is_ordered_subsequence(compact_query, compact_label):
+        phrase_score = 2.6
+
+    token_scores = []
+    for query_token in query_tokens:
+        candidates = [normalized_label, *label_tokens]
+        token_scores.append(max(score_search_token(query_token, candidate) for candidate in candidates))
+
+    average_token_score = sum(token_scores) / len(token_scores) if token_scores else 0.0
+    strong_token_matches = sum(1 for value in token_scores if value >= 0.7)
+    compact_similarity = similarity_ratio(compact_query, compact_label) if len(compact_query) >= 4 else 0.0
+
+    matched = (
+        phrase_score >= 3.6
+        or average_token_score >= 0.68
+        or (len(query_tokens) > 1 and strong_token_matches >= max(1, len(query_tokens) - 1))
+        or compact_similarity >= 0.74
+    )
+    if not matched:
+        return 0.0
+
+    return (
+        phrase_score
+        + average_token_score * 4
+        + strong_token_matches * 0.35
+        + compact_similarity * 1.8
+    )
+
+
 class SectorSummary(BaseModel):
     sector: str
     skill_count: int
@@ -109,6 +235,19 @@ class SectorSummary(BaseModel):
 class SkillSummary(BaseModel):
     skill: str
     mapped_proficiency_count: int
+
+
+class SkillSuggestionSector(BaseModel):
+    sector: str
+    mapped_proficiency_count: int
+
+
+class SkillSuggestion(BaseModel):
+    skill: str
+    sector_count: int
+    total_mapped_proficiency_count: int
+    match_score: float
+    sectors: list[SkillSuggestionSector]
 
 
 class SkillProficiencyMap(BaseModel):
@@ -161,6 +300,69 @@ class PublicRecommendResponse(BaseModel):
     applied_filters: dict[str, str]
     count: int
     results: list[PublicRecommendedVideo]
+
+
+@lru_cache(maxsize=1)
+def get_skill_suggestion_index() -> list[dict[str, object]]:
+    sql = """
+    SELECT
+      m.source_skill_title AS skill,
+      m.sector_name_raw AS sector,
+      COUNT(DISTINCT CONCAT(m.sf_skill_id, ':', m.proficiency_level)) AS mapped_proficiency_count
+    FROM map_sf_to_cat_skill m
+    WHERE m.source_skill_title IS NOT NULL
+      AND m.source_skill_title <> ''
+      AND m.sector_name_raw IS NOT NULL
+      AND m.sector_name_raw <> ''
+    GROUP BY m.source_skill_title, m.sector_name_raw
+    ORDER BY m.source_skill_title, m.sector_name_raw;
+    """
+
+    conn = get_mysql_connection()
+    cur = conn.cursor(dictionary=True)
+    try:
+        cur.execute(sql)
+        rows = cur.fetchall()
+    finally:
+        cur.close()
+        conn.close()
+
+    grouped: dict[str, dict[str, object]] = {}
+    for row in rows:
+        skill = str(row.get("skill") or "").strip()
+        sector = str(row.get("sector") or "").strip()
+        if not skill or not sector:
+            continue
+
+        entry = grouped.setdefault(
+            skill,
+            {
+                "skill": skill,
+                "sectors": [],
+                "sector_count": 0,
+                "total_mapped_proficiency_count": 0,
+            },
+        )
+
+        mapped_count = parse_int(row.get("mapped_proficiency_count"))
+        entry["sectors"].append(
+            {
+                "sector": sector,
+                "mapped_proficiency_count": mapped_count,
+            }
+        )
+        entry["total_mapped_proficiency_count"] += mapped_count
+
+    for entry in grouped.values():
+        entry["sectors"].sort(
+            key=lambda item: (
+                -parse_int(item.get("mapped_proficiency_count")),
+                str(item.get("sector") or "").lower(),
+            )
+        )
+        entry["sector_count"] = len(entry["sectors"])
+
+    return list(grouped.values())
 
 
 def build_video_filter(
@@ -291,6 +493,54 @@ def list_skills(
         )
         for row in rows
     ]
+
+
+@api_router.get("/public/skill-suggestions", response_model=list[SkillSuggestion])
+def list_skill_suggestions(
+    q: str = Query(..., min_length=2, max_length=120),
+    limit: int = Query(default=6, ge=1, le=12),
+):
+    query_value = q.strip()
+    if not query_value:
+        return []
+
+    matches: list[tuple[float, dict[str, object]]] = []
+    for entry in get_skill_suggestion_index():
+        score = score_label_match(query_value, str(entry.get("skill") or ""))
+        if score < 3:
+            continue
+        matches.append((score, entry))
+
+    matches.sort(
+        key=lambda item: (
+            -item[0],
+            -parse_int(item[1].get("sector_count")),
+            -parse_int(item[1].get("total_mapped_proficiency_count")),
+            str(item[1].get("skill") or "").lower(),
+        )
+    )
+
+    response: list[SkillSuggestion] = []
+    for score, entry in matches[:limit]:
+        sectors = [
+            SkillSuggestionSector(
+                sector=str(sector_item.get("sector") or ""),
+                mapped_proficiency_count=parse_int(sector_item.get("mapped_proficiency_count")),
+            )
+            for sector_item in entry.get("sectors", [])
+            if str(sector_item.get("sector") or "").strip()
+        ]
+        response.append(
+            SkillSuggestion(
+                skill=str(entry.get("skill") or ""),
+                sector_count=parse_int(entry.get("sector_count")),
+                total_mapped_proficiency_count=parse_int(entry.get("total_mapped_proficiency_count")),
+                match_score=round(float(score), 4),
+                sectors=sectors,
+            )
+        )
+
+    return response
 
 
 @api_router.get("/public/skill-map", response_model=SkillMapResponse)
