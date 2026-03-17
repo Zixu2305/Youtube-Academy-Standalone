@@ -470,6 +470,10 @@
         Inserted: "New documents created by upserts.",
         Updated: "Existing documents updated by upserts.",
         Unchanged: "Existing documents already matching; no change applied.",
+        "Embedding Status": "Whether touched videos were indexed into Qdrant after Mongo upsert.",
+        "Embedding Candidates": "Unique video-skill documents sent to the embedder for this run.",
+        "Qdrant Indexed": "Vectors written to the Qdrant video collection for this run.",
+        "Embedding Collection": "Qdrant collection receiving the embedded video vectors.",
         "Error Count": "Total errors captured during search, video, or comments calls.",
         "Quota Exceeded": "Whether a quota error was detected; run stops early when yes.",
         "Search Query": "The query string sent to YouTube's search API.",
@@ -506,6 +510,15 @@
                 { key: "Inserted", value: summary.inserted },
                 { key: "Updated", value: summary.updated },
                 { key: "Unchanged", value: summary.unchanged }
+            );
+        }
+
+        if (summary.embedding_requested !== undefined) {
+            rows.push(
+                { key: "Embedding Status", value: summary.embedding_status || "-" },
+                { key: "Embedding Candidates", value: summary.embedding_requested },
+                { key: "Qdrant Indexed", value: summary.embedding_indexed ?? 0 },
+                { key: "Embedding Collection", value: summary.embedding_collection || "-" }
             );
         }
 

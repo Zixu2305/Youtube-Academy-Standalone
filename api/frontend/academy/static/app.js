@@ -5,15 +5,19 @@ async function fetchJson(url, options = {}) {
   const response = await fetch(url, options);
   if (!response.ok) {
     let detail = `Request failed (${response.status})`;
+    let payload = null;
     try {
-      const payload = await response.json();
+      payload = await response.json();
       if (payload && payload.detail) {
         detail = typeof payload.detail === "string" ? payload.detail : JSON.stringify(payload.detail);
       }
     } catch (_) {
       // Keep fallback detail.
     }
-    throw new Error(detail);
+    const error = new Error(detail);
+    error.status = response.status;
+    error.payload = payload;
+    throw error;
   }
   return response.json();
 }
@@ -197,6 +201,15 @@ function scoreSectorMatch(query, sectorName) {
   return { matched, score: matched ? score : 0 };
 }
 
+function createEmptyRecommendMeta() {
+  return {
+    query: "",
+    appliedFilters: {},
+    count: 0,
+    usedStrictSkillMatch: true,
+  };
+}
+
 function App() {
   const [sectors, setSectors] = useState([]);
   const [selectedSector, setSelectedSector] = useState("");
@@ -205,6 +218,7 @@ function App() {
   const [skillSuggestionStatus, setSkillSuggestionStatus] = useState({ text: "", tone: "" });
 
   const [overlayOpen, setOverlayOpen] = useState(false);
+  const [videoFinderOpen, setVideoFinderOpen] = useState(false);
   const [skillSearch, setSkillSearch] = useState("");
   const [skills, setSkills] = useState([]);
   const [selectedSkill, setSelectedSkill] = useState("");
@@ -217,12 +231,27 @@ function App() {
   const [strictSkillMatch, setStrictSkillMatch] = useState(true);
 
   const [recommendations, setRecommendations] = useState([]);
+  const [recommendMeta, setRecommendMeta] = useState(createEmptyRecommendMeta());
   const [hasRecommended, setHasRecommended] = useState(false);
+  const [previewVideos, setPreviewVideos] = useState([]);
+  const [hasPreviewedVideos, setHasPreviewedVideos] = useState(false);
+  const [previewSelection, setPreviewSelection] = useState({});
+  const [previewMeta, setPreviewMeta] = useState({
+    query: "",
+    alreadyIngestedCount: 0,
+    quotaExceeded: false,
+    quotaMessage: "",
+    quota: null,
+  });
+  const [previewBusy, setPreviewBusy] = useState(false);
+  const [ingestBusy, setIngestBusy] = useState(false);
+  const [previewSessionUnits, setPreviewSessionUnits] = useState(0);
 
   const [sectorStatus, setSectorStatus] = useState({ text: "Loading industries...", tone: "" });
   const [skillStatus, setSkillStatus] = useState({ text: "Pick an industry to start.", tone: "" });
   const [mapStatus, setMapStatus] = useState({ text: "", tone: "" });
   const [recommendStatus, setRecommendStatus] = useState({ text: "", tone: "" });
+  const [ingestionStatus, setIngestionStatus] = useState({ text: "", tone: "" });
 
   const [quizOpen, setQuizOpen] = useState(false);
   const [quizModeSelectionOpen, setQuizModeSelectionOpen] = useState(false);
@@ -252,11 +281,11 @@ function App() {
   }, []);
 
   useEffect(() => {
-    document.body.classList.toggle("overlay-open", overlayOpen);
+    document.body.classList.toggle("overlay-open", overlayOpen || videoFinderOpen);
     return () => {
       document.body.classList.remove("overlay-open");
     };
-  }, [overlayOpen]);
+  }, [overlayOpen, videoFinderOpen]);
 
   const debouncedSectorSearch = useDebouncedValue(sectorSearch.trim(), 120);
   const debouncedSkillSearch = useDebouncedValue(skillSearch.trim(), 250);
@@ -477,6 +506,31 @@ function App() {
     });
   };
 
+  const clearPreviewFlow = () => {
+    setPreviewVideos([]);
+    setHasPreviewedVideos(false);
+    setPreviewSelection({});
+    setPreviewMeta({
+      query: "",
+      alreadyIngestedCount: 0,
+      quotaExceeded: false,
+      quotaMessage: "",
+      quota: null,
+    });
+    setPreviewBusy(false);
+    setIngestBusy(false);
+    setPreviewSessionUnits(0);
+    setVideoFinderOpen(false);
+    setIngestionStatus({ text: "", tone: "" });
+  };
+
+  const clearRecommendationFlow = () => {
+    setRecommendations([]);
+    setRecommendMeta(createEmptyRecommendMeta());
+    setHasRecommended(false);
+    setRecommendStatus({ text: "", tone: "" });
+  };
+
   const resetSelectionPath = () => {
     setMapData(null);
     setSelectedProficiency("");
@@ -484,8 +538,8 @@ function App() {
     setExtraContext("");
     setTopK(6);
     setStrictSkillMatch(true);
-    setRecommendations([]);
-    setHasRecommended(false);
+    clearRecommendationFlow();
+    clearPreviewFlow();
   };
 
   const openOverlayForSector = (sectorName, options = {}) => {
@@ -506,6 +560,7 @@ function App() {
     });
     setMapStatus({ text: "", tone: "" });
     setRecommendStatus({ text: "", tone: "" });
+    setIngestionStatus({ text: "", tone: "" });
 
     if (suggestedSkill) {
       if (isNewSector || shouldResetToSuggestedSkill) {
@@ -518,7 +573,20 @@ function App() {
     }
   };
 
-  const closeOverlay = () => setOverlayOpen(false);
+  const openVideoFinder = () => {
+    if (!selectedCompetency) {
+      setIngestionStatus({ text: "Select one competency first.", tone: "error" });
+      return;
+    }
+    setVideoFinderOpen(true);
+  };
+
+  const closeVideoFinder = () => setVideoFinderOpen(false);
+
+  const closeOverlay = () => {
+    setOverlayOpen(false);
+    setVideoFinderOpen(false);
+  };
 
   const clearSectorSearch = () => setSectorSearch("");
 
@@ -527,7 +595,8 @@ function App() {
     setMapData(null);
     setSelectedProficiency("");
     setSelectedCompetency("");
-    setRecommendStatus({ text: "", tone: "" });
+    clearRecommendationFlow();
+    clearPreviewFlow();
   };
 
   const onSelectProficiency = (proficiencyLevel) => {
@@ -536,16 +605,18 @@ function App() {
     }
     setSelectedProficiency(proficiencyLevel);
     setSelectedCompetency("");
-    setRecommendStatus({ text: "", tone: "" });
+    clearRecommendationFlow();
+    clearPreviewFlow();
   };
 
   const onSelectCompetency = (proficiencyLevel, competencyText) => {
     setSelectedProficiency(proficiencyLevel);
     setSelectedCompetency(competencyText);
-    setRecommendStatus({ text: "", tone: "" });
+    clearRecommendationFlow();
+    clearPreviewFlow();
   };
 
-  const recommendVideos = async () => {
+  const requestRecommendations = async (requestedStrictSkillMatch = strictSkillMatch) => {
     if (!selectedSector || !selectedSkill) {
       setRecommendStatus({ text: "Choose an industry and skill first.", tone: "error" });
       return;
@@ -558,6 +629,8 @@ function App() {
     const safeTopK = clampNumber(topK, 6, 1, 20);
     setTopK(safeTopK);
     setHasRecommended(true);
+    setRecommendations([]);
+    setRecommendMeta(createEmptyRecommendMeta());
     setRecommendStatus({ text: "Generating recommendations...", tone: "" });
 
     const promptParts = [selectedCompetency];
@@ -571,7 +644,7 @@ function App() {
       proficiency_level: selectedProficiency || null,
       competency: promptParts.join(". "),
       top_k: safeTopK,
-      strict_skill_match: strictSkillMatch,
+      strict_skill_match: requestedStrictSkillMatch,
     };
 
     try {
@@ -581,9 +654,212 @@ function App() {
         body: JSON.stringify(payload),
       });
       setRecommendations(response.results || []);
-      setRecommendStatus({ text: `${response.count} recommendation(s) ready.`, tone: "success" });
+      setRecommendMeta({
+        query: response.query || "",
+        appliedFilters: response.applied_filters || {},
+        count: Number(response.count || 0),
+        usedStrictSkillMatch: requestedStrictSkillMatch,
+      });
+      if (Number(response.count || 0) > 0) {
+        setRecommendStatus({ text: `${response.count} recommendation(s) ready.`, tone: "success" });
+      } else if (requestedStrictSkillMatch) {
+        setRecommendStatus({
+          text: "No videos matched this competency under the strict skill filter.",
+          tone: "warning",
+        });
+      } else {
+        setRecommendStatus({
+          text: "No videos matched this path. Try adding context or ingesting more videos.",
+          tone: "warning",
+        });
+      }
     } catch (error) {
+      setRecommendMeta(createEmptyRecommendMeta());
       setRecommendStatus({ text: `Unable to recommend videos: ${error.message}`, tone: "error" });
+    }
+  };
+
+  const recommendVideos = () => requestRecommendations(strictSkillMatch);
+
+  const retryRecommendationWithoutStrictFilter = () => {
+    setStrictSkillMatch(false);
+    requestRecommendations(false);
+  };
+
+  const previewVideosForIngestion = async () => {
+    if (!selectedSector || !selectedSkill) {
+      setIngestionStatus({ text: "Choose an industry and skill first.", tone: "error" });
+      return;
+    }
+    if (!selectedCompetency) {
+      setIngestionStatus({ text: "Select one competency first.", tone: "error" });
+      return;
+    }
+
+    setPreviewBusy(true);
+    setHasPreviewedVideos(true);
+    setIngestionStatus({ text: "Finding candidate videos to ingest...", tone: "" });
+
+    const payload = {
+      sector: selectedSector,
+      skill: selectedSkill,
+      proficiency_level: selectedProficiency || null,
+      competency: selectedCompetency,
+      extra_context: extraContext.trim() || null,
+    };
+
+    try {
+      const response = await fetchJson("/api/public/videos/preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      const previewRows = Array.isArray(response.results) ? response.results : [];
+      const nextSelection = {};
+      previewRows.forEach((video) => {
+        if (!video.already_ingested && video.video_id) {
+          nextSelection[video.video_id] = true;
+        }
+      });
+
+      setPreviewVideos(previewRows);
+      setPreviewSelection(nextSelection);
+      setPreviewMeta({
+        query: response.query || "",
+        alreadyIngestedCount: Number(response.already_ingested_count || 0),
+        quotaExceeded: Boolean(response.quota_exceeded),
+        quotaMessage: response.quota_message || "",
+        quota: response.quota || null,
+      });
+      setPreviewSessionUnits((current) => current + Number(response.quota?.estimated_units || 0));
+
+      if (!previewRows.length) {
+        setIngestionStatus({
+          text: response.quota_message || "No candidate videos matched this path.",
+          tone: response.quota_exceeded ? "error" : "error",
+        });
+      } else if (Object.keys(nextSelection).length) {
+        setIngestionStatus({
+          text: response.quota_exceeded
+            ? `${previewRows.length} candidate video(s) found before the YouTube credit limit was reached.`
+            : `${previewRows.length} candidate video(s) ready. ${Object.keys(nextSelection).length} new video(s) preselected for ingest.`,
+          tone: response.quota_exceeded ? "error" : "success",
+        });
+      } else {
+        setIngestionStatus({
+          text: response.quota_exceeded
+            ? `${previewRows.length} candidate video(s) found, but the YouTube credit limit was reached during preview.`
+            : `${previewRows.length} candidate video(s) found, but they are already in the library.`,
+          tone: response.quota_exceeded ? "error" : "success",
+        });
+      }
+    } catch (error) {
+      const payload = error.payload || {};
+      setPreviewVideos([]);
+      setPreviewSelection({});
+      setPreviewMeta({
+        query: payload.query || "",
+        alreadyIngestedCount: Number(payload.already_ingested_count || 0),
+        quotaExceeded: Boolean(payload.quota_exceeded),
+        quotaMessage: payload.quota_message || "",
+        quota: payload.quota || null,
+      });
+      setIngestionStatus({
+        text: error.status === 429
+          ? error.message
+          : `Unable to preview videos: ${error.message}`,
+        tone: "error",
+      });
+    } finally {
+      setPreviewBusy(false);
+    }
+  };
+
+  const togglePreviewSelection = (videoId) => {
+    if (!videoId) {
+      return;
+    }
+    setPreviewSelection((current) => ({
+      ...current,
+      [videoId]: !current[videoId],
+    }));
+  };
+
+  const selectAllPreviewVideos = () => {
+    const nextSelection = {};
+    previewVideos.forEach((video) => {
+      if (!video.already_ingested && video.video_id) {
+        nextSelection[video.video_id] = true;
+      }
+    });
+    setPreviewSelection(nextSelection);
+  };
+
+  const clearPreviewSelection = () => {
+    setPreviewSelection({});
+  };
+
+  const ingestSelectedPreviewVideos = async () => {
+    const selectedVideos = previewVideos.filter((video) => previewSelection[video.video_id]);
+    if (!selectedVideos.length) {
+      setIngestionStatus({ text: "Select at least one new preview video first.", tone: "error" });
+      return;
+    }
+
+    setIngestBusy(true);
+    setIngestionStatus({ text: "Ingesting selected videos...", tone: "" });
+
+    const payload = {
+      videos: selectedVideos.map((video) => ({
+        sector: video.sector,
+        skill_name: video.skill_name,
+        competency: video.competency,
+        item_type: video.item_type,
+        proficiency_level: video.proficiency_level,
+        proficiency_description: video.proficiency_description,
+        videoId: video.video_id,
+        publishedAt: video.published_at,
+        title: video.title,
+        description: video.description,
+        viewCount: Number(video.view_count || 0),
+        likeCount: Number(video.like_count || 0),
+        commentCount: Number(video.comment_count || 0),
+        tags: Array.isArray(video.tags) ? video.tags : [],
+        duration: video.duration || "",
+        channelTitle: video.channel_title || "",
+        thumbnailUrl: video.thumbnail_url || "",
+      })),
+    };
+
+    try {
+      const response = await fetchJson("/api/public/videos/ingest", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      const selectedIds = new Set(selectedVideos.map((video) => video.video_id));
+      setPreviewVideos((current) =>
+        current.map((video) => (
+          selectedIds.has(video.video_id)
+            ? { ...video, already_ingested: true }
+            : video
+        )),
+      );
+      setPreviewSelection({});
+      setPreviewMeta((current) => ({
+        ...current,
+        alreadyIngestedCount: current.alreadyIngestedCount + selectedIds.size,
+      }));
+      setIngestionStatus({
+        text: `${response.message} Indexed ${Number(response.embedding_indexed || 0)} video(s).`,
+        tone: response.embedding_status === "failed" || Number(response.error_count || 0) > 0 ? "error" : "success",
+      });
+    } catch (error) {
+      setIngestionStatus({ text: `Unable to ingest selected videos: ${error.message}`, tone: "error" });
+    } finally {
+      setIngestBusy(false);
     }
   };
 
@@ -691,6 +967,62 @@ function App() {
     ? `${selectedSector} · ${selectedSkill}${selectedProficiency ? ` · ${selectedProficiency}` : ""}`
     : "No skill path selected yet.";
 
+  const selectedPreviewCount = previewVideos.reduce(
+    (count, video) => count + (previewSelection[video.video_id] ? 1 : 0),
+    0,
+  );
+
+  const previewQuotaFeedback = useMemo(() => {
+    const quota = previewMeta.quota;
+    if (!quota) {
+      return {
+        text: "Each preview run uses a small fixed YouTube credit estimate under the portal defaults.",
+        tone: "",
+      };
+    }
+
+    const estimatedUnits = Number(quota.estimated_units || 0);
+    const dailyLimit = Number(quota.daily_limit || 0);
+    const remainingAfterRun = Number(quota.remaining_after_run || 0);
+    const sessionText = previewSessionUnits
+      ? ` Preview attempts this session: ${previewSessionUnits} estimated units.`
+      : "";
+    const baseText =
+      `Current preview estimate: ${estimatedUnits} / ${dailyLimit} units. Remaining after this run: ${remainingAfterRun}.`
+      + sessionText;
+
+    if (previewMeta.quotaExceeded) {
+      return {
+        text: `${previewMeta.quotaMessage || "YouTube credit limit reached."} ${baseText}`.trim(),
+        tone: "error",
+      };
+    }
+    if (quota.level === "over_limit") {
+      return {
+        text: `${baseText} This is projected to exceed the daily credit limit.`,
+        tone: "error",
+      };
+    }
+    if (quota.level === "warning") {
+      return {
+        text: `${baseText} This is close to the daily credit limit.`,
+        tone: "warning",
+      };
+    }
+    return { text: baseText, tone: "success" };
+  }, [previewMeta, previewSessionUnits]);
+
+  const youtubeQuotaResetNote =
+    "YouTube daily credits reset at midnight Pacific Time. In Singapore, that is 3:00 PM during U.S. daylight saving time and 4:00 PM otherwise.";
+
+  const appliedSkillFilter = String(recommendMeta.appliedFilters?.skill || "");
+  const appliedProficiencyFilter = String(recommendMeta.appliedFilters?.proficiency_level || "");
+  const strictRecommendationMiss =
+    hasRecommended && !recommendations.length && Boolean(appliedSkillFilter) && recommendMeta.usedStrictSkillMatch;
+  const strictFilterLabel = appliedProficiencyFilter
+    ? `${appliedSkillFilter} at proficiency ${appliedProficiencyFilter}`
+    : appliedSkillFilter;
+
   const handleSectorSearchKeyDown = (event) => {
     if (event.key !== "Enter" || !bestSectorMatch) {
       return;
@@ -738,7 +1070,99 @@ function App() {
             </a>
           `;
         })
-      : html`<p className="empty-note">No recommendations matched the current filters.</p>`;
+      : strictRecommendationMiss
+        ? html`
+            <div className="empty-note recommendation-empty">
+              <p className="recommendation-empty-title">
+                No videos matched the strict ${strictFilterLabel || selectedSkill || "current skill"} filter.
+              </p>
+              <p className="recommendation-empty-copy">
+                The portal stayed inside the current skill. Retry without the strict filter to widen results across
+                ${selectedSector ? ` ${selectedSector}` : " the selected sector"}, or use Find Another Video to ingest fresh options.
+              </p>
+              <div className="recommendation-empty-actions">
+                <button
+                  type="button"
+                  className="utility-btn utility-btn-brand"
+                  onClick=${retryRecommendationWithoutStrictFilter}
+                >
+                  Retry Without Strict Filter
+                </button>
+              </div>
+            </div>
+          `
+        : html`
+            <div className="empty-note recommendation-empty">
+              <p className="recommendation-empty-title">No recommendations matched the current filters.</p>
+              <p className="recommendation-empty-copy">
+                Try adding more context, adjusting the selected competency, or open Find Another Video to ingest more candidates.
+              </p>
+            </div>
+          `;
+
+  const previewContent = !hasPreviewedVideos
+    ? html`<p className="empty-note">Preview candidate videos if the current recommendations miss the mark.</p>`
+    : previewVideos.length
+      ? previewVideos.map((video) => {
+          const url = video.video_id
+            ? `https://www.youtube.com/watch?v=${encodeURIComponent(video.video_id)}`
+            : "#";
+          const isSelected = Boolean(previewSelection[video.video_id]);
+          const isDisabled = video.already_ingested || ingestBusy;
+          const metrics = [
+            video.channel_title || "Unknown channel",
+            video.duration || "n/a",
+            `${Number(video.view_count || 0).toLocaleString()} views`,
+          ];
+          return html`
+            <article
+              key=${`preview-${video.video_id}`}
+              className=${`preview-card ${isSelected ? "active" : ""} ${video.already_ingested ? "ingested" : ""}`}
+            >
+              <div className="preview-select">
+                <input
+                  type="checkbox"
+                  checked=${isSelected}
+                  disabled=${isDisabled}
+                  onChange=${() => togglePreviewSelection(video.video_id)}
+                  aria-label=${`Select ${video.title || "preview video"} for ingest`}
+                />
+              </div>
+              ${video.thumbnail_url
+                ? html`
+                    <img
+                      className="preview-thumb"
+                      src=${video.thumbnail_url}
+                      alt=${video.title || "Preview thumbnail"}
+                      loading="lazy"
+                    />
+                  `
+                : html`<div className="preview-thumb"></div>`}
+              <div className="preview-body">
+                <div className="preview-card-top">
+                  <p className="video-title">${video.title || "Untitled video"}</p>
+                  <span className=${`preview-state-chip ${video.already_ingested ? "ingested" : isSelected ? "selected" : "fresh"}`}>
+                    ${video.already_ingested ? "Already ingested" : isSelected ? "Selected" : "New candidate"}
+                  </span>
+                </div>
+                <p className="video-meta">${metrics.join(" · ")}</p>
+                <p className="preview-desc">${video.description || "No description provided."}</p>
+                <div className="preview-footer">
+                  <span className="video-chip">${video.skill_name || selectedSkill || "Skill"}</span>
+                  <a
+                    className="preview-link"
+                    href=${url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    Watch on YouTube
+                  </a>
+                </div>
+              </div>
+            </article>
+          `;
+        })
+      : html`<p className="empty-note">No candidate videos matched the current path.</p>`;
 
   return html`
     <main className="academy-shell">
@@ -777,7 +1201,7 @@ function App() {
             <input
               id="sector-search-input"
               type="search"
-              placeholder="Try 'infocom', 'health care', 'data analysis', or 'finace'..."
+              placeholder="Try 'infocom', 'health care', 'data analysis', or 'finance'..."
               value=${sectorSearch}
               onInput=${(event) => setSectorSearch(event.target.value)}
               onKeyDown=${handleSectorSearchKeyDown}
@@ -1077,11 +1501,145 @@ function App() {
 
                               <p className="panel-status" data-tone=${recommendStatus.tone || undefined}>${recommendStatus.text}</p>
                               <div className="recommendation-list">${recommendationContent}</div>
+
+                              <section className="procurement-card">
+                                <div className="procurement-head">
+                                  <div>
+                                    <p className="selection-label">Need More Videos?</p>
+                                    <p className="selection-sub">
+                                      Open a separate video finder to preview fresh candidates and ingest them into the library.
+                                    </p>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    className="utility-btn utility-btn-brand"
+                                    onClick=${openVideoFinder}
+                                    disabled=${!selectedCompetency}
+                                  >
+                                    Find Another Video
+                                  </button>
+                                </div>
+                                ${hasPreviewedVideos
+                                  ? html`
+                                      <p className="panel-status" data-tone=${ingestionStatus.tone || undefined}>
+                                        ${ingestionStatus.text || `Video finder ready. ${previewVideos.length} candidate video(s) in the latest preview.`}
+                                      </p>
+                                    `
+                                  : html`
+                                      <p className="panel-status">
+                                        No preview run yet for this path.
+                                      </p>
+                                    `}
+                              </section>
                             </aside>
                           </div>
                         `
                       : html`<p className="empty-note">Select a skill to reveal proficiency and competency options.</p>`}
                   </div>
+                </div>
+              </section>
+            </div>
+          `
+        : null}
+
+      ${videoFinderOpen
+        ? html`
+            <div className="video-finder-backdrop" onClick=${closeVideoFinder}>
+              <section
+                className="video-finder-panel"
+                role="dialog"
+                aria-modal="true"
+                aria-label="Video finder"
+                onClick=${(event) => event.stopPropagation()}
+              >
+                <div className="video-finder-head">
+                  <div>
+                    <p className="quiz-kicker">Video Finder</p>
+                    <h2>${selectedSkill || "Find More Videos"}</h2>
+                    <p className="video-finder-path">
+                      ${selectionSummary}
+                      ${selectedCompetency ? ` · ${selectedCompetency}` : ""}
+                    </p>
+                  </div>
+                  <button type="button" className="close-btn" onClick=${closeVideoFinder}>Close</button>
+                </div>
+
+                <div className="video-finder-content">
+                  <div className="video-finder-topbar">
+                    <p className="selection-sub">
+                      Search for fresh YouTube candidates using the current path, then ingest the ones worth keeping.
+                    </p>
+                    <button
+                      type="button"
+                      className="utility-btn utility-btn-brand"
+                      onClick=${previewVideosForIngestion}
+                      disabled=${previewBusy || ingestBusy}
+                    >
+                      ${previewBusy ? "Finding videos..." : hasPreviewedVideos ? "Refresh Preview" : "Find Videos"}
+                    </button>
+                  </div>
+
+                  <p className="panel-status" data-tone=${previewQuotaFeedback.tone || undefined}>
+                    ${previewQuotaFeedback.text}
+                  </p>
+                  <p className="video-finder-note">${youtubeQuotaResetNote}</p>
+
+                  ${previewMeta.query
+                    ? html`
+                        <p className="preview-query">
+                          Search query: <span>${previewMeta.query}</span>
+                        </p>
+                      `
+                    : null}
+
+                  ${previewVideos.length
+                    ? html`
+                        <div className="preview-toolbar">
+                          <p className="preview-summary">
+                            ${previewMeta.alreadyIngestedCount
+                              ? `${previewMeta.alreadyIngestedCount} already in library`
+                              : "All shown videos are new to the library"}
+                            ${previewMeta.quotaExceeded ? " · quota limit reached during preview" : ""}
+                          </p>
+                          <div className="preview-toolbar-actions">
+                            <button
+                              type="button"
+                              className="utility-btn"
+                              onClick=${selectAllPreviewVideos}
+                              disabled=${previewBusy || ingestBusy}
+                            >
+                              Select new
+                            </button>
+                            <button
+                              type="button"
+                              className="utility-btn"
+                              onClick=${clearPreviewSelection}
+                              disabled=${!selectedPreviewCount || previewBusy || ingestBusy}
+                            >
+                              Clear
+                            </button>
+                          </div>
+                        </div>
+                      `
+                    : null}
+
+                  <p className="panel-status" data-tone=${ingestionStatus.tone || undefined}>
+                    ${ingestionStatus.text}
+                  </p>
+                  <div className="preview-list preview-list-modal">${previewContent}</div>
+                </div>
+
+                <div className="video-finder-footer">
+                  <button
+                    type="button"
+                    className="primary-btn video-finder-ingest-btn"
+                    onClick=${ingestSelectedPreviewVideos}
+                    disabled=${!selectedPreviewCount || previewBusy || ingestBusy}
+                  >
+                    ${ingestBusy
+                      ? "Ingesting selected videos..."
+                      : `Ingest ${selectedPreviewCount} selected video${selectedPreviewCount === 1 ? "" : "s"}`}
+                  </button>
                 </div>
               </section>
             </div>

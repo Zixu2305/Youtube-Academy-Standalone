@@ -8,13 +8,13 @@ import numpy as np
 import mysql.connector
 from dotenv import load_dotenv
 from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
-from sentence_transformers import SentenceTransformer
 
 from api.routes.recommend import (
+    get_embedding_model,
     get_bm25_index,
     get_reranker_model,
     reciprocal_rank_fusion,
@@ -31,9 +31,13 @@ load_dotenv(ROOT_DIR / ".env")
 
 ACADEMY_FRONTEND_DIR = ROOT_DIR / "api" / "frontend" / "academy"
 
-DEFAULT_MODEL_NAME = "BAAI/bge-base-en-v1.5"
-DEFAULT_VECTOR_DIM = 768
 DEFAULT_YT_COLLECTION = "youtube_videos__bge_base__768"
+PORTAL_PREVIEW_LIMIT = 8
+PORTAL_YOUTUBE_API_KEY_ENV_NAMES = (
+    "YOUTUBE_API_KEY",
+    "GOOGLE_API_KEY",
+    "YOUTUBE_DATA_API_KEY",
+)
 
 page_router = APIRouter()
 api_router = APIRouter()
@@ -59,19 +63,6 @@ def get_mysql_connection():
         database=env("DB_NAME", env("MYSQL_DATABASE", "yta")),
         autocommit=True,
     )
-
-
-@lru_cache(maxsize=1)
-def get_embedding_model() -> SentenceTransformer:
-    model_name = env("EMBEDDING_MODEL_NAME", DEFAULT_MODEL_NAME)
-    model = SentenceTransformer(model_name)
-    expected_dim = int(env("EMBEDDING_VECTOR_DIM", str(DEFAULT_VECTOR_DIM)))
-    model_dim = model.get_sentence_embedding_dimension()
-    if model_dim != expected_dim:
-        raise RuntimeError(
-            f"Model dimension is {model_dim}, but EMBEDDING_VECTOR_DIM is {expected_dim}."
-        )
-    return model
 
 
 @lru_cache(maxsize=1)
@@ -302,6 +293,80 @@ class PublicRecommendResponse(BaseModel):
     results: list[PublicRecommendedVideo]
 
 
+class PublicVideoPreviewRequest(BaseModel):
+    sector: str = Field(..., min_length=1)
+    skill: str = Field(..., min_length=1)
+    proficiency_level: str | None = None
+    competency: str | None = None
+    extra_context: str | None = None
+
+
+class PublicPreviewVideo(BaseModel):
+    sector: str
+    skill_name: str
+    competency: str
+    item_type: str
+    proficiency_level: str
+    proficiency_description: str
+    video_id: str
+    published_at: str
+    title: str
+    description: str
+    view_count: int
+    like_count: int
+    comment_count: int
+    tags: list[str]
+    duration: str
+    channel_title: str
+    thumbnail_url: str
+    already_ingested: bool
+
+
+class PublicVideoPreviewResponse(BaseModel):
+    query: str
+    count: int
+    already_ingested_count: int
+    quota_exceeded: bool
+    quota_message: str | None = None
+    quota: dict[str, int | str]
+    results: list[PublicPreviewVideo]
+
+
+class PublicIngestVideo(BaseModel):
+    sector: str
+    skill_name: str
+    competency: str = ""
+    item_type: str = ""
+    proficiency_level: str = ""
+    proficiency_description: str = ""
+    videoId: str = Field(..., min_length=1)
+    publishedAt: str = ""
+    title: str = ""
+    description: str = ""
+    viewCount: int = 0
+    likeCount: int = 0
+    commentCount: int = 0
+    tags: list[str] = Field(default_factory=list)
+    duration: str = ""
+    channelTitle: str = ""
+    thumbnailUrl: str = ""
+
+
+class PublicVideoIngestRequest(BaseModel):
+    videos: list[PublicIngestVideo] = Field(..., min_length=1, max_length=PORTAL_PREVIEW_LIMIT)
+
+
+class PublicVideoIngestResponse(BaseModel):
+    message: str
+    count: int
+    inserted: int
+    updated: int
+    unchanged: int
+    error_count: int
+    embedding_status: str
+    embedding_indexed: int
+
+
 @lru_cache(maxsize=1)
 def get_skill_suggestion_index() -> list[dict[str, object]]:
     sql = """
@@ -365,6 +430,116 @@ def get_skill_suggestion_index() -> list[dict[str, object]]:
     return list(grouped.values())
 
 
+def get_portal_youtube_api_key() -> str:
+    for env_name in PORTAL_YOUTUBE_API_KEY_ENV_NAMES:
+        value = env(env_name, "")
+        if value:
+            return value
+    raise HTTPException(
+        status_code=503,
+        detail=(
+            "YouTube ingestion is not configured. Set one of "
+            f"{', '.join(PORTAL_YOUTUBE_API_KEY_ENV_NAMES)} on the server."
+        ),
+    )
+
+
+def get_portal_quota_context() -> dict[str, int | str]:
+    from pipelines.youtube.youtube_ingestion_service import build_quota_estimate
+    from pipelines.youtube.youtube_config import (
+        DEFAULT_DAILY_QUOTA_LIMIT,
+        DEFAULT_QUOTA_WARNING_THRESHOLD,
+    )
+
+    daily_limit = parse_int(
+        env("YOUTUBE_DAILY_QUOTA_LIMIT", str(DEFAULT_DAILY_QUOTA_LIMIT)),
+        DEFAULT_DAILY_QUOTA_LIMIT,
+    )
+    warning_threshold = parse_int(
+        env("YOUTUBE_QUOTA_WARNING_THRESHOLD", str(DEFAULT_QUOTA_WARNING_THRESHOLD)),
+        DEFAULT_QUOTA_WARNING_THRESHOLD,
+    )
+    return build_quota_estimate(
+        skills_count=1,
+        search_max_results=PORTAL_PREVIEW_LIMIT,
+        daily_limit=daily_limit,
+        warning_threshold=warning_threshold,
+    )
+
+
+def get_portal_videos_collection():
+    from pipelines.youtube.youtube_vector_index import get_mongo_client
+
+    client = get_mongo_client()
+    database_name = env("MONGO_DATABASE", env("DB_NAME", "yta"))
+    return client, client[database_name]["videos"]
+
+
+def annotate_existing_ingestion(
+    videos: list[dict],
+    *,
+    skill_name: str,
+) -> tuple[list[dict], int]:
+    video_ids = [str(item.get("videoId") or "").strip() for item in videos if item.get("videoId")]
+    if not video_ids:
+        return videos, 0
+
+    client = None
+    try:
+        client, videos_collection = get_portal_videos_collection()
+        existing_rows = videos_collection.find(
+            {
+                "skill_name": skill_name,
+                "videoId": {"$in": video_ids},
+            },
+            {"videoId": 1},
+        )
+        existing_ids = {
+            str(row.get("videoId") or "").strip()
+            for row in existing_rows
+            if row.get("videoId")
+        }
+    finally:
+        if client:
+            client.close()
+
+    annotated = []
+    already_ingested_count = 0
+    for item in videos:
+        current = dict(item)
+        already_ingested = str(current.get("videoId") or "").strip() in existing_ids
+        if already_ingested:
+            already_ingested_count += 1
+        current["already_ingested"] = already_ingested
+        annotated.append(current)
+
+    return annotated, already_ingested_count
+
+
+def embed_portal_videos(summary: dict, docs: list[dict]) -> None:
+    from pipelines.youtube.youtube_vector_index import (
+        DEFAULT_COLLECTION_NAME,
+        embed_and_upsert_videos,
+    )
+
+    summary.setdefault("errors", [])
+    try:
+        embedding_summary = embed_and_upsert_videos(docs)
+    except Exception as exc:
+        embedding_summary = {
+            "embedding_status": "failed",
+            "embedding_requested": len(docs),
+            "embedding_indexed": 0,
+            "embedding_skipped_invalid": 0,
+            "embedding_batch_size": None,
+            "embedding_collection": env("QDRANT_YT_COLLECTION", DEFAULT_COLLECTION_NAME),
+        }
+        summary["errors"].append(f"[embedding] {exc}")
+
+    summary.update(embedding_summary)
+    summary["error_count"] = len(summary.get("errors", []))
+
+
 def build_video_filter(
     sector: str,
     skill: str,
@@ -395,6 +570,26 @@ def build_video_filter(
         )
 
     return models.Filter(must=must_conditions)
+
+
+def payload_matches_video_filters(
+    payload: dict,
+    *,
+    sector: str,
+    skill: str,
+    proficiency_level: str | None,
+    strict_skill_match: bool,
+) -> bool:
+    if not payload:
+        return False
+
+    if sector and str(payload.get("sector") or "") != sector:
+        return False
+    if strict_skill_match and skill and str(payload.get("skill_name") or "") != skill:
+        return False
+    if proficiency_level and str(payload.get("proficiency_level") or "") != proficiency_level:
+        return False
+    return True
 
 
 @page_router.get("/academy", include_in_schema=False)
@@ -640,6 +835,169 @@ def get_skill_map(
     )
 
 
+@api_router.post("/public/videos/preview", response_model=PublicVideoPreviewResponse)
+def public_preview_videos(payload: PublicVideoPreviewRequest):
+    from pipelines.youtube.youtube_ingestion_service import fetch_videos_for_preview
+
+    sector = payload.sector.strip()
+    skill = payload.skill.strip()
+    proficiency_level = (payload.proficiency_level or "").strip()
+    competency = (payload.competency or "").strip()
+    extra_context = (payload.extra_context or "").strip()
+    api_key = get_portal_youtube_api_key()
+    quota_context = get_portal_quota_context()
+
+    try:
+        videos, summary = fetch_videos_for_preview(
+            sector=sector,
+            api_key=api_key,
+            search_max_results=PORTAL_PREVIEW_LIMIT,
+            search_order="relevance",
+            selected_skills=[skill],
+            competency=competency,
+            proficiency=proficiency_level,
+            requirement="",
+            additional_query=extra_context,
+            min_view_count=0,
+            min_like_count=0,
+            min_video_length=0,
+            max_video_length=0,
+            min_comment_count=0,
+            max_video_age=0,
+            query_includes={
+                "sector": True,
+                "skill": True,
+                "competency": True,
+                "requirement": False,
+            },
+            search_constraints={},
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Video preview search failed: {exc}",
+        ) from exc
+
+    annotated_videos, already_ingested_count = annotate_existing_ingestion(
+        videos,
+        skill_name=skill,
+    )
+
+    results = [
+        PublicPreviewVideo(
+            sector=str(item.get("sector") or sector),
+            skill_name=str(item.get("skill_name") or skill),
+            competency=str(item.get("competency") or competency),
+            item_type=str(item.get("item_type") or ""),
+            proficiency_level=str(item.get("proficiency_level") or proficiency_level),
+            proficiency_description=str(item.get("proficiency_description") or ""),
+            video_id=str(item.get("videoId") or ""),
+            published_at=str(item.get("publishedAt") or ""),
+            title=str(item.get("title") or ""),
+            description=str(item.get("description") or ""),
+            view_count=parse_int(item.get("viewCount")),
+            like_count=parse_int(item.get("likeCount")),
+            comment_count=parse_int(item.get("commentCount")),
+            tags=[str(tag) for tag in item.get("tags", []) if str(tag).strip()],
+            duration=str(item.get("duration") or ""),
+            channel_title=str(item.get("channelTitle") or ""),
+            thumbnail_url=str(item.get("thumbnailUrl") or ""),
+            already_ingested=bool(item.get("already_ingested")),
+        )
+        for item in annotated_videos
+        if str(item.get("videoId") or "").strip()
+    ]
+
+    quota_message = None
+    if summary.get("quota_exceeded"):
+        quota_message = (
+            "YouTube API daily credit limit was reached while searching for more videos. "
+            "Try again later."
+        )
+
+    if summary.get("quota_exceeded") and not results:
+        return JSONResponse(
+            status_code=429,
+            content={
+                "detail": quota_message,
+                "query": str(summary.get("constraints", {}).get("query") or ""),
+                "count": 0,
+                "already_ingested_count": 0,
+                "quota_exceeded": True,
+                "quota_message": quota_message,
+                "quota": quota_context,
+                "results": [],
+            },
+        )
+
+    return PublicVideoPreviewResponse(
+        query=str(summary.get("constraints", {}).get("query") or ""),
+        count=len(results),
+        already_ingested_count=already_ingested_count,
+        quota_exceeded=bool(summary.get("quota_exceeded")),
+        quota_message=quota_message,
+        quota=quota_context,
+        results=results,
+    )
+
+
+@api_router.post("/public/videos/ingest", response_model=PublicVideoIngestResponse)
+def public_ingest_videos(payload: PublicVideoIngestRequest):
+    from pipelines.youtube.youtube_ingestion_service import upsert_selected_videos
+
+    client = None
+    summary: dict = {
+        "inserted": 0,
+        "updated": 0,
+        "unchanged": 0,
+        "error_count": 0,
+        "errors": [],
+    }
+    touched_docs: list[dict] = []
+
+    try:
+        client, videos_collection = get_portal_videos_collection()
+        summary = upsert_selected_videos(
+            videos_collection,
+            [video.model_dump() for video in payload.videos],
+            touched_docs=touched_docs,
+        )
+        embed_portal_videos(summary, touched_docs)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Video ingestion failed: {exc}",
+        ) from exc
+    finally:
+        if client:
+            client.close()
+
+    message = "Selected videos ingested successfully."
+    if summary.get("embedding_status") == "completed" and summary.get("embedding_indexed", 0) > 0:
+        message = "Selected videos ingested and indexed successfully."
+    elif summary.get("embedding_status") == "skipped":
+        message = "Selected videos ingested. No valid videos required indexing."
+    elif summary.get("embedding_status") == "failed":
+        message = "Selected videos ingested, but embedding failed."
+    elif summary.get("error_count", 0) > 0:
+        message = "Selected videos ingested with errors."
+
+    return PublicVideoIngestResponse(
+        message=message,
+        count=len(payload.videos),
+        inserted=parse_int(summary.get("inserted")),
+        updated=parse_int(summary.get("updated")),
+        unchanged=parse_int(summary.get("unchanged")),
+        error_count=parse_int(summary.get("error_count")),
+        embedding_status=str(summary.get("embedding_status") or "skipped"),
+        embedding_indexed=parse_int(summary.get("embedding_indexed")),
+    )
+
+
 @api_router.post("/public/recommend/videos", response_model=PublicRecommendResponse)
 def public_recommend_videos(payload: PublicRecommendRequest):
     sector = payload.sector.strip()
@@ -654,7 +1012,10 @@ def public_recommend_videos(payload: PublicRecommendRequest):
         query_parts.append(competency)
     query_text = ". ".join(query_parts)
 
-    model = get_embedding_model()
+    try:
+        model = get_embedding_model()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     query_vector = model.encode(
         query_text,
         normalize_embeddings=True,
@@ -684,9 +1045,6 @@ def public_recommend_videos(payload: PublicRecommendRequest):
         if not semantic_hits and active_proficiency:
             active_proficiency = None
             semantic_hits = run_semantic(active_proficiency, active_strict)
-        if not semantic_hits and active_strict:
-            active_strict = False
-            semantic_hits = run_semantic(active_proficiency, active_strict)
     except Exception as exc:
         raise HTTPException(
             status_code=500,
@@ -703,7 +1061,18 @@ def public_recommend_videos(payload: PublicRecommendRequest):
     skill_tokens = skill.lower().split()
     bm25_scores = bm25.get_scores(skill_tokens)
     top_bm25_indices = np.argsort(bm25_scores)[::-1][:BM25_CANDIDATES]
-    bm25_ranked_ids = [bm25_point_ids[i] for i in top_bm25_indices if bm25_scores[i] > 0]
+    bm25_ranked_ids = [
+        bm25_point_ids[i]
+        for i in top_bm25_indices
+        if bm25_scores[i] > 0
+        and payload_matches_video_filters(
+            bm25_payloads.get(bm25_point_ids[i], {}),
+            sector=sector,
+            skill=skill,
+            proficiency_level=active_proficiency,
+            strict_skill_match=active_strict,
+        )
+    ]
 
     # ------------------------------------------------------------------
     # RRF Fusion
@@ -713,6 +1082,19 @@ def public_recommend_videos(payload: PublicRecommendRequest):
     all_payloads: dict[str, dict] = {}
     all_payloads.update(bm25_payloads)
     all_payloads.update(semantic_payloads)
+    all_payloads = {
+        pid: item
+        for pid, item in all_payloads.items()
+        if pid in rrf_scores
+        and payload_matches_video_filters(
+            item,
+            sector=sector,
+            skill=skill,
+            proficiency_level=active_proficiency,
+            strict_skill_match=active_strict,
+        )
+    }
+    rrf_scores = {pid: score for pid, score in rrf_scores.items() if pid in all_payloads}
 
     # ------------------------------------------------------------------
     # Metadata boosts (sector + proficiency alignment)
@@ -721,8 +1103,14 @@ def public_recommend_videos(payload: PublicRecommendRequest):
         rrf_scores,
         all_payloads,
         skill_category=sector,
-        skill_proficiency=proficiency_level or "",
+        skill_proficiency=active_proficiency or "",
     )
+
+    applied_filters = {"sector": sector}
+    if active_strict:
+        applied_filters["skill"] = skill
+    if active_proficiency:
+        applied_filters["proficiency_level"] = active_proficiency
 
     # ------------------------------------------------------------------
     # Cross-encoder reranking
@@ -733,12 +1121,15 @@ def public_recommend_videos(payload: PublicRecommendRequest):
     if not rerank_candidates:
         return PublicRecommendResponse(
             query=query_text,
-            applied_filters={"sector": sector},
+            applied_filters=applied_filters,
             count=0,
             results=[],
         )
 
-    reranker = get_reranker_model()
+    try:
+        reranker = get_reranker_model()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     sf_text = f"Skill: {skill}. Sector: {sector}. Competency: {competency}."
 
     rerank_pairs = []
@@ -783,12 +1174,6 @@ def public_recommend_videos(payload: PublicRecommendRequest):
                 proficiency_level=str(item.get("proficiency_level") or ""),
             )
         )
-
-    applied_filters = {"sector": sector}
-    if active_strict:
-        applied_filters["skill"] = skill
-    if active_proficiency:
-        applied_filters["proficiency_level"] = active_proficiency
 
     return PublicRecommendResponse(
         query=query_text,

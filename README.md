@@ -35,8 +35,11 @@ Implemented now:
    - `POST /api/quiz/store` (persist quiz to MongoDB)
    - `GET /api/public/sectors`
    - `GET /api/public/skills`
+   - `GET /api/public/skill-suggestions`
    - `GET /api/public/skill-map`
    - `POST /api/public/recommend/videos`
+   - `POST /api/public/videos/preview`
+   - `POST /api/public/videos/ingest`
    - `GET /academy` (learner portal)
 
 Reference docs:
@@ -64,7 +67,7 @@ This repo currently has two separate app surfaces:
   - `Unique Skills List.xlsx`
   - `SkillsFuture Skills Framework Dataset.xlsx`
   - `Skills Mapping Framework.xlsx`
-- YouTube Data API v3 key (for YouTube ingestion only)
+- YouTube Data API v3 key (used by the ingestion console and learner-portal video preview/ingest)
 
 Optional local runtime:
 
@@ -78,6 +81,7 @@ Optional local runtime:
 ```bash
 cp .env.example .env
 # edit ports/passwords if needed
+# set YOUTUBE_API_KEY if you want YouTube preview/ingest from the console or learner portal
 ```
 
 ### 2) Start core services
@@ -161,10 +165,13 @@ docker compose up -d seed_youtube
 pip install -r requirements/vector_search.txt
 python qdrant/create_collections.py
 python scripts/embed_sf_skill_levels.py
+# optional backfill/reindex for videos already stored in MongoDB
 python scripts/embed_yt_videos.py
 uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
 # open: http://localhost:8000/academy
 ```
+
+New videos ingested from the console or learner portal are embedded into Qdrant automatically after upsert. `scripts/embed_yt_videos.py` remains useful for backfills or full rebuilds.
 
 ## Workflow A: YouTube Ingestion (Implemented)
 
@@ -202,6 +209,7 @@ Open `http://localhost:5000`.
 - Calls YouTube Data API v3 for videos/comments.
 - Uses Ollama to enrich query generation (sector/skill/competency/requirement aware).
 - Upserts documents into MongoDB (`videos`, `ingestion_runs`).
+- Embeds touched video-skill documents into Qdrant after successful upsert.
 - Provides Mongo browser and soft-delete tools at `/mongo_browser` and `/delete`.
 
 ### Admin Quiz Generation (Included in this Workflow)
@@ -287,11 +295,13 @@ Defaults:
 python scripts/embed_sf_skill_levels.py
 ```
 
-### 5) Build YouTube embeddings and upsert (after YouTube ingestion)
+### 5) Optional: backfill/reindex YouTube embeddings already stored in MongoDB
 
 ```bash
 python scripts/embed_yt_videos.py
 ```
+
+New videos ingested from the console or learner portal are already embedded automatically after upsert. Use this script when you need to rebuild the YouTube collection or backfill older MongoDB records.
 
 ### 6) Smoke test SkillsFuture vector index (optional)
 
@@ -313,21 +323,33 @@ uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
   - `POST /api/recommend/videos`
   - `GET /api/public/sectors`
   - `GET /api/public/skills`
+  - `GET /api/public/skill-suggestions`
   - `GET /api/public/skill-map`
   - `POST /api/public/recommend/videos`
+  - `POST /api/public/videos/preview`
+  - `POST /api/public/videos/ingest`
 
 ### Learner Quiz Taking (Included in this Workflow)
 
-The learner portal at `http://localhost:8000/academy` includes interactive quiz taking.
+The learner portal at `http://localhost:8000/academy` includes:
+
+- Fuzzy industry search and mapped skill suggestions on the main page.
+- Video recommendation with an optional strict skill filter.
+- A `Find Another Video` flow that previews YouTube candidates and ingests selected videos into the library.
+- Interactive quiz taking.
+
+For learner-side video preview/ingest, set `YOUTUBE_API_KEY` in `.env` and restart the FastAPI process.
 
 **Steps:**
 1. Select **Sector** and **Skill**
-2. Select **Quiz Mode** and other filters
-3. Click **Take Quiz** → Loads questions from MongoDB via `/api/quiz/generate`
-4. Navigate questions using arrow buttons or selector
-5. Select answers (visual feedback on selection)
-6. Click **Submit** → Displays results with score
-7. Optionally click **Regenerate** to get a new quiz for the same filters
+2. Select **Proficiency Level** and **Competency**
+3. Click **Recommend Videos** to retrieve current library matches
+4. If needed, click **Find Another Video** to preview and ingest fresh YouTube candidates
+5. Select **Quiz Mode** and click **Take Quiz** → Loads questions from MongoDB via `/api/quiz/generate`
+6. Navigate questions using arrow buttons or selector
+7. Select answers (visual feedback on selection)
+8. Click **Submit** → Displays results with score
+9. Optionally click **Regenerate** to get a new quiz for the same filters
 
 **Quiz Mode Filtering at Retrieval Time:**
 The learner's selected quiz mode determines which MongoDB documents are retrieved:

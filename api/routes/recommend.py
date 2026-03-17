@@ -42,10 +42,99 @@ def env(name: str, default: str | None = None) -> str | None:
     return value if value not in (None, "") else default
 
 
+def resolve_cached_hf_model_path(model_name: str) -> Path | None:
+    model_path = Path(model_name).expanduser()
+    if model_path.exists():
+        return model_path
+
+    cache_roots: list[Path] = []
+    for raw_path in (
+        env("HUGGINGFACE_HUB_CACHE"),
+        env("TRANSFORMERS_CACHE"),
+        env("SENTENCE_TRANSFORMERS_HOME"),
+    ):
+        if raw_path:
+            cache_roots.append(Path(raw_path).expanduser())
+
+    hf_home = env("HF_HOME")
+    if hf_home:
+        cache_roots.append(Path(hf_home).expanduser() / "hub")
+
+    cache_roots.append(Path.home() / ".cache" / "huggingface" / "hub")
+
+    repo_dir_name = f"models--{model_name.replace('/', '--')}"
+    seen_roots: set[Path] = set()
+    for cache_root in cache_roots:
+        cache_root = cache_root.expanduser()
+        if cache_root in seen_roots:
+            continue
+        seen_roots.add(cache_root)
+
+        repo_dir = cache_root / repo_dir_name
+        if not repo_dir.exists():
+            continue
+
+        ref_file = repo_dir / "refs" / "main"
+        if ref_file.exists():
+            snapshot_name = ref_file.read_text(encoding="utf-8").strip()
+            if snapshot_name:
+                snapshot_dir = repo_dir / "snapshots" / snapshot_name
+                if snapshot_dir.exists():
+                    return snapshot_dir
+
+        snapshots_dir = repo_dir / "snapshots"
+        if not snapshots_dir.exists():
+            continue
+
+        snapshots = sorted(
+            (candidate for candidate in snapshots_dir.iterdir() if candidate.is_dir()),
+            key=lambda candidate: candidate.stat().st_mtime,
+            reverse=True,
+        )
+        if snapshots:
+            return snapshots[0]
+
+    return None
+
+
+def load_cached_sentence_transformer(model_name: str) -> SentenceTransformer:
+    cached_path = resolve_cached_hf_model_path(model_name)
+    load_target = str(cached_path) if cached_path else model_name
+
+    try:
+        return SentenceTransformer(load_target)
+    except Exception as exc:
+        if cached_path:
+            raise RuntimeError(
+                f"Unable to load embedding model from local cache '{cached_path}': {exc}"
+            ) from exc
+        raise RuntimeError(
+            f"Unable to load embedding model '{model_name}'. Cache it locally or allow "
+            "network access to Hugging Face."
+        ) from exc
+
+
+def load_cached_cross_encoder(model_name: str) -> CrossEncoder:
+    cached_path = resolve_cached_hf_model_path(model_name)
+    load_target = str(cached_path) if cached_path else model_name
+
+    try:
+        return CrossEncoder(load_target)
+    except Exception as exc:
+        if cached_path:
+            raise RuntimeError(
+                f"Unable to load reranker model from local cache '{cached_path}': {exc}"
+            ) from exc
+        raise RuntimeError(
+            f"Unable to load reranker model '{model_name}'. Cache it locally or allow "
+            "network access to Hugging Face."
+        ) from exc
+
+
 @lru_cache(maxsize=1)
 def get_embedding_model() -> SentenceTransformer:
     model_name = env("EMBEDDING_MODEL_NAME", DEFAULT_MODEL_NAME)
-    model = SentenceTransformer(model_name)
+    model = load_cached_sentence_transformer(model_name)
     expected_dim = int(env("EMBEDDING_VECTOR_DIM", str(DEFAULT_VECTOR_DIM)))
     model_dim = model.get_sentence_embedding_dimension()
     if model_dim != expected_dim:
@@ -58,7 +147,7 @@ def get_embedding_model() -> SentenceTransformer:
 @lru_cache(maxsize=1)
 def get_reranker_model() -> CrossEncoder:
     model_name = env("RERANKER_MODEL_NAME", DEFAULT_RERANKER_MODEL)
-    return CrossEncoder(model_name)
+    return load_cached_cross_encoder(model_name)
 
 
 @lru_cache(maxsize=1)
@@ -228,8 +317,11 @@ def recommend_videos(payload: RecommendRequest):
     if not query_text:
         raise HTTPException(status_code=400, detail="Query text cannot be empty.")
 
-    model = get_embedding_model()
-    reranker = get_reranker_model()
+    try:
+        model = get_embedding_model()
+        reranker = get_reranker_model()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     qdrant = get_qdrant_client()
 
     # ------------------------------------------------------------------

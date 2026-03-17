@@ -3,7 +3,10 @@ from datetime import datetime, timedelta
 import mysql.connector
 from pymongo import MongoClient
 
-from youtube_config import RECENT_ROWS_LIMIT, env, to_int
+try:
+    from youtube_config import RECENT_ROWS_LIMIT, env, to_int
+except ModuleNotFoundError:  # pragma: no cover - package import path
+    from .youtube_config import RECENT_ROWS_LIMIT, env, to_int
 
 
 def get_mysql_conn():

@@ -3,3 +3,5 @@ python-dotenv
 requests
 pymongo
 flask
+qdrant-client==1.9.1
+sentence-transformers==2.7.0

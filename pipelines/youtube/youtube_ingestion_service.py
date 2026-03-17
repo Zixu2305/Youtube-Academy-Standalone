@@ -5,8 +5,12 @@ import re
 
 import requests
 
-from youtube_config import MAX_ERROR_DETAILS, REQUEST_TIMEOUT_SECONDS, to_int
-from youtube_data_access import get_requirement, get_proficiency_description
+try:
+    from youtube_config import MAX_ERROR_DETAILS, REQUEST_TIMEOUT_SECONDS, to_int
+    from youtube_data_access import get_requirement, get_proficiency_description
+except ModuleNotFoundError:  # pragma: no cover - package import path
+    from .youtube_config import MAX_ERROR_DETAILS, REQUEST_TIMEOUT_SECONDS, to_int
+    from .youtube_data_access import get_requirement, get_proficiency_description
 
 
 QUOTA_ERROR_REASONS = {
@@ -560,6 +564,7 @@ def run_ingestion(
     additional_query: str = "",
     query_includes: dict | None = None,
     search_constraints: dict | None = None,
+    touched_docs: list[dict] | None = None,
 ):
     search_constraints = search_constraints or {}
     query_includes = _normalize_query_includes(query_includes)
@@ -724,6 +729,8 @@ def run_ingestion(
                 upsert=True,
             )
             summary["upserts_attempted"] += 1
+            if touched_docs is not None:
+                touched_docs.append(dict(doc))
 
             if result.upserted_id is not None:
                 summary["inserted"] += 1
@@ -737,7 +744,12 @@ def run_ingestion(
     return summary
 
 
-def upsert_selected_videos(collection, videos_to_upsert: list[dict]):
+def upsert_selected_videos(
+    collection,
+    videos_to_upsert: list[dict],
+    *,
+    touched_docs: list[dict] | None = None,
+):
     """
     Upsert selected videos into MongoDB.
     
@@ -776,6 +788,8 @@ def upsert_selected_videos(collection, videos_to_upsert: list[dict]):
                 {"$set": video},
                 upsert=True,
             )
+            if touched_docs is not None:
+                touched_docs.append(dict(video))
             
             if result.upserted_id is not None:
                 summary["inserted"] += 1

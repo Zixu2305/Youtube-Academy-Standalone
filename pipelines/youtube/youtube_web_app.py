@@ -34,6 +34,7 @@ from youtube_data_access import (
     get_requirement,
 )
 from youtube_ingestion_service import build_quota_estimate, run_ingestion
+from youtube_vector_index import DEFAULT_COLLECTION_NAME, embed_and_upsert_videos
 
 
 def _daily_quota_limit():
@@ -48,6 +49,25 @@ def _quota_warning_threshold():
         env("YOUTUBE_QUOTA_WARNING_THRESHOLD", str(DEFAULT_QUOTA_WARNING_THRESHOLD)),
         DEFAULT_QUOTA_WARNING_THRESHOLD,
     )
+
+
+def _embed_touched_videos(summary: dict, docs: list[dict]) -> None:
+    summary.setdefault("errors", [])
+    try:
+        embedding_summary = embed_and_upsert_videos(docs)
+    except Exception as exc:
+        embedding_summary = {
+            "embedding_status": "failed",
+            "embedding_requested": len(docs),
+            "embedding_indexed": 0,
+            "embedding_skipped_invalid": 0,
+            "embedding_batch_size": None,
+            "embedding_collection": env("QDRANT_YT_COLLECTION", DEFAULT_COLLECTION_NAME),
+        }
+        summary["errors"].append(f"[embedding] {exc}")
+
+    summary.update(embedding_summary)
+    summary["error_count"] = len(summary.get("errors", []))
 
 
 def _serialize(value):
@@ -784,6 +804,7 @@ def create_app():
         run_doc_id = None
         summary = None
         run_id = str(uuid4())
+        touched_docs: list[dict] = []
 
         try:
             client = get_mongo_client()
@@ -809,12 +830,25 @@ def create_app():
             }
             run_doc_id = runs_collection.insert_one(run_doc).inserted_id
 
-            summary = upsert_selected_videos(videos_collection, videos_to_upsert)
+            summary = upsert_selected_videos(
+                videos_collection,
+                videos_to_upsert,
+                touched_docs=touched_docs,
+            )
+            _embed_touched_videos(summary, touched_docs)
             summary["mongo_status"] = mongo_status_snapshot(videos_collection)
 
             run_status = "completed"
             run_message = "Selected videos upserted successfully."
-            if summary.get("error_count", 0) > 0:
+            if summary.get("embedding_status") == "completed" and summary.get("embedding_indexed", 0) > 0:
+                run_message = "Selected videos upserted and indexed successfully."
+            elif summary.get("embedding_status") == "skipped":
+                run_message = "Selected videos upserted. No valid videos required indexing."
+
+            if summary.get("embedding_status") == "failed":
+                run_status = "completed_with_errors"
+                run_message = "Selected videos upserted, but embedding failed."
+            elif summary.get("error_count", 0) > 0:
                 run_status = "completed_with_errors"
                 run_message = "Selected videos upserted with errors."
 
@@ -871,6 +905,7 @@ def create_app():
         summary = None
         quota_context = _build_quota_context(payload)
         run_id = str(uuid4())
+        touched_docs: list[dict] = []
 
         try:
             client = get_mongo_client()
@@ -934,14 +969,28 @@ def create_app():
                 search_constraints={
                     "published_after": payload["published_after"],
                 },
+                touched_docs=touched_docs,
             )
+            _embed_touched_videos(summary, touched_docs)
             summary["mongo_status"] = mongo_status_snapshot(videos_collection)
 
             run_status = "completed"
             run_message = "Fetch and upsert completed."
+            if summary.get("embedding_status") == "completed" and summary.get("embedding_indexed", 0) > 0:
+                run_message = "Fetch, upsert, and embedding completed."
+            elif summary.get("embedding_status") == "skipped":
+                run_message = "Fetch and upsert completed. No valid videos required indexing."
+
             if summary.get("quota_exceeded"):
                 run_status = "stopped_quota"
                 run_message = "Stopped due to YouTube quota limits."
+                if summary.get("embedding_status") == "completed" and summary.get("embedding_indexed", 0) > 0:
+                    run_message = "Stopped due to YouTube quota limits after indexing fetched videos."
+                elif summary.get("embedding_status") == "failed":
+                    run_message = "Stopped due to YouTube quota limits, and embedding failed for fetched videos."
+            elif summary.get("embedding_status") == "failed":
+                run_status = "completed_with_errors"
+                run_message = "Fetch and upsert completed, but embedding failed."
             elif summary.get("error_count", 0) > 0:
                 run_status = "completed_with_errors"
                 run_message = "Fetch and upsert completed with errors."

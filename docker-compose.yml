@@ -97,6 +97,8 @@ services:
       MONGO_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD}
       MONGO_DATABASE: ${MONGO_DATABASE}
       OLLAMA_HOST: http://ollama:11434
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: 6333
     ports:
       - "5001:5000"
     volumes:
@@ -130,5 +132,4 @@ volumes:
   mongodb_data:
   qdrant_data:
   ollama_data:
-
 
