@@ -284,6 +284,7 @@ class PublicRecommendedVideo(BaseModel):
     skill_name: str
     competency: str
     proficiency_level: str
+    user_votes: int = 0
 
 
 class PublicRecommendResponse(BaseModel):
@@ -473,6 +474,14 @@ def get_portal_videos_collection():
     client = get_mongo_client()
     database_name = env("MONGO_DATABASE", env("DB_NAME", "yta"))
     return client, client[database_name]["videos"]
+
+
+def get_video_votes_collection():
+    from pipelines.youtube.youtube_vector_index import get_mongo_client
+
+    client = get_mongo_client()
+    database_name = env("MONGO_DATABASE", env("DB_NAME", "yta"))
+    return client, client[database_name]["video_votes"]
 
 
 def annotate_existing_ingestion(
@@ -965,6 +974,7 @@ def public_ingest_videos(payload: PublicVideoIngestRequest):
             touched_docs=touched_docs,
         )
         embed_portal_videos(summary, touched_docs)
+        get_bm25_index.cache_clear()
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
@@ -1146,18 +1156,53 @@ def public_recommend_videos(payload: PublicRecommendRequest):
     final_indices = ranked_indices[: payload.top_k]
 
     # ------------------------------------------------------------------
+    # Vote-based re-ranking (post cross-encoder)
+    # ------------------------------------------------------------------
+    # Collect video IDs for the final candidates
+    final_video_ids = [
+        str(all_payloads.get(rerank_pids[idx], {}).get("video_id") or "")
+        for idx in final_indices
+    ]
+    votes_map: dict[str, int] = {}
+    try:
+        client, votes_col = get_video_votes_collection()
+        try:
+            for doc in votes_col.find(
+                {"video_id": {"$in": final_video_ids}},
+                {"_id": 0, "video_id": 1, "votes": 1},
+            ):
+                votes_map[doc["video_id"]] = doc.get("votes", 0)
+        finally:
+            client.close()
+    except Exception:
+        pass  # non-critical: proceed without vote data
+
+    # Bubble-sort re-rank: swap adjacent if lower-ranked has >= 3 more votes
+    final_indices_list = list(final_indices)
+    changed = True
+    while changed:
+        changed = False
+        for i in range(len(final_indices_list) - 1):
+            vid_upper = str(all_payloads.get(rerank_pids[final_indices_list[i]], {}).get("video_id") or "")
+            vid_lower = str(all_payloads.get(rerank_pids[final_indices_list[i + 1]], {}).get("video_id") or "")
+            if votes_map.get(vid_lower, 0) - votes_map.get(vid_upper, 0) >= 3:
+                final_indices_list[i], final_indices_list[i + 1] = final_indices_list[i + 1], final_indices_list[i]
+                changed = True
+
+    # ------------------------------------------------------------------
     # Build response
     # ------------------------------------------------------------------
     results: list[PublicRecommendedVideo] = []
-    for idx in final_indices:
+    for idx in final_indices_list:
         pid = rerank_pids[idx]
         item = all_payloads.get(pid, {})
+        vid = str(item.get("video_id") or "")
         results.append(
             PublicRecommendedVideo(
                 score=float(reranker_scores[idx]),
                 rrf_score=float(rerank_rrf_scores[idx]),
                 reranker_score=float(reranker_scores[idx]),
-                video_id=str(item.get("video_id") or ""),
+                video_id=vid,
                 title=str(item.get("title") or ""),
                 description=str(item.get("description") or ""),
                 channel_title=str(item.get("channel_title") or ""),
@@ -1172,6 +1217,7 @@ def public_recommend_videos(payload: PublicRecommendRequest):
                 skill_name=str(item.get("skill_name") or ""),
                 competency=str(item.get("competency") or ""),
                 proficiency_level=str(item.get("proficiency_level") or ""),
+                user_votes=votes_map.get(vid, 0),
             )
         )
 
@@ -1181,3 +1227,53 @@ def public_recommend_videos(payload: PublicRecommendRequest):
         count=len(results),
         results=results,
     )
+
+
+# ---------------------------------------------------------------------------
+# Video voting endpoints
+# ---------------------------------------------------------------------------
+
+
+class VoteRequest(BaseModel):
+    vote: int = Field(..., ge=-1, le=1, description="1 (upvote), -1 (downvote), or 0 (remove)")
+
+
+class VoteResponse(BaseModel):
+    video_id: str
+    votes: int
+
+
+@api_router.post("/public/videos/{video_id}/vote", response_model=VoteResponse)
+def cast_vote(video_id: str, payload: VoteRequest):
+    """Atomically increment or decrement the global vote total for a video."""
+    increment = payload.vote
+    _, collection = get_video_votes_collection()
+    collection.update_one(
+        {"video_id": video_id},
+        {"$inc": {"votes": increment}},
+        upsert=True,
+    )
+    doc = collection.find_one({"video_id": video_id}, {"_id": 0, "votes": 1})
+    return VoteResponse(video_id=video_id, votes=doc.get("votes", 0) if doc else 0)
+
+
+class BulkVotesResponse(BaseModel):
+    votes: dict[str, int]
+
+
+@api_router.get("/public/videos/votes", response_model=BulkVotesResponse)
+def get_votes(ids: str = Query("", description="Comma-separated video IDs")):
+    """Fetch vote totals for multiple videos at once."""
+    video_ids = [v.strip() for v in ids.split(",") if v.strip()]
+    if not video_ids:
+        return BulkVotesResponse(votes={})
+    _, collection = get_video_votes_collection()
+    cursor = collection.find(
+        {"video_id": {"$in": video_ids}},
+        {"_id": 0, "video_id": 1, "votes": 1},
+    )
+    votes_map = {doc["video_id"]: doc.get("votes", 0) for doc in cursor}
+    for vid in video_ids:
+        if vid not in votes_map:
+            votes_map[vid] = 0
+    return BulkVotesResponse(votes=votes_map)

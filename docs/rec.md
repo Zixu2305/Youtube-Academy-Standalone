@@ -37,6 +37,10 @@ User Query
     |             (SF_metadata, YT_metadata) pairs
     |                               |
     |                               v
+    |              Vote-Based Re-ranking
+    |           (swap adjacent if vote diff >= 3)
+    |                               |
+    |                               v
     |                   Final Top-N Videos
 ```
 
@@ -123,7 +127,19 @@ These are conservative multipliers that nudge relevance without overwhelming the
 
 The cross-encoder processes both texts jointly through all transformer layers, producing a single relevance score. This is significantly more accurate than bi-encoder similarity but too slow to run on all candidates (hence the two-stage retrieve-then-rerank architecture).
 
-### 6. Updated Response Schema
+### 6. Vote-Based Re-ranking (User Input)
+
+**Problem:** The pipeline ranks videos purely by algorithmic relevance. Users who watch the recommended videos have no way to signal which ones are actually useful.
+
+**Solution:** After the cross-encoder produces the final ranking, apply a vote-based re-ranking step using global user votes stored in MongoDB (`video_votes` collection).
+
+**Algorithm:** Bubble-sort style adjacent swaps — a lower-ranked video overtakes the one directly above it if its vote total exceeds the upper video's by >= 3. This is applied iteratively until no more swaps occur. The threshold of 3 prevents a single vote from disrupting the algorithmic ranking while allowing clear community consensus to surface better content.
+
+**Vote storage:** MongoDB collection `video_votes` with schema `{ video_id: str, votes: int }`. Votes are cast via `POST /api/public/videos/{video_id}/vote` with atomic `$inc` operations.
+
+**Response field:** `user_votes: int` is included in each video result so the frontend can display the current vote total and provide optimistic UI updates.
+
+### 7. Updated Response Schema
 
 New fields added to the API response:
 

@@ -298,6 +298,7 @@ class RecommendedVideo(BaseModel):
     skill_name: str
     competency: str
     proficiency_level: str
+    user_votes: int = 0
 
 
 class RecommendResponse(BaseModel):
@@ -459,17 +460,54 @@ def recommend_videos(payload: RecommendRequest):
     final_indices = ranked_indices[: payload.num_videos]
 
     # ------------------------------------------------------------------
+    # Vote-based re-ranking (post cross-encoder)
+    # ------------------------------------------------------------------
+    final_video_ids = [
+        str(all_payloads.get(rerank_pids[idx], {}).get("video_id") or "")
+        for idx in final_indices
+    ]
+    votes_map: dict[str, int] = {}
+    try:
+        from pipelines.youtube.youtube_vector_index import get_mongo_client
+
+        client = get_mongo_client()
+        try:
+            db_name = env("MONGO_DATABASE") or env("DB_NAME") or "yta"
+            votes_col = client[db_name]["video_votes"]
+            for doc in votes_col.find(
+                {"video_id": {"$in": final_video_ids}},
+                {"_id": 0, "video_id": 1, "votes": 1},
+            ):
+                votes_map[doc["video_id"]] = doc.get("votes", 0)
+        finally:
+            client.close()
+    except Exception:
+        pass  # non-critical: proceed without vote data
+
+    final_indices_list = list(final_indices)
+    changed = True
+    while changed:
+        changed = False
+        for i in range(len(final_indices_list) - 1):
+            vid_upper = str(all_payloads.get(rerank_pids[final_indices_list[i]], {}).get("video_id") or "")
+            vid_lower = str(all_payloads.get(rerank_pids[final_indices_list[i + 1]], {}).get("video_id") or "")
+            if votes_map.get(vid_lower, 0) - votes_map.get(vid_upper, 0) >= 3:
+                final_indices_list[i], final_indices_list[i + 1] = final_indices_list[i + 1], final_indices_list[i]
+                changed = True
+
+    # ------------------------------------------------------------------
     # Build response
     # ------------------------------------------------------------------
     recommended_videos = []
-    for idx in final_indices:
+    for idx in final_indices_list:
         pid = rerank_pids[idx]
         p = all_payloads.get(pid, {})
+        vid = p.get("video_id", "")
         recommended_videos.append(
             RecommendedVideo(
                 rrf_score=float(rerank_rrf_scores[idx]),
                 reranker_score=float(reranker_scores[idx]),
-                video_id=p.get("video_id", ""),
+                video_id=vid,
                 title=p.get("title", ""),
                 description=p.get("description", ""),
                 channel_title=p.get("channel_title", ""),
@@ -484,6 +522,7 @@ def recommend_videos(payload: RecommendRequest):
                 skill_name=p.get("skill_name", ""),
                 competency=p.get("competency", ""),
                 proficiency_level=p.get("proficiency_level", ""),
+                user_votes=votes_map.get(vid, 0),
             )
         )
 

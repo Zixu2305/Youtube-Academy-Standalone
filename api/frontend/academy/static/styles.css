@@ -463,6 +463,61 @@ body.overlay-open {
   padding: 0.21rem 0.48rem;
 }
 
+.video-card-link {
+  text-decoration: none;
+  color: inherit;
+  display: block;
+}
+
+.video-title-link {
+  text-decoration: none;
+  color: inherit;
+}
+
+.vote-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.4rem;
+}
+
+.vote-btn {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 0.7rem;
+  padding: 0.18rem 0.38rem;
+  line-height: 1;
+  transition: background 0.13s ease, color 0.13s ease, border-color 0.13s ease;
+}
+
+.vote-btn:hover {
+  border-color: rgba(14, 101, 119, 0.5);
+  color: var(--text);
+}
+
+.vote-btn--active-up {
+  background: #e6f7f0;
+  color: #0e7a5a;
+  border-color: #0e7a5a;
+}
+
+.vote-btn--active-down {
+  background: #fef0ef;
+  color: #c0392b;
+  border-color: #c0392b;
+}
+
+.vote-count {
+  font-size: 0.75rem;
+  font-weight: 600;
+  min-width: 1.2rem;
+  text-align: center;
+  color: var(--text);
+}
+
 .overlay-backdrop {
   position: fixed;
   inset: 0;

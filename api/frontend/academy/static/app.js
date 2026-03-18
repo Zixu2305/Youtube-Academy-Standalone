@@ -262,6 +262,9 @@ function App() {
   const [userAnswers, setUserAnswers] = useState({});
   const [quizSubmitted, setQuizSubmitted] = useState(false);
 
+  const [votes, setVotes] = useState({});
+  const [userVotes, setUserVotes] = useState({});
+
   useEffect(() => {
     const loadSectors = async () => {
       setSectorStatus({ text: "Loading industries...", tone: "" });
@@ -529,6 +532,8 @@ function App() {
     setRecommendMeta(createEmptyRecommendMeta());
     setHasRecommended(false);
     setRecommendStatus({ text: "", tone: "" });
+    setVotes({});
+    setUserVotes({});
   };
 
   const resetSelectionPath = () => {
@@ -653,7 +658,12 @@ function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
-      setRecommendations(response.results || []);
+      const results = response.results || [];
+      setRecommendations(results);
+      const serverVotes = {};
+      results.forEach((v) => { serverVotes[v.video_id] = v.user_votes || 0; });
+      setVotes(serverVotes);
+      setUserVotes({});
       setRecommendMeta({
         query: response.query || "",
         appliedFilters: response.applied_filters || {},
@@ -685,6 +695,56 @@ function App() {
     setStrictSkillMatch(false);
     requestRecommendations(false);
   };
+
+  // --- Vote helpers ---
+
+  const castVote = async (videoId, direction) => {
+    const current = userVotes[videoId] || 0;
+    let serverDelta;
+    let newUserVote;
+    if (current === direction) {
+      // Toggle off: undo previous vote
+      serverDelta = -direction;
+      newUserVote = 0;
+    } else {
+      // New vote (possibly switching direction)
+      serverDelta = direction - current;
+      newUserVote = direction;
+    }
+    // Optimistic UI update
+    setUserVotes((prev) => ({ ...prev, [videoId]: newUserVote }));
+    setVotes((prev) => ({ ...prev, [videoId]: (prev[videoId] || 0) + serverDelta }));
+    try {
+      const response = await fetchJson(`/api/public/videos/${encodeURIComponent(videoId)}/vote`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ vote: serverDelta }),
+      });
+      setVotes((prev) => ({ ...prev, [videoId]: response.votes }));
+    } catch (_) { /* revert on failure */ }
+  };
+
+  const reorderByVotes = (videos, votesMap) => {
+    const result = [...videos];
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (let i = 0; i < result.length - 1; i++) {
+        const vUpper = votesMap[result[i].video_id] || 0;
+        const vLower = votesMap[result[i + 1].video_id] || 0;
+        if (vLower - vUpper >= 3) {
+          [result[i], result[i + 1]] = [result[i + 1], result[i]];
+          changed = true;
+        }
+      }
+    }
+    return result;
+  };
+
+  const displayedRecommendations = useMemo(
+    () => reorderByVotes(recommendations, votes),
+    [recommendations, votes],
+  );
 
   const previewVideosForIngestion = async () => {
     if (!selectedSector || !selectedSkill) {
@@ -1033,31 +1093,44 @@ function App() {
 
   const recommendationContent = !hasRecommended
     ? html`<p className="empty-note">Run recommendation after selecting a competency.</p>`
-    : recommendations.length
-      ? recommendations.map((video) => {
+    : displayedRecommendations.length
+      ? displayedRecommendations.map((video) => {
           const url = video.video_id
             ? `https://www.youtube.com/watch?v=${encodeURIComponent(video.video_id)}`
             : "#";
+          const voteTotal = votes[video.video_id] || 0;
+          const userVote = userVotes[video.video_id] || 0;
           return html`
-            <a
+            <div
               key=${`${video.video_id}-${video.score}`}
               className="video-card"
-              href=${url}
-              target="_blank"
-              rel="noopener noreferrer"
             >
-              ${video.thumbnail_url
-                ? html`
-                    <img
-                      className="video-thumb"
-                      src=${video.thumbnail_url}
-                      alt=${video.title || "Video thumbnail"}
-                      loading="lazy"
-                    />
-                  `
-                : html`<div className="video-thumb"></div>`}
+              <a
+                className="video-card-link"
+                href=${url}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                ${video.thumbnail_url
+                  ? html`
+                      <img
+                        className="video-thumb"
+                        src=${video.thumbnail_url}
+                        alt=${video.title || "Video thumbnail"}
+                        loading="lazy"
+                      />
+                    `
+                  : html`<div className="video-thumb"></div>`}
+              </a>
               <div>
-                <p className="video-title">${video.title || "Untitled video"}</p>
+                <a
+                  className="video-title-link"
+                  href=${url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <p className="video-title">${video.title || "Untitled video"}</p>
+                </a>
                 <p className="video-meta">
                   ${(video.channel_title || "Unknown channel") +
                   " · " +
@@ -1066,8 +1139,23 @@ function App() {
                   Number(video.score).toFixed(3)}
                 </p>
                 <span className="video-chip">${video.skill_name || selectedSkill || "Skill"}</span>
+                <div className="vote-controls">
+                  <button
+                    type="button"
+                    className=${`vote-btn${userVote === 1 ? " vote-btn--active-up" : ""}`}
+                    onClick=${(e) => { e.stopPropagation(); castVote(video.video_id, 1); }}
+                    title="Upvote"
+                  >▲</button>
+                  <span className="vote-count">${voteTotal}</span>
+                  <button
+                    type="button"
+                    className=${`vote-btn${userVote === -1 ? " vote-btn--active-down" : ""}`}
+                    onClick=${(e) => { e.stopPropagation(); castVote(video.video_id, -1); }}
+                    title="Downvote"
+                  >▼</button>
+                </div>
               </div>
-            </a>
+            </div>
           `;
         })
       : strictRecommendationMiss
