@@ -29,6 +29,7 @@ RRF_K = 60
 RERANK_TOP_N = 10
 SECTOR_BOOST = 1.2
 PROFICIENCY_BOOST = 1.15
+QUERY_EMBED_CACHE_SIZE = 4096
 
 router = APIRouter()
 
@@ -142,6 +143,21 @@ def get_embedding_model() -> SentenceTransformer:
             f"Model dimension is {model_dim}, but EMBEDDING_VECTOR_DIM is {expected_dim}."
         )
     return model
+
+
+@lru_cache(maxsize=QUERY_EMBED_CACHE_SIZE)
+def get_cached_query_embedding(query_text: str) -> tuple[float, ...]:
+    """Cache normalized query embeddings to avoid repeated encoder forward passes."""
+    normalized_text = " ".join(query_text.split())
+    if not normalized_text:
+        return tuple()
+    model = get_embedding_model()
+    return tuple(
+        model.encode(
+            normalized_text,
+            normalize_embeddings=True,
+        ).tolist()
+    )
 
 
 @lru_cache(maxsize=1)
@@ -319,20 +335,19 @@ def recommend_videos(payload: RecommendRequest):
         raise HTTPException(status_code=400, detail="Query text cannot be empty.")
 
     try:
-        model = get_embedding_model()
+        query_vector = list(get_cached_query_embedding(query_text))
         reranker = get_reranker_model()
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    if not query_vector:
+        raise HTTPException(status_code=400, detail="Query text cannot be empty.")
+
     qdrant = get_qdrant_client()
 
     # ------------------------------------------------------------------
     # Hop 1: Query → top-1 SF skill match
     # ------------------------------------------------------------------
-    query_vector = model.encode(
-        query_text,
-        normalize_embeddings=True,
-    ).tolist()
-
     sf_collection = env("QDRANT_COLLECTION", DEFAULT_SF_COLLECTION)
     try:
         skill_hits = qdrant.search(

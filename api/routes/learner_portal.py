@@ -14,7 +14,7 @@ from qdrant_client import QdrantClient
 from qdrant_client.http import models
 
 from api.routes.recommend import (
-    get_embedding_model,
+    get_cached_query_embedding,
     get_bm25_index,
     get_reranker_model,
     reciprocal_rank_fusion,
@@ -22,7 +22,6 @@ from api.routes.recommend import (
     build_yt_rerank_text,
     SEMANTIC_CANDIDATES,
     BM25_CANDIDATES,
-    RERANK_TOP_N,
 )
 
 
@@ -33,6 +32,8 @@ ACADEMY_FRONTEND_DIR = ROOT_DIR / "api" / "frontend" / "academy"
 
 DEFAULT_YT_COLLECTION = "youtube_videos__bge_base__768"
 PORTAL_PREVIEW_LIMIT = 8
+PORTAL_RETRIEVAL_CACHE_SIZE = 512
+PORTAL_DEFAULT_RERANK_CANDIDATES = 8
 PORTAL_YOUTUBE_API_KEY_ENV_NAMES = (
     "YOUTUBE_API_KEY",
     "GOOGLE_API_KEY",
@@ -601,6 +602,89 @@ def payload_matches_video_filters(
     return True
 
 
+@lru_cache(maxsize=PORTAL_RETRIEVAL_CACHE_SIZE)
+def get_cached_portal_retrieval(
+    *,
+    sector: str,
+    skill: str,
+    proficiency_level: str | None,
+    strict_skill_match: bool,
+    query_text: str,
+) -> tuple[str, tuple[tuple[str, float], ...]]:
+    """Cache retrieval-stage output (semantic + BM25 + boosts) for repeated portal queries."""
+    query_vector = list(get_cached_query_embedding(query_text))
+    qdrant = get_qdrant_client()
+    yt_collection = env("QDRANT_YT_COLLECTION", DEFAULT_YT_COLLECTION)
+
+    active_proficiency = proficiency_level
+
+    def run_semantic(prof: str | None):
+        return qdrant.search(
+            collection_name=yt_collection,
+            query_vector=query_vector,
+            query_filter=build_video_filter(sector, skill, prof, strict_skill_match),
+            limit=SEMANTIC_CANDIDATES,
+            with_payload=True,
+            with_vectors=False,
+        )
+
+    semantic_hits = run_semantic(active_proficiency)
+    if not semantic_hits and active_proficiency:
+        active_proficiency = None
+        semantic_hits = run_semantic(active_proficiency)
+
+    semantic_ids = [str(hit.id) for hit in semantic_hits]
+    semantic_payloads = {str(hit.id): hit.payload or {} for hit in semantic_hits}
+
+    bm25, bm25_point_ids, bm25_payloads = get_bm25_index()
+    skill_tokens = skill.lower().split()
+    bm25_scores = bm25.get_scores(skill_tokens)
+    top_bm25_indices = np.argsort(bm25_scores)[::-1][:BM25_CANDIDATES]
+    bm25_ranked_ids = [
+        bm25_point_ids[i]
+        for i in top_bm25_indices
+        if bm25_scores[i] > 0
+        and payload_matches_video_filters(
+            bm25_payloads.get(bm25_point_ids[i], {}),
+            sector=sector,
+            skill=skill,
+            proficiency_level=active_proficiency,
+            strict_skill_match=strict_skill_match,
+        )
+    ]
+
+    rrf_scores = reciprocal_rank_fusion(semantic_ids, bm25_ranked_ids)
+
+    all_payloads: dict[str, dict] = {}
+    all_payloads.update(bm25_payloads)
+    all_payloads.update(semantic_payloads)
+    all_payloads = {
+        pid: item
+        for pid, item in all_payloads.items()
+        if pid in rrf_scores
+        and payload_matches_video_filters(
+            item,
+            sector=sector,
+            skill=skill,
+            proficiency_level=active_proficiency,
+            strict_skill_match=strict_skill_match,
+        )
+    }
+    rrf_scores = {pid: score for pid, score in rrf_scores.items() if pid in all_payloads}
+
+    boosted_scores = apply_metadata_boosts(
+        rrf_scores,
+        all_payloads,
+        skill_category=sector,
+        skill_proficiency=active_proficiency or "",
+    )
+
+    sorted_candidates = tuple(
+        sorted(boosted_scores.items(), key=lambda item: item[1], reverse=True)
+    )
+    return active_proficiency or "", sorted_candidates
+
+
 @page_router.get("/academy", include_in_schema=False)
 def academy_page() -> FileResponse:
     index_file = ACADEMY_FRONTEND_DIR / "index.html"
@@ -975,6 +1059,7 @@ def public_ingest_videos(payload: PublicVideoIngestRequest):
         )
         embed_portal_videos(summary, touched_docs)
         get_bm25_index.cache_clear()
+        get_cached_portal_retrieval.cache_clear()
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
@@ -1022,99 +1107,30 @@ def public_recommend_videos(payload: PublicRecommendRequest):
         query_parts.append(competency)
     query_text = ". ".join(query_parts)
 
-    try:
-        model = get_embedding_model()
-    except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    query_vector = model.encode(
-        query_text,
-        normalize_embeddings=True,
-    ).tolist()
-
-    yt_collection = env("QDRANT_YT_COLLECTION", DEFAULT_YT_COLLECTION)
-    qdrant = get_qdrant_client()
-
-    # ------------------------------------------------------------------
-    # Path A: Semantic search with sector filter (+ filter relaxation)
-    # ------------------------------------------------------------------
-    active_proficiency = proficiency_level
     active_strict = payload.strict_skill_match
 
-    def run_semantic(prof: str | None, strict: bool):
-        return qdrant.search(
-            collection_name=yt_collection,
-            query_vector=query_vector,
-            query_filter=build_video_filter(sector, skill, prof, strict),
-            limit=SEMANTIC_CANDIDATES,
-            with_payload=True,
-            with_vectors=False,
-        )
-
     try:
-        semantic_hits = run_semantic(active_proficiency, active_strict)
-        if not semantic_hits and active_proficiency:
-            active_proficiency = None
-            semantic_hits = run_semantic(active_proficiency, active_strict)
+        active_proficiency_key, sorted_candidates = get_cached_portal_retrieval(
+            sector=sector,
+            skill=skill,
+            proficiency_level=proficiency_level,
+            strict_skill_match=active_strict,
+            query_text=query_text,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(
             status_code=500,
             detail=f"Video recommendation search failed: {exc}",
         ) from exc
 
-    semantic_ids = [str(hit.id) for hit in semantic_hits]
-    semantic_payloads = {str(hit.id): hit.payload or {} for hit in semantic_hits}
-
-    # ------------------------------------------------------------------
-    # Path B: BM25 lexical search (skill name → YT title+tags)
-    # ------------------------------------------------------------------
-    bm25, bm25_point_ids, bm25_payloads = get_bm25_index()
-    skill_tokens = skill.lower().split()
-    bm25_scores = bm25.get_scores(skill_tokens)
-    top_bm25_indices = np.argsort(bm25_scores)[::-1][:BM25_CANDIDATES]
-    bm25_ranked_ids = [
-        bm25_point_ids[i]
-        for i in top_bm25_indices
-        if bm25_scores[i] > 0
-        and payload_matches_video_filters(
-            bm25_payloads.get(bm25_point_ids[i], {}),
-            sector=sector,
-            skill=skill,
-            proficiency_level=active_proficiency,
-            strict_skill_match=active_strict,
-        )
-    ]
-
-    # ------------------------------------------------------------------
-    # RRF Fusion
-    # ------------------------------------------------------------------
-    rrf_scores = reciprocal_rank_fusion(semantic_ids, bm25_ranked_ids)
-
-    all_payloads: dict[str, dict] = {}
-    all_payloads.update(bm25_payloads)
-    all_payloads.update(semantic_payloads)
+    active_proficiency = active_proficiency_key or None
+    _, _, bm25_payloads = get_bm25_index()
     all_payloads = {
-        pid: item
-        for pid, item in all_payloads.items()
-        if pid in rrf_scores
-        and payload_matches_video_filters(
-            item,
-            sector=sector,
-            skill=skill,
-            proficiency_level=active_proficiency,
-            strict_skill_match=active_strict,
-        )
+        pid: bm25_payloads.get(pid, {})
+        for pid, _ in sorted_candidates
     }
-    rrf_scores = {pid: score for pid, score in rrf_scores.items() if pid in all_payloads}
-
-    # ------------------------------------------------------------------
-    # Metadata boosts (sector + proficiency alignment)
-    # ------------------------------------------------------------------
-    boosted_scores = apply_metadata_boosts(
-        rrf_scores,
-        all_payloads,
-        skill_category=sector,
-        skill_proficiency=active_proficiency or "",
-    )
 
     applied_filters = {"sector": sector}
     if active_strict:
@@ -1125,8 +1141,18 @@ def public_recommend_videos(payload: PublicRecommendRequest):
     # ------------------------------------------------------------------
     # Cross-encoder reranking
     # ------------------------------------------------------------------
-    sorted_candidates = sorted(boosted_scores.items(), key=lambda x: x[1], reverse=True)
-    rerank_candidates = sorted_candidates[:RERANK_TOP_N]
+    rerank_target = parse_int(
+        env("PORTAL_RERANK_TOP_N", str(PORTAL_DEFAULT_RERANK_CANDIDATES)),
+        PORTAL_DEFAULT_RERANK_CANDIDATES,
+    )
+    if rerank_target < 1:
+        rerank_target = PORTAL_DEFAULT_RERANK_CANDIDATES
+
+    rerank_pool_size = min(
+        len(sorted_candidates),
+        max(payload.top_k, rerank_target),
+    )
+    rerank_candidates = list(sorted_candidates[:rerank_pool_size])
 
     if not rerank_candidates:
         return PublicRecommendResponse(
