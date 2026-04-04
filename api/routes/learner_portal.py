@@ -34,6 +34,7 @@ DEFAULT_YT_COLLECTION = "youtube_videos__bge_base__768"
 PORTAL_PREVIEW_LIMIT = 8
 PORTAL_RETRIEVAL_CACHE_SIZE = 512
 PORTAL_DEFAULT_RERANK_CANDIDATES = 8
+PORTAL_RERANK_CACHE_SIZE = 512
 PORTAL_YOUTUBE_API_KEY_ENV_NAMES = (
     "YOUTUBE_API_KEY",
     "GOOGLE_API_KEY",
@@ -685,6 +686,19 @@ def get_cached_portal_retrieval(
     return active_proficiency or "", sorted_candidates
 
 
+@lru_cache(maxsize=PORTAL_RERANK_CACHE_SIZE)
+def get_cached_reranker_scores(
+    sf_text: str,
+    rerank_pairs: tuple[tuple[str, str], ...],
+) -> tuple[float, ...]:
+    """Cache cross-encoder scores for repeated identical rerank batches."""
+    if not rerank_pairs:
+        return tuple()
+    reranker = get_reranker_model()
+    scores = reranker.predict(list(rerank_pairs))
+    return tuple(float(score) for score in scores)
+
+
 @page_router.get("/academy", include_in_schema=False)
 def academy_page() -> FileResponse:
     index_file = ACADEMY_FRONTEND_DIR / "index.html"
@@ -1060,6 +1074,7 @@ def public_ingest_videos(payload: PublicVideoIngestRequest):
         embed_portal_videos(summary, touched_docs)
         get_bm25_index.cache_clear()
         get_cached_portal_retrieval.cache_clear()
+        get_cached_reranker_scores.cache_clear()
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
@@ -1162,10 +1177,6 @@ def public_recommend_videos(payload: PublicRecommendRequest):
             results=[],
         )
 
-    try:
-        reranker = get_reranker_model()
-    except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
     sf_text = f"Skill: {skill}. Sector: {sector}. Competency: {competency}."
 
     rerank_pairs = []
@@ -1177,7 +1188,14 @@ def public_recommend_videos(payload: PublicRecommendRequest):
         rerank_pids.append(pid)
         rerank_rrf_scores.append(rrf_score)
 
-    reranker_scores = reranker.predict(rerank_pairs)
+    reranker_pairs_tuple = tuple(rerank_pairs)
+    try:
+        reranker_scores = np.array(
+            get_cached_reranker_scores(sf_text, reranker_pairs_tuple),
+            dtype=float,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     ranked_indices = np.argsort(reranker_scores)[::-1]
     final_indices = ranked_indices[: payload.top_k]
 
