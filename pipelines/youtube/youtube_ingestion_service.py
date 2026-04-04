@@ -12,6 +12,11 @@ except ModuleNotFoundError:  # pragma: no cover - package import path
     from .youtube_config import MAX_ERROR_DETAILS, REQUEST_TIMEOUT_SECONDS, to_int
     from .youtube_data_access import get_requirement, get_proficiency_description
 
+try:
+    from pipelines.llm_client import call_llm_chat
+except ModuleNotFoundError:  # pragma: no cover - package import path
+    from ..llm_client import call_llm_chat
+
 
 QUOTA_ERROR_REASONS = {
     "quotaExceeded",
@@ -21,16 +26,13 @@ QUOTA_ERROR_REASONS = {
     "rateLimitExceeded",
 }
 
-# --- OLLAMA CONFIGURATION ---
-_OLLAMA_MODEL = "llama3.2:3b"
-_OLLAMA_TIMEOUT = 10  # Fast timeout for keywords
-
-def _ollama_host() -> str:
-    return os.getenv("OLLAMA_HOST", "http://ollama:11434")
+# --- LLM CONFIGURATION ---
+_LLM_TIMEOUT = 10  # Fast timeout for keywords
+_LLM_RATE_LIMIT_RETRIES = 1
 
 def _get_llm_keywords(text: str, count: int = 3) -> str:
     """
-    Asks Ollama to extract the {count} scariest/most important technical terms.
+    Asks configured LLM provider to extract the {count} most important technical terms.
     Returns a space-separated string of keywords.
     """
     if not text:
@@ -42,25 +44,20 @@ def _get_llm_keywords(text: str, count: int = 3) -> str:
         f"Text: \"{text}\""
     )
 
-    url = f"{_ollama_host()}/api/generate"
-    payload = {
-        "model": _OLLAMA_MODEL,
-        "prompt": prompt,
-        "stream": False,
-        "options": {
-            "temperature": 0.1, 
-            "num_predict": 50
-        },
-    }
-    
     try:
-        response = requests.post(url, json=payload, timeout=_OLLAMA_TIMEOUT)
-        if response.status_code == 200:
-            return response.json().get("response", "").strip()
+        content = call_llm_chat(
+            prompt,
+            temperature=0.1,
+            max_tokens=50,
+            timeout=_LLM_TIMEOUT,
+            expect_json=False,
+            rate_limit_retries=_LLM_RATE_LIMIT_RETRIES,
+            retry_backoff_seconds=1,
+        )
+        return content.strip()
     except Exception:
-        # If Ollama is down or times out, return empty string to trigger fallback
-        pass
-    return ""
+        # If LLM is unavailable, unauthenticated, or rate-limited, use regex fallback.
+        return ""
 
 STOPWORDS = {
     "a", "an", "the", "and", "or", "but", "is", "are", "was", "were",

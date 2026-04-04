@@ -1,7 +1,7 @@
 ﻿"""
 quiz_engine.py
 --------------
-LLM-backed MCQ generator using Ollama (Llama 3.2 3B).
+LLM-backed MCQ generator using a provider-agnostic LLM client.
 
 Five question types per quiz:
   Q1  Conceptual     â€“ understanding a core concept from the competency
@@ -16,50 +16,41 @@ Determinism is enforced by the persistent JSON cache (generate-once).
 from __future__ import annotations
 
 import json
-import os
 import re
 from typing import Any
 
-import requests
+try:
+    from pipelines.llm_client import call_llm_chat
+except ModuleNotFoundError:  # pragma: no cover - package import path
+    from ..llm_client import call_llm_chat
 
 # ---------------------------------------------------------------------------
-# Ollama configuration
+# LLM call wrapper
 # ---------------------------------------------------------------------------
 
-_OLLAMA_MODEL = "llama3.2:3b"
-_OLLAMA_TIMEOUT = 120  # seconds â€” 3B model is slow on CPU
+_LLM_TIMEOUT = 120  # seconds
+_LLM_RATE_LIMIT_RETRIES = 2
+_LLM_RETRY_BACKOFF_SECONDS = 1
 
 
-def _ollama_host() -> str:
-    return os.getenv("OLLAMA_HOST", "http://ollama:11434")
-
-
-def _call_ollama(prompt: str) -> dict[str, Any]:
+def _call_llm_json(prompt: str) -> dict[str, Any]:
     """
-    POST to Ollama generate endpoint with JSON format enforced.
+    Calls configured LLM provider and parses JSON output.
     Returns the parsed response dict.
     Raises RuntimeError on connectivity or parse failures.
     
     Note: No fixed seed is used, allowing different outputs on subsequent calls.
     The JSON cache in quiz_store.py ensures determinism on first generation.
     """
-    url = f"{_ollama_host()}/api/generate"
-    payload = {
-        "model": _OLLAMA_MODEL,
-        "prompt": prompt,
-        "stream": False,
-        "format": "json",
-        "options": {
-            "temperature": 0.7,  # Allow some randomness for diverse questions
-            "num_predict": 250,  # Optimized for faster generation without quality loss
-        },
-    }
-    try:
-        resp = requests.post(url, json=payload, timeout=_OLLAMA_TIMEOUT)
-        resp.raise_for_status()
-        raw = resp.json().get("response", "")
-    except requests.RequestException as exc:
-        raise RuntimeError(f"Ollama request failed: {exc}") from exc
+    raw = call_llm_chat(
+        prompt,
+        temperature=0.7,
+        max_tokens=500,
+        timeout=_LLM_TIMEOUT,
+        expect_json=True,
+        rate_limit_retries=_LLM_RATE_LIMIT_RETRIES,
+        retry_backoff_seconds=_LLM_RETRY_BACKOFF_SECONDS,
+    )
 
     # Strip markdown code fences the model sometimes adds
     raw = re.sub(r"^```(?:json)?\s*", "", raw.strip())
@@ -75,7 +66,7 @@ def _call_ollama(prompt: str) -> dict[str, Any]:
                 return json.loads(m.group(0))
             except json.JSONDecodeError:
                 pass
-        raise RuntimeError(f"Could not parse Ollama JSON: {raw[:300]}")
+        raise RuntimeError(f"Could not parse LLM JSON: {raw[:300]}")
 
 
 def _validate_mcq(data: dict[str, Any]) -> dict[str, Any]:
@@ -232,14 +223,14 @@ def _build_question(
     retries: int = 2,
 ) -> dict[str, Any]:
     """
-    Call Ollama, validate the response, return the question dict.
+    Call Groq, validate the response, return the question dict.
     Retries up to `retries` times before raising.
     """
     last_exc: Exception = RuntimeError("unknown error")
 
     for attempt in range(retries):
         try:
-            raw = _call_ollama(prompt_fn(ctx))
+            raw = _call_llm_json(prompt_fn(ctx))
             validated = _validate_mcq(raw)
             return {
                 "question_number": q_num,
@@ -263,7 +254,7 @@ def _build_question(
 
 def generate_quiz(ctx: dict[str, Any]) -> list[dict[str, Any]]:
     """
-    Generate exactly 5 MCQ questions using Ollama (Llama 3.2 3B).
+    Generate exactly 5 MCQ questions using Groq.
     Returns a list — all 5 questions are generated before returning.
     Useful for serving from cache.
     """
@@ -273,7 +264,7 @@ def generate_quiz(ctx: dict[str, Any]) -> list[dict[str, Any]]:
 def generate_quiz_stream(ctx: dict[str, Any], question_types: list[str] | None = None, num_questions: int = 5):
     """
     Generator version of generate_quiz.
-    Yields each question dict as soon as Ollama returns it.
+    Yields each question dict as soon as Groq returns it.
     Use this for streaming responses so the browser doesn't time out.
     
     Args:

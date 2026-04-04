@@ -386,7 +386,7 @@ def create_app():
     def generate_quiz_stream_route():
         """
         Streaming (NDJSON) version of /generate_quiz.
-        Yields one JSON object per line as Ollama generates each question.
+        Yields one JSON object per line as Groq generates each question.
         Event shapes:
           {"type":"context", "quiz_key":str, ...context fields}
           {"type":"question", "question_number":int, ...question fields}

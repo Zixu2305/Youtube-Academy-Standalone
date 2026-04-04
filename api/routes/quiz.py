@@ -121,7 +121,7 @@ def generate_quiz(payload: QuizGenerateRequest) -> dict:
       - If it has < 5 questions, generate additional questions to reach 5 total,
         save them to MongoDB, and return the combined set.
     
-    If not found in MongoDB, generate 5 fresh questions using Ollama, save to MongoDB,
+    If not found in MongoDB, generate 5 fresh questions using Groq, save to MongoDB,
     and return them.
     
     Ensures minimum of 5 questions are always returned.
@@ -218,7 +218,7 @@ def generate_quiz(payload: QuizGenerateRequest) -> dict:
         if proficiency_description:
             ctx["proficiency_description"] = proficiency_description
         
-        # Generate 5 questions using Ollama
+        # Generate 5 questions using Groq
         questions = list(generate_quiz_stream(ctx, num_questions=5))
         
         # Determine item_type based on quiz_mode
@@ -268,10 +268,16 @@ def generate_quiz(payload: QuizGenerateRequest) -> dict:
             ]
         }
     except Exception as exc:
+        err_text = str(exc).lower()
+        if "rate limit" in err_text or "429" in err_text:
+            raise HTTPException(
+                status_code=429,
+                detail="Quiz generation is temporarily rate-limited by the configured LLM provider. Please retry in a few seconds.",
+            ) from exc
         raise HTTPException(
             status_code=500,
             detail=f"Failed to generate quiz: {str(exc)}. "
-                   f"Ensure Ollama and MySQL are running.",
+                   f"Ensure LLM provider/model/API key and MySQL are configured.",
         ) from exc
 
 

@@ -122,7 +122,7 @@ def stream_quiz(
       {"type": "done",     "quiz_key":str}        ← final event
       {"type": "error",    "message": str}          ← only on failure
 
-    Generates fresh questions using Ollama LLM.
+    Generates fresh questions using Groq LLM.
     """
     if question_types is None:
         question_types = ["Conceptual", "Application", "Scenario-Based", "Technical", "Evaluation"]
@@ -132,7 +132,7 @@ def stream_quiz(
         sector, skill, competency, proficiency_level, proficiency_description
     )
 
-    # Generate fresh questions via Ollama, stream each question
+    # Generate fresh questions via Groq, stream each question
     try:
         ctx = fetch_quiz_context(sector, skill, competency, proficiency_level, quiz_mode)
         if proficiency_description:

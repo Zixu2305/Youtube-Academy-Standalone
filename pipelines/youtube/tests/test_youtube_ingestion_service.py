@@ -179,7 +179,7 @@ class YoutubeIngestionServiceTests(unittest.TestCase):
     def test_run_ingestion_with_additional_query(self, mock_request_json):
         def _side_effect(url, params):
             if "search" in url:
-                # With new Ollama logic, fallback query is different:
+                # With new LLM logic, fallback query is different:
                 # {skill} {keywordize(comp)} {base_terms} {negatives} {additional}
                 # since comp is empty, it becomes: "Skill A  (tutorial|...)" with an extra space or just cleaned by filter(None)
                 

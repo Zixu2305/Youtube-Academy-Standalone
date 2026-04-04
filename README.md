@@ -14,11 +14,11 @@ Implemented now:
 1. SkillsFuture relational pipeline into MySQL from Excel sources.
 2. Mapping table population (`map_sf_to_cat_skill`) + reconciliation reports in `out/`.
 3. YouTube ingestion UI/backend with preview/upsert, Mongo browser, and soft-delete tools.
-4. Ollama-assisted query enhancement during YouTube ingestion.
+4. Groq-assisted query enhancement during YouTube ingestion.
 5. Quiz generation flow (admin UI at `/quiz_gen` + APIs) with MongoDB storage.
    - Hierarchical filtering: sector → skill → proficiency level → competency.
    - Five quiz modes: competency, knowledge, ability, proficiency, skill.
-   - Ollama-assisted question generation (llama3.2).
+  - Groq-assisted question generation.
    - Button state management (generate → store → reset).
 6. Learner quiz taking interface (FastAPI academy portal at `/academy`).
    - Interactive quiz taking with question navigation.
@@ -62,7 +62,7 @@ This repo currently has two separate app surfaces:
 ## Prerequisites
 
 - Docker + Docker Compose
-- Ollama runtime (Docker service is included in `docker-compose.yml`; local install is optional if running Python directly)
+- LLM API key (Groq or OpenAI; used for quiz generation and query keyword enhancement)
 - Excel files in `data/raw/`:
   - `Unique Skills List.xlsx`
   - `SkillsFuture Skills Framework Dataset.xlsx`
@@ -72,7 +72,7 @@ This repo currently has two separate app surfaces:
 Optional local runtime:
 
 - Python 3.10+
-- Ollama CLI/runtime (for local quiz/query features)
+- LLM config in `.env` (`LLM_PROVIDER`, `LLM_MODEL`, `LLM_API_KEY`)
 
 ## Shared Setup (Required Before Any Workflow)
 
@@ -82,6 +82,7 @@ Optional local runtime:
 cp .env.example .env
 # edit ports/passwords if needed
 # set YOUTUBE_API_KEY if you want YouTube preview/ingest from the console or learner portal
+# set LLM_PROVIDER / LLM_MODEL / LLM_API_KEY for quiz generation + query keyword enhancement
 ```
 
 ### 2) Start core services
@@ -90,13 +91,20 @@ cp .env.example .env
 docker compose up -d mysql mongodb adminer
 ```
 
-### 2b) Start Ollama services (required for quiz + query features)
+### 2b) Configure LLM provider, model, and API key (required for quiz + query features)
 
-```bash
-docker compose up -d ollama ollama-init
+Set these in `.env`:
+
+```env
+LLM_PROVIDER=groq
+LLM_MODEL=llama-3.1-8b-instant
+LLM_API_KEY=<your_key>
+
+# Alternative OpenAI setup:
+# LLM_PROVIDER=openai
+# LLM_MODEL=gpt-4o-mini
+# LLM_API_KEY=<your_openai_key>
 ```
-
-`ollama-init` pulls `llama3.2:3b` once and then exits.
 
 Adminer:
 
@@ -151,7 +159,7 @@ Use this when you want to run both internal ingestion/admin tools and the learne
 cp .env.example .env
 
 # 2) start core infra
-docker compose up -d mysql mongodb adminer ollama ollama-init qdrant
+docker compose up -d mysql mongodb adminer qdrant
 
 # 3) seed SkillsFuture data
 mkdir -p out
@@ -182,7 +190,7 @@ Use this when you want to fetch YouTube video metadata/comments, generate quizze
 Option A (Docker):
 
 ```bash
-docker compose up -d ollama ollama-init seed_youtube
+docker compose up -d seed_youtube
 ```
 
 Open `http://localhost:5001`.
@@ -191,13 +199,9 @@ Option B (Local):
 
 ```bash
 pip install -r requirements/youtube.txt
-ollama pull llama3.2:3b
-# start Ollama daemon if not already running (separate terminal):
-# ollama serve
-# if running all components locally:
-export OLLAMA_HOST=http://127.0.0.1:11434
-# if app is local but Ollama is in Docker:
-# export OLLAMA_HOST=http://localhost:11434
+# ensure LLM_PROVIDER / LLM_MODEL / LLM_API_KEY are set in your environment or .env
+# optional: override model
+# export LLM_MODEL=llama-3.1-8b-instant
 python pipelines/youtube/Youtube_API_Ingestion_Prototype_GUI.py
 ```
 
@@ -207,7 +211,7 @@ Open `http://localhost:5000`.
 
 - Reads sectors/skills from MySQL mapping data.
 - Calls YouTube Data API v3 for videos/comments.
-- Uses Ollama to enrich query generation (sector/skill/competency/requirement aware).
+- Uses Groq to enrich query generation (sector/skill/competency/requirement aware).
 - Upserts documents into MongoDB (`videos`, `ingestion_runs`).
 - Embeds touched video-skill documents into Qdrant after successful upsert.
 - Provides Mongo browser and soft-delete tools at `/mongo_browser` and `/delete`.
@@ -227,7 +231,7 @@ Access the admin quiz interface at `http://localhost:5001/quiz_gen`.
    - **Ability Mode**: Filter by sector → skill → proficiency (excludes competency; returns all ability questions at that level)
    - **Proficiency Mode**: Filter by sector → skill → proficiency (includes both knowledge and ability)
    - **Skill Mode**: Filter by sector → skill only (returns all questions for that skill across all proficiency levels)
-6. Click **Generate Quiz** → Ollama generates 5 questions using llama3.2
+6. Click **Generate Quiz** → Groq generates 5 questions
 7. Review generated questions
 8. Click **Store Quiz in MongoDB** → Button shows "✓ Stored" (disabled) on success
 
@@ -436,16 +440,23 @@ Versioning notes:
 
 - `docs/vector_index_versioning.md`
 
-## Ollama Notes (Quiz + Query Features)
+## LLM Provider Notes (Quiz + Query Features)
 
-Ollama setup is already covered in **Shared Setup → 2b**.  
+LLM setup is already covered in **Shared Setup → 2b**.  
+Groq rate limits reference: https://console.groq.com/docs/rate-limits
+OpenAI rate limits reference: https://developers.openai.com/api/docs/guides/rate-limits
 Quick check:
 
 ```bash
-curl http://localhost:11434/api/tags
+python - <<'PY'
+import os
+print('LLM_PROVIDER:', os.getenv('LLM_PROVIDER', 'groq'))
+print('LLM_MODEL:', os.getenv('LLM_MODEL', '(provider default)'))
+print('LLM_API_KEY set:', bool(os.getenv('LLM_API_KEY')))
+PY
 ```
 
-You should see `llama3.2:3b`.
+`LLM_API_KEY set: True` means credentials are available to the process.
 
 ## Outputs
 
@@ -496,8 +507,10 @@ FastAPI docs not reachable:
 
 Quiz generation or query enhancement fails:
 
-- Confirm Ollama is running and reachable at `OLLAMA_HOST`.
-- Confirm model `llama3.2:3b` is available (`curl http://localhost:11434/api/tags`).
+- Confirm `LLM_PROVIDER` is `groq` or `openai`.
+- Confirm `LLM_API_KEY` is set and non-empty.
+- Confirm `LLM_MODEL` is valid for the selected provider.
+- Confirm outbound internet access to provider API endpoint.
 
 Quiz not found when taking ("Quiz not found, please contact admin"):
 
@@ -545,7 +558,7 @@ Embedding model/dimension mismatch:
 │   └── youtube/
 ├── pipelines/
 │   ├── quiz_gen/
-│   │   ├── quiz_engine.py (Ollama-based question generation)
+│   │   ├── quiz_engine.py (Groq-based question generation)
 │   │   ├── quiz_mongo.py (hierarchical MongoDB retrieval)
 │   │   ├── quiz_store.py (quiz persistence)
 │   │   └── quiz_data_access.py (MongoDB CRUD)
