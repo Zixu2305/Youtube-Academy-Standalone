@@ -1255,6 +1255,13 @@ function App() {
   return html`
     <main className="academy-shell">
       <header className="hero">
+        <div className="hero-brand">
+          <img
+            className="hero-logo"
+            src="/academy/static/Blue Elephants Logo.png"
+            alt="Blue Elephants Solutions logo"
+          />
+        </div>
         <p className="eyebrow">Learner Catalog Prototype</p>
         <h1>Skill Atlas and Guided Video Discovery</h1>
         <p className="hero-copy">
@@ -1982,6 +1989,16 @@ function App() {
             </div>
           `
         : null}
+
+      <footer className="site-footer" aria-label="Site disclaimer">
+        <p className="site-footer-copy">
+          © 2026 Blue Elephants Solutions Pte. Ltd. For questions, please contact:${" "}
+          <a href="mailto:contact@blue-elephants-solutions.com">contact@blue-elephants-solutions.com</a>.
+        </p>
+        <p className="site-footer-note">
+          This prototype is for demonstration purposes only and shall be used at your own risk.
+        </p>
+      </footer>
     </main>
   `;
 }
