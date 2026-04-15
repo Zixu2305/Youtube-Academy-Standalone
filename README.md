@@ -7,6 +7,22 @@ Standalone repo for four connected components:
 3. Vector indexing pipelines (Qdrant + BGE embeddings) for SkillsFuture and YouTube.
 4. FastAPI endpoints for search/recommend/quiz APIs and the learner-facing academy portal.
 
+## New Developer Start Here
+
+If you are onboarding to the repo for the first time, follow this order:
+
+1. Read this README first for the runtime picture and startup flow.
+2. Read `docs/api_layers_integration_guide.md` for system boundaries and API ownership.
+3. Read `docs/api_reference.md` for request and response contracts.
+4. Start the shared services, seed SkillsFuture, then run either the ingestion app or FastAPI depending on the feature you want to work on.
+
+Suggested working path by area:
+
+- Ingestion and quiz admin work: `api/main.py`, `api/routes/*`, `pipelines/youtube/*`, `pipelines/quiz_gen/*`
+- Search and recommendation work: `api/routes/search_videos.py`, `api/routes/search_skills.py`, `api/routes/recommend.py`, `pipelines/youtube/youtube_vector_index.py`
+- Learner portal work: `api/frontend/academy/`, `api/main.py`
+- Data and schema work: `db/init/001_schema.sql`, `pipelines/skillsfuture/*`, `scripts/embed_sf_skill_levels.py`
+
 ## Current Status (What Is Done vs Next)
 
 Implemented now:
@@ -45,6 +61,35 @@ Implemented now:
 Reference docs:
 
 - `docs/youtube_embedding_pipeline.md`
+
+## Documentation Index (Integration Handoff)
+
+Use these documents as the primary package for cross-team API integration:
+
+- `docs/api_layers_integration_guide.md` - system boundaries, API layers, and integration strategy.
+- `docs/api_reference.md` - endpoint-by-endpoint contract reference with request/response examples.
+- `docs/rec.md` - recommendation engine retrieval/reranking internals.
+- `docs/youtube_embedding_pipeline.md` - ingestion to embedding/indexing flow.
+- `docs/vector_index_versioning.md` - vector collection naming/versioning and rollback process.
+
+If the external team does not have codebase access, start with:
+
+1. `docs/api_layers_integration_guide.md`
+2. `docs/api_reference.md`
+
+## Repo Map
+
+This is the quickest way to find the main entry points:
+
+- `api/main.py` - FastAPI application entrypoint and route mounting
+- `api/routes/` - FastAPI route handlers for search, recommend, quiz, and learner APIs
+- `api/frontend/academy/` - learner-facing static UI served by FastAPI
+- `pipelines/youtube/` - YouTube ingestion, storage, and vector indexing logic
+- `pipelines/quiz_gen/` - quiz generation, storage, and MongoDB helpers
+- `pipelines/skillsfuture/` - SkillsFuture seeding and mapping scripts
+- `qdrant/create_collections.py` - Qdrant collection setup
+- `scripts/` - one-off embedding and validation helpers
+- `db/init/001_schema.sql` - MySQL schema definition
 
 ## Service Surfaces (Important)
 
@@ -180,6 +225,23 @@ uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 New videos ingested from the console or learner portal are embedded into Qdrant automatically after upsert. `scripts/embed_yt_videos.py` remains useful for backfills or full rebuilds.
+
+## Troubleshooting
+
+If startup fails, check these first:
+
+- `.env` exists and contains `LLM_PROVIDER`, `LLM_MODEL`, `LLM_API_KEY`, and `YOUTUBE_API_KEY` when needed
+- MySQL, MongoDB, adminer, and Qdrant are running before you start the app
+- the Excel source files are present in `data/raw/`
+- `python qdrant/create_collections.py` has been run before vector search or recommend flows
+- `scripts/embed_sf_skill_levels.py` has been run before trying SkillsFuture search or recommendation
+- the FastAPI app is running on the expected port before opening `/docs` or `/academy`
+
+Common symptoms:
+
+- empty recommendation results usually mean Qdrant collections or embeddings are missing
+- quiz generation failures usually mean the LLM provider or API key is not configured
+- preview and ingest failures usually mean the YouTube API key is missing or quota is exhausted
 
 ## Workflow A: YouTube Ingestion (Implemented)
 
@@ -535,7 +597,11 @@ Embedding model/dimension mismatch:
 
 ```text
 .
+├── README.md
+├── docker-compose.yml
 ├── api/
+│   ├── __init__.py
+│   ├── Dockerfile
 │   ├── frontend/
 │   │   └── academy/
 │   │       ├── index.html
@@ -545,26 +611,53 @@ Embedding model/dimension mismatch:
 │   ├── main.py
 │   └── routes/
 │       ├── learner_portal.py
+│       ├── quiz.py
+│       ├── recommend.py
 │       ├── search_skills.py
 │       ├── search_videos.py
-│       ├── recommend.py
-│       └── quiz.py
-├── db/init/001_schema.sql
-├── docker-compose.yml
-├── docs/vector_index_versioning.md
-├── docs/youtube_embedding_pipeline.md
+├── data/
+│   └── raw/
+├── db/
+│   └── init/
+│       └── 001_schema.sql
+├── docs/
+│   ├── api_layers_integration_guide.md
+│   ├── api_reference.md
+│   ├── rec.md
+│   ├── vector_index_versioning.md
+│   └── youtube_embedding_pipeline.md
 ├── etl/
 │   ├── skillsfuture/
+│   │   └── Dockerfile
 │   └── youtube/
+│       └── Dockerfile
 ├── pipelines/
+│   ├── __init__.py
+│   ├── llm_client.py
 │   ├── quiz_gen/
-│   │   ├── quiz_engine.py (Groq-based question generation)
-│   │   ├── quiz_mongo.py (hierarchical MongoDB retrieval)
-│   │   ├── quiz_store.py (quiz persistence)
-│   │   └── quiz_data_access.py (MongoDB CRUD)
+│   │   ├── __init__.py
+│   │   ├── quiz_data_access.py
+│   │   ├── quiz_engine.py
+│   │   ├── quiz_mongo.py
+│   │   ├── quiz_store.py
+│   │   └── data/
+│   │       └── quiz_cache.json
 │   ├── skillsfuture/
-│   ├── youtube/
-├── qdrant/create_collections.py
+│   │   ├── seed_mapping.py
+│   │   ├── seed_skillsfuture.py
+│   │   └── seed_unique_skills.py
+│   └── youtube/
+│       ├── Youtube_API_Ingestion_Prototype_GUI.py
+│       ├── youtube_config.py
+│       ├── youtube_data_access.py
+│       ├── youtube_ingestion_service.py
+│       ├── youtube_vector_index.py
+│       ├── youtube_web_app.py
+│       ├── static/
+│       ├── templates/
+│       └── tests/
+├── qdrant/
+│   └── create_collections.py
 ├── requirements/
 │   ├── dev.txt
 │   ├── skillsfuture.txt
@@ -574,8 +667,7 @@ Embedding model/dimension mismatch:
 │   ├── embed_sf_skill_levels.py
 │   ├── embed_yt_videos.py
 │   ├── mysql.sh
-│   ├── batch_ingest_yt.py
 │   └── smoke_test_qdrant_skills.py
-├── sql/get_sf_skill_level_docs.sql
-└── README.md
+├── sql/
+│   └── get_sf_skill_level_docs.sql
 ```
