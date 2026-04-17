@@ -8,14 +8,20 @@ Intended audience:
 
 Not intended as the main developer onboarding guide for the repo. For local setup and workflow entry points, start with `README.md`.
 
-Primary scenario:
-- The recommendation system is hosted and operated by this project team.
-- Partner platform team may not have codebase access.
-- Integration is API-first and contract-driven.
+Purpose of this guide:
+- define system boundaries, integration responsibilities, and API usage patterns for cross-team collaboration
+- provide architecture-level guidance when a partner team does not have repository access
+- reference endpoint-level API contracts in `docs/api_reference.md`
+
+Integration assumptions:
+- This project team hosts and operates the recommendation system.
+- The partner platform team may not have access to this repository.
+- Integration is currently done through HTTP APIs and shared API documentation.
+- Explicit API versioning is a recommended next step for production collaboration.
 
 ## 1. Integration Objective
 
-Expose recommendation capabilities as stable HTTP APIs so another platform can:
+Expose recommendation capabilities as stable HTTP APIs so another platform can implement the minimum integration surface:
 - discover sectors and skills
 - obtain mapped proficiency and competency context
 - retrieve personalized recommendations
@@ -28,11 +34,13 @@ Primary architecture diagram:
 
 ![System architecture](sys_architecture.png)
 
+Note: this diagram is the primary conceptual view. Use `docs/api_reference.md` as the authoritative endpoint-level contract.
+
 ## 3. API Layer Responsibilities
 
 Quick boundary summary:
 - `/api/public/*` is the preferred integration surface for partners and frontend clients
-- `/api/search/*`, `/api/recommend/*`, and `/api/quiz/*` are engine-level APIs for internal use and diagnostics
+- `/api/search/*`, `/api/recommend/*`, and `/api/quiz/*` are engine-level APIs that are available but less integration-stable than the public surface
 - `/academy` is the learner demo page, not a platform integration surface
 
 ### 3.1 Public Layer (`/api/public/*`)
@@ -62,6 +70,7 @@ Characteristics:
 Recommended for:
 - internal team and advanced integration users
 - model/retrieval QA pipelines
+- external teams only when they need lower-level engine behavior not exposed in `/api/public/*`
 
 ### 3.3 Page Layer (`/academy`)
 Purpose:
@@ -94,7 +103,11 @@ Recommended for:
   - constrained by daily quota
 
 - LLM Provider (Groq/OpenAI):
-  - used in quiz generation and some enrichment paths
+  - used in quiz generation and ingestion query-enhancement paths
+
+- Hugging Face model artifacts (embedding and reranker):
+  - required for semantic embedding and cross-encoder reranking models
+  - can be loaded from local cache or downloaded when network access is available
 
 ## 5. End-to-End Request Paths
 
@@ -102,7 +115,7 @@ Recommended for:
 1. Partner calls `POST /api/public/recommend/videos`
 2. API builds query context from skill/proficiency/competency
 3. Retrieval stage executes semantic + BM25 + RRF + metadata boosts
-4. Cross-encoder reranks candidate set
+4. Cross-encoder reranks candidate set (embedding/reranker model path)
 5. Vote-aware adjustment is applied
 6. Top K results returned with metadata
 
@@ -113,25 +126,25 @@ Recommended for:
 
 ### 5.3 Optional content curation path
 1. `POST /api/public/videos/preview`
-2. user selects approved videos
+2. User selects approved videos
 3. `POST /api/public/videos/ingest`
-4. videos are upserted and indexed for retrieval
+4. Videos are upserted and indexed for retrieval
 
 ## 6. Integration Without Partner Codebase Access
 
 Use a contract-first collaboration model:
 
 1. API contract package:
-- share OpenAPI from `/docs`
+- share OpenAPI from `/docs` (when the FastAPI service is running)
 - share `docs/api_reference.md`
-- version endpoint and schema changes
+- track endpoint and schema changes in a changelog
 
 2. Shared test collection:
 - provide curl/Postman collection for public endpoints
 - include happy-path and error-path examples
 
 3. Environment handoff:
-- provide base URL, auth method, and SLA expectations
+- provide base URL, auth method (if enforced via gateway), and SLA expectations
 - provide staging and production endpoint matrix
 
 4. Change management:
@@ -174,18 +187,19 @@ For cross-team production integration, place APIs behind a gateway with:
 - MongoDB
 - Qdrant
 - FastAPI app
-- optional: ingestion Flask app for curation workflow
+- optional: ingestion Flask app for manual admin operations (not required for public preview/ingest APIs)
 
 ### 9.2 Key environment variables
 - database: `DB_*`, `MYSQL_*`, `MONGO_*`
 - vector store: `QDRANT_*`, `EMBEDDING_*`
+- reranking: `RERANKER_MODEL_NAME`, `PORTAL_RERANK_TOP_N`
 - YouTube: `YOUTUBE_API_KEY`, quota settings
 - LLM: `LLM_PROVIDER`, `LLM_MODEL`, `LLM_API_KEY`
 
 ### 9.3 Health validation checklist
 1. FastAPI starts and `/docs` loads
-2. `GET /api/public/sectors` returns non-empty list
-3. `POST /api/public/recommend/videos` returns results for known skill
+2. `GET /api/public/sectors` returns non-empty list (after SkillsFuture seed)
+3. `POST /api/public/recommend/videos` returns results for a known skill (after vector indexes are built)
 4. vote endpoints can increment and fetch counters
 5. optional: preview/ingest flow succeeds with valid YouTube API key
 
@@ -194,7 +208,7 @@ For cross-team production integration, place APIs behind a gateway with:
 - If public discovery calls fail, confirm MySQL and the SkillsFuture seed are loaded
 - If recommendation calls fail, confirm Qdrant is running and collections were created
 - If preview or ingest fails, confirm the YouTube API key and quota state
-- If quiz generation fails, confirm the LLM configuration and MongoDB connectivity
+- If quiz generation fails, confirm the LLM configuration, MySQL connectivity, and MongoDB connectivity
 
 ## 10. API Versioning Guidance
 
@@ -208,7 +222,7 @@ Recommended next step for production collaboration:
 Before partner implementation starts:
 1. Share API docs and OpenAPI export
 2. Confirm endpoint ownership and support contacts
-3. Provide test dataset and deterministic test cases
+3. Provide representative test fixtures and expected result ranges (avoid strict deterministic assertions for ranking/LLM outputs)
 4. Align on error handling and retry semantics
 5. Finalize release cadence and schema change process
 

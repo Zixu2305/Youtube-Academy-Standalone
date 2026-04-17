@@ -22,7 +22,8 @@ Service scope:
 ## Common Behaviors
 
 - Content type for POST requests: `application/json`
-- Empty or invalid required input generally returns `400`
+- Empty input in manually validated handlers generally returns `400`
+- Schema validation errors for request body/query params are returned by FastAPI as `422`
 - Missing resource generally returns `404`
 - Backend dependency failure (Qdrant/MySQL/Mongo/LLM) generally returns `500` or `503`
 - LLM rate limiting in quiz generation returns `429`
@@ -242,7 +243,11 @@ Key failures:
 ---
 
 ### POST `/api/quiz/generate`
-Generates (or fetches cached) 5 quiz questions for a selected path and mode.
+Generates (or fetches cached) quiz questions for a selected path and mode.
+
+Behavior notes:
+- Target behavior is to return 5 questions.
+- If a cached quiz exists with fewer than 5 questions and backfill generation fails, the endpoint may return fewer than 5 so existing content is still available.
 
 Request body:
 ```json
@@ -491,6 +496,7 @@ Response shape:
 Key failures:
 - `503` when YouTube API key is not configured
 - `429` when quota is exceeded and no results can be returned
+- `200` with `quota_exceeded=true` when partial results are still available
 
 ---
 
@@ -606,7 +612,7 @@ Request body:
 Rules:
 - `1` upvote
 - `-1` downvote
-- `0` no-op/remove intent from client side semantics
+- `0` no-op (net vote change is zero)
 
 Response:
 ```json
