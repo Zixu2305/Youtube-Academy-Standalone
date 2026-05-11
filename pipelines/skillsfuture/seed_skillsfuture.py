@@ -9,6 +9,7 @@ XLSX_PATH = "data/raw/SkillsFuture Skills Framework Dataset.xlsx"
 SOURCE_FILE = os.path.basename(XLSX_PATH)
 
 S_JOB_DESC = "Job Role_Description"
+S_JOB_CWF = "Job Role_CWF_KT"
 S_JOB_SKILL = "Job Role_TCS_CCS"
 S_KEY = "TSC_CCS_Key"
 S_RETIRED = "TSC_CCS_Key_Retired"
@@ -50,11 +51,86 @@ def fetch_map(cur, sql, key_cols):
         m[key] = row
     return m
 
+
+def clean_text(value) -> str | None:
+    if pd.isna(value):
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def column_exists(cur, table_name: str, column_name: str) -> bool:
+    cur.execute(
+        """
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = DATABASE()
+          AND table_name = %s
+          AND column_name = %s
+        LIMIT 1;
+        """,
+        (table_name, column_name),
+    )
+    return cur.fetchone() is not None
+
+
+def ensure_job_role_lookup_schema(cur) -> None:
+    """Backfill schema changes for existing MySQL volumes before seeding."""
+    if not column_exists(cur, "sf_job_role", "performance_expectation"):
+        cur.execute(
+            """
+            ALTER TABLE sf_job_role
+            ADD COLUMN performance_expectation TEXT NULL
+            AFTER role_description;
+            """
+        )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sf_role_work_function (
+          work_function_id   BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+          job_role_id        BIGINT UNSIGNED NOT NULL,
+          work_function_name VARCHAR(512)     NOT NULL,
+          source_file        VARCHAR(128)     NULL,
+          source_sheet       VARCHAR(128)     NULL,
+          source_row         INT              NULL,
+          ingested_at        DATETIME         NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY (work_function_id),
+          UNIQUE KEY uk_sf_role_work_function (job_role_id, work_function_name),
+          KEY idx_sf_role_work_function_role (job_role_id),
+          CONSTRAINT fk_sf_role_work_function_role
+            FOREIGN KEY (job_role_id) REFERENCES sf_job_role(job_role_id)
+            ON UPDATE CASCADE ON DELETE RESTRICT
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sf_role_key_task (
+          key_task_id        BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+          work_function_id   BIGINT UNSIGNED NOT NULL,
+          key_task_text      TEXT             NOT NULL,
+          source_file        VARCHAR(128)     NULL,
+          source_sheet       VARCHAR(128)     NULL,
+          source_row         INT              NULL,
+          ingested_at        DATETIME         NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY (key_task_id),
+          UNIQUE KEY uk_sf_role_key_task (work_function_id, key_task_text(255)),
+          KEY idx_sf_role_key_task_work_function (work_function_id),
+          CONSTRAINT fk_sf_role_key_task_work_function
+            FOREIGN KEY (work_function_id) REFERENCES sf_role_work_function(work_function_id)
+            ON UPDATE CASCADE ON DELETE RESTRICT
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+        """
+    )
+
+
 def main():
     conn = get_conn()
     cur = conn.cursor(dictionary=True)
     missing = 0
     try:
+        ensure_job_role_lookup_schema(cur)
+
         # ---------- Load sectors / tracks / job roles ----------
         job_df = pd.read_excel(XLSX_PATH, sheet_name=S_JOB_DESC).dropna(subset=["Sector", "Track", "Job Role"])
         job_df["Sector"] = job_df["Sector"].astype(str).str.strip()
@@ -83,19 +159,115 @@ def main():
         track_id = {(r["sector_id"], r["track_name"]): r["track_id"] for r in cur.fetchall()}
 
         # job roles
-        roles = job_df[["Sector", "Track", "Job Role", "Job Role Description"]].drop_duplicates()
+        roles = job_df[
+            ["Sector", "Track", "Job Role", "Job Role Description", "Performance Expectation"]
+        ].drop_duplicates()
         role_rows = []
         for _, r in roles.iterrows():
             tid = track_id[(sector_id[r["Sector"]], r["Track"])]
-            role_rows.append((tid, r["Job Role"], r.get("Job Role Description")))
+            role_rows.append(
+                (
+                    tid,
+                    r["Job Role"],
+                    clean_text(r.get("Job Role Description")),
+                    clean_text(r.get("Performance Expectation")),
+                )
+            )
         cur.executemany(
-            """INSERT INTO sf_job_role (track_id, job_role_name, role_description)
-               VALUES (%s,%s,%s)
-               ON DUPLICATE KEY UPDATE role_description=VALUES(role_description);""",
+            """INSERT INTO sf_job_role (track_id, job_role_name, role_description, performance_expectation)
+               VALUES (%s,%s,%s,%s)
+               ON DUPLICATE KEY UPDATE
+                 role_description=VALUES(role_description),
+                 performance_expectation=VALUES(performance_expectation);""",
             role_rows,
         )
         cur.execute("SELECT job_role_id, track_id, job_role_name FROM sf_job_role;")
         job_role_id = {(r["track_id"], r["job_role_name"]): r["job_role_id"] for r in cur.fetchall()}
+
+        # ---------- Load critical work functions + key tasks ----------
+        cwf_df = pd.read_excel(XLSX_PATH, sheet_name=S_JOB_CWF).dropna(
+            subset=["Sector", "Track", "Job Role", "Critical Work Function"]
+        )
+        cwf_df["Sector"] = cwf_df["Sector"].astype(str).str.strip()
+        cwf_df["Track"] = cwf_df["Track"].astype(str).str.strip()
+        cwf_df["Job Role"] = cwf_df["Job Role"].astype(str).str.strip()
+        cwf_df["Critical Work Function"] = cwf_df["Critical Work Function"].astype(str).str.strip()
+
+        cur.execute(
+            "DELETE FROM sf_role_key_task WHERE source_file=%s AND source_sheet=%s;",
+            (SOURCE_FILE, S_JOB_CWF),
+        )
+        cur.execute(
+            "DELETE FROM sf_role_work_function WHERE source_file=%s AND source_sheet=%s;",
+            (SOURCE_FILE, S_JOB_CWF),
+        )
+
+        work_function_rows = []
+        work_functions = cwf_df[
+            ["Sector", "Track", "Job Role", "Critical Work Function"]
+        ].drop_duplicates()
+        for idx, r in work_functions.iterrows():
+            sid = sector_id.get(r["Sector"])
+            tid = track_id.get((sid, r["Track"])) if sid else None
+            jr = job_role_id.get((tid, r["Job Role"])) if tid else None
+            if not jr:
+                continue
+            work_function_rows.append(
+                (
+                    jr,
+                    r["Critical Work Function"],
+                    SOURCE_FILE,
+                    S_JOB_CWF,
+                    int(idx) + 2,
+                )
+            )
+
+        if work_function_rows:
+            cur.executemany(
+                """INSERT INTO sf_role_work_function
+                   (job_role_id, work_function_name, source_file, source_sheet, source_row)
+                   VALUES (%s,%s,%s,%s,%s);""",
+                work_function_rows,
+            )
+
+        cur.execute(
+            "SELECT work_function_id, job_role_id, work_function_name FROM sf_role_work_function;"
+        )
+        work_function_id = {
+            (r["job_role_id"], r["work_function_name"]): r["work_function_id"]
+            for r in cur.fetchall()
+        }
+
+        key_task_rows = []
+        for idx, r in cwf_df.iterrows():
+            sid = sector_id.get(r["Sector"])
+            tid = track_id.get((sid, r["Track"])) if sid else None
+            jr = job_role_id.get((tid, r["Job Role"])) if tid else None
+            if not jr:
+                continue
+            key_task_text = clean_text(r.get("Key Tasks"))
+            if not key_task_text:
+                continue
+            wf_id = work_function_id.get((jr, r["Critical Work Function"]))
+            if not wf_id:
+                continue
+            key_task_rows.append(
+                (
+                    wf_id,
+                    key_task_text,
+                    SOURCE_FILE,
+                    S_JOB_CWF,
+                    int(idx) + 2,
+                )
+            )
+
+        if key_task_rows:
+            cur.executemany(
+                """INSERT INTO sf_role_key_task
+                   (work_function_id, key_task_text, source_file, source_sheet, source_row)
+                   VALUES (%s,%s,%s,%s,%s);""",
+                key_task_rows,
+            )
 
         # ---------- Load sf_skill (TSC_CCS_Key + retired) ----------
         key_df = pd.read_excel(XLSX_PATH, sheet_name=S_KEY).dropna(subset=["TSC Code", "TSC_CCS Title"])
@@ -110,9 +282,9 @@ def main():
                 (
                     code,
                     str(r.get("TSC_CCS Title", "")).strip(),
-                    r.get("TSC_CCS Description"),
-                    r.get("TSC_CCS Category"),
-                    r.get("Sector"),
+                    clean_text(r.get("TSC_CCS Description")),
+                    clean_text(r.get("TSC_CCS Category")),
+                    clean_text(r.get("Sector")),
                     str(r.get("TSC_CCS Type", "")).strip().lower()
                     if pd.notna(r.get("TSC_CCS Type"))
                     else None,
@@ -166,7 +338,7 @@ def main():
                 (
                     code_to_id[code],
                     r["Proficiency Level"],
-                    r.get("Proficiency Description"),
+                    clean_text(r.get("Proficiency Description")),
                     SOURCE_FILE,
                     S_KA,
                     int(idx) + 2,
@@ -197,12 +369,15 @@ def main():
                 continue
             cls = r["Knowledge / Ability Classification"]
             item_type = "knowledge" if cls == "knowledge" else "ability"
+            item_text = clean_text(r.get("Knowledge / Ability Items"))
+            if not item_text:
+                continue
             item_rows.append(
                 (
                     code_to_id[code],
                     r["Proficiency Level"],
                     item_type,
-                    str(r["Knowledge / Ability Items"]).strip(),
+                    item_text,
                     SOURCE_FILE,
                     S_KA,
                     int(idx) + 2,

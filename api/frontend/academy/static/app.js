@@ -1278,6 +1278,11 @@ function App() {
             <span className="metric-value">${sectorMetrics.totalSkills}</span>
           </div>
         </div>
+        <div className="hero-actions">
+          <a className="utility-btn utility-btn-brand hero-link" href="/job-roles">
+            Open job role lookup
+          </a>
+        </div>
       </header>
 
       <section className="industry-stage">

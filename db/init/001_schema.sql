@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS sf_job_role (
   track_id         BIGINT UNSIGNED NOT NULL,
   job_role_name    VARCHAR(512)     NOT NULL,
   role_description TEXT             NULL,
+  performance_expectation TEXT      NULL,
 
   PRIMARY KEY (job_role_id),
   UNIQUE KEY uk_sf_job_role_track_role (track_id, job_role_name),
@@ -59,6 +60,46 @@ CREATE TABLE IF NOT EXISTS sf_job_role (
 
   CONSTRAINT fk_sf_job_role_track
     FOREIGN KEY (track_id) REFERENCES sf_track(track_id)
+    ON UPDATE CASCADE ON DELETE RESTRICT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE IF NOT EXISTS sf_role_work_function (
+  work_function_id   BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  job_role_id        BIGINT UNSIGNED NOT NULL,
+  work_function_name VARCHAR(512)     NOT NULL,
+
+  -- source trace
+  source_file        VARCHAR(128)     NULL,
+  source_sheet       VARCHAR(128)     NULL,
+  source_row         INT              NULL,
+  ingested_at        DATETIME         NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+  PRIMARY KEY (work_function_id),
+  UNIQUE KEY uk_sf_role_work_function (job_role_id, work_function_name),
+  KEY idx_sf_role_work_function_role (job_role_id),
+
+  CONSTRAINT fk_sf_role_work_function_role
+    FOREIGN KEY (job_role_id) REFERENCES sf_job_role(job_role_id)
+    ON UPDATE CASCADE ON DELETE RESTRICT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE IF NOT EXISTS sf_role_key_task (
+  key_task_id        BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  work_function_id   BIGINT UNSIGNED NOT NULL,
+  key_task_text      TEXT             NOT NULL,
+
+  -- source trace
+  source_file        VARCHAR(128)     NULL,
+  source_sheet       VARCHAR(128)     NULL,
+  source_row         INT              NULL,
+  ingested_at        DATETIME         NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+  PRIMARY KEY (key_task_id),
+  UNIQUE KEY uk_sf_role_key_task (work_function_id, key_task_text(255)),
+  KEY idx_sf_role_key_task_work_function (work_function_id),
+
+  CONSTRAINT fk_sf_role_key_task_work_function
+    FOREIGN KEY (work_function_id) REFERENCES sf_role_work_function(work_function_id)
     ON UPDATE CASCADE ON DELETE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 

@@ -12,6 +12,7 @@ Service scope:
 - Core retrieval APIs for skill search, video search, and recommendation
 - Quiz generation and retrieval APIs
 - Public learner APIs used by the `/academy` frontend
+- Public job role lookup APIs used by the `/academy/job-roles` frontend
 
 ## API Layer Map
 
@@ -35,8 +36,9 @@ If you just brought the service up and want a quick sanity check, run these in o
 1. `GET /api/public/sectors` - confirms MySQL-backed discovery data is available
 2. `GET /api/public/skills?sector=Infocomm` - confirms sector-scoped skill lookup works
 3. `GET /api/public/skill-map?sector=Infocomm&skill=Data%20Analysis` - confirms mapped proficiency data is available
-4. `POST /api/public/recommend/videos` - confirms retrieval and ranking are wired end to end
-5. `POST /api/search/skills` - confirms direct vector search against Qdrant is available
+4. `GET /api/public/job-roles?limit=5` - confirms job role lookup data is available
+5. `POST /api/public/recommend/videos` - confirms retrieval and ranking are wired end to end
+6. `POST /api/search/skills` - confirms direct vector search against Qdrant is available
 
 Example curl commands:
 
@@ -44,6 +46,7 @@ Example curl commands:
 curl http://localhost:8000/api/public/sectors
 curl "http://localhost:8000/api/public/skills?sector=Infocomm"
 curl "http://localhost:8000/api/public/skill-map?sector=Infocomm&skill=Data%20Analysis"
+curl "http://localhost:8000/api/public/job-roles?limit=5"
 curl -X POST http://localhost:8000/api/public/recommend/videos \
   -H "Content-Type: application/json" \
   -d '{"sector":"Infocomm","skill":"Data Analysis","proficiency_level":"2","competency":"knowledge: Understand data distributions","top_k":3,"strict_skill_match":true}'
@@ -442,6 +445,67 @@ Failures:
 
 ---
 
+### GET `/api/public/job-roles`
+Returns read-only SkillsFuture job role summaries for lookup.
+
+Query params:
+- `sector` (optional, exact match)
+- `track` (optional, exact match)
+- `q` (optional, max length 120)
+- `limit` (optional, default 2500, range 1-5000)
+
+Response item:
+```json
+{
+  "job_role_id": 101,
+  "sector": "Accountancy",
+  "track": "Assurance",
+  "job_role_name": "Audit Manager",
+  "skill_requirement_count": 24,
+  "critical_work_function_count": 4,
+  "has_skill_requirements": true
+}
+```
+
+---
+
+### GET `/api/public/job-roles/{job_role_id}`
+Returns job role description, performance expectation, critical work functions, key tasks, and linked TSC/CCS competency mappings.
+
+Response shape:
+```json
+{
+  "job_role_id": 101,
+  "sector": "Accountancy",
+  "track": "Assurance",
+  "job_role_name": "Audit Manager",
+  "role_description": "...",
+  "performance_expectation": "...",
+  "critical_work_functions": [
+    {
+      "name": "Perform assurance engagement activities",
+      "key_tasks": ["Gather evidence", "Review findings"]
+    }
+  ],
+  "skills": [
+    {
+      "skill_title": "Audit Frameworks",
+      "skill_type": "tsc",
+      "tsc_ccs_codes": ["ACC-AUD-4003-1.1"],
+      "proficiency_level": "4",
+      "proficiency_description": "...",
+      "knowledge_items": ["Relevant auditing standards"],
+      "ability_items": ["Review and assess audit findings"]
+    }
+  ]
+}
+```
+
+Failures:
+- `404` when the job role ID does not exist
+
+---
+
 ### POST `/api/public/videos/preview`
 Previews candidate videos from YouTube API before ingestion.
 
@@ -646,11 +710,13 @@ Response:
 
 ## 3) Learner Page Route
 
-### GET `/academy` and `/academy/`
-Serves learner portal frontend page.
+### GET `/academy`, `/academy/`, `/academy/job-roles`, and `/academy/job-roles/`
+Serves learner portal frontend pages.
 
 Notes:
 - Static assets are mounted at `/academy/static`
+- `/academy` is the existing skill-first learner flow
+- `/academy/job-roles` is the separate read-only job role lookup page
 - These page routes are not intended as data integration APIs
 
 ---

@@ -13,6 +13,10 @@ from pydantic import BaseModel, Field
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
 
+from api.routes.job_role_lookup_utils import (
+    build_job_role_skill_groups,
+    build_work_function_groups,
+)
 from api.routes.recommend import (
     get_cached_query_embedding,
     get_bm25_index,
@@ -256,6 +260,42 @@ class SkillMapResponse(BaseModel):
     skill: str
     count: int
     mappings: list[SkillProficiencyMap]
+
+
+class JobRoleSummary(BaseModel):
+    job_role_id: int
+    sector: str
+    track: str
+    job_role_name: str
+    skill_requirement_count: int
+    critical_work_function_count: int
+    has_skill_requirements: bool
+
+
+class JobRoleCriticalWorkFunction(BaseModel):
+    name: str
+    key_tasks: list[str]
+
+
+class JobRoleSkillDetail(BaseModel):
+    skill_title: str
+    skill_type: str
+    tsc_ccs_codes: list[str]
+    proficiency_level: str
+    proficiency_description: str
+    knowledge_items: list[str]
+    ability_items: list[str]
+
+
+class JobRoleDetailResponse(BaseModel):
+    job_role_id: int
+    sector: str
+    track: str
+    job_role_name: str
+    role_description: str
+    performance_expectation: str
+    critical_work_functions: list[JobRoleCriticalWorkFunction]
+    skills: list[JobRoleSkillDetail]
 
 
 class PublicRecommendRequest(BaseModel):
@@ -699,6 +739,7 @@ def get_cached_reranker_scores(
     return tuple(float(score) for score in scores)
 
 
+@page_router.get("/", include_in_schema=False)
 @page_router.get("/academy", include_in_schema=False)
 def academy_page() -> FileResponse:
     index_file = ACADEMY_FRONTEND_DIR / "index.html"
@@ -710,6 +751,21 @@ def academy_page() -> FileResponse:
 @page_router.get("/academy/", include_in_schema=False)
 def academy_page_with_trailing_slash() -> FileResponse:
     return academy_page()
+
+
+@page_router.get("/job-roles", include_in_schema=False)
+@page_router.get("/academy/job-roles", include_in_schema=False)
+def academy_job_roles_page() -> FileResponse:
+    index_file = ACADEMY_FRONTEND_DIR / "job_roles.html"
+    if not index_file.exists():
+        raise HTTPException(status_code=500, detail="Job role lookup page is not available.")
+    return FileResponse(index_file)
+
+
+@page_router.get("/job-roles/", include_in_schema=False)
+@page_router.get("/academy/job-roles/", include_in_schema=False)
+def academy_job_roles_page_with_trailing_slash() -> FileResponse:
+    return academy_job_roles_page()
 
 
 @api_router.get("/public/sectors", response_model=list[SectorSummary])
@@ -939,6 +995,185 @@ def get_skill_map(
         skill=skill.strip(),
         count=len(mappings),
         mappings=mappings,
+    )
+
+
+@api_router.get("/public/job-roles", response_model=list[JobRoleSummary])
+def list_job_roles(
+    sector: str | None = Query(default=None),
+    track: str | None = Query(default=None),
+    q: str = Query(default="", max_length=120),
+    limit: int = Query(default=2500, ge=1, le=5000),
+):
+    where_clauses: list[str] = []
+    params: list[object] = []
+
+    sector_value = (sector or "").strip()
+    if sector_value:
+        where_clauses.append("s.sector_name = %s")
+        params.append(sector_value)
+
+    track_value = (track or "").strip()
+    if track_value:
+        where_clauses.append("t.track_name = %s")
+        params.append(track_value)
+
+    query_value = q.strip()
+    if query_value:
+        like_value = f"%{query_value}%"
+        where_clauses.append(
+            "(jr.job_role_name LIKE %s OR t.track_name LIKE %s OR s.sector_name LIKE %s)"
+        )
+        params.extend([like_value, like_value, like_value])
+
+    where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+    sql = f"""
+    SELECT
+      jr.job_role_id,
+      s.sector_name AS sector,
+      t.track_name AS track,
+      jr.job_role_name,
+      COALESCE(req.skill_requirement_count, 0) AS skill_requirement_count,
+      COALESCE(wf.critical_work_function_count, 0) AS critical_work_function_count
+    FROM sf_job_role jr
+    JOIN sf_track t
+      ON t.track_id = jr.track_id
+    JOIN sf_sector s
+      ON s.sector_id = t.sector_id
+    LEFT JOIN (
+      SELECT
+        job_role_id,
+        COUNT(*) AS skill_requirement_count
+      FROM sf_role_skill_req
+      GROUP BY job_role_id
+    ) req
+      ON req.job_role_id = jr.job_role_id
+    LEFT JOIN (
+      SELECT
+        job_role_id,
+        COUNT(*) AS critical_work_function_count
+      FROM sf_role_work_function
+      GROUP BY job_role_id
+    ) wf
+      ON wf.job_role_id = jr.job_role_id
+    {where_sql}
+    ORDER BY s.sector_name, t.track_name, jr.job_role_name
+    LIMIT %s;
+    """
+    params.append(limit)
+
+    conn = get_mysql_connection()
+    cur = conn.cursor(dictionary=True)
+    try:
+        cur.execute(sql, params)
+        rows = cur.fetchall()
+    finally:
+        cur.close()
+        conn.close()
+
+    return [
+        JobRoleSummary(
+            job_role_id=parse_int(row.get("job_role_id")),
+            sector=str(row.get("sector") or ""),
+            track=str(row.get("track") or ""),
+            job_role_name=str(row.get("job_role_name") or ""),
+            skill_requirement_count=parse_int(row.get("skill_requirement_count")),
+            critical_work_function_count=parse_int(row.get("critical_work_function_count")),
+            has_skill_requirements=parse_int(row.get("skill_requirement_count")) > 0,
+        )
+        for row in rows
+    ]
+
+
+@api_router.get("/public/job-roles/{job_role_id}", response_model=JobRoleDetailResponse)
+def get_job_role_detail(job_role_id: int):
+    conn = get_mysql_connection()
+    cur = conn.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            SELECT
+              jr.job_role_id,
+              s.sector_name AS sector,
+              t.track_name AS track,
+              jr.job_role_name,
+              COALESCE(jr.role_description, '') AS role_description,
+              COALESCE(jr.performance_expectation, '') AS performance_expectation
+            FROM sf_job_role jr
+            JOIN sf_track t
+              ON t.track_id = jr.track_id
+            JOIN sf_sector s
+              ON s.sector_id = t.sector_id
+            WHERE jr.job_role_id = %s;
+            """,
+            (job_role_id,),
+        )
+        role_row = cur.fetchone()
+        if not role_row:
+            raise HTTPException(status_code=404, detail="Job role not found.")
+
+        cur.execute(
+            """
+            SELECT
+              wf.work_function_name,
+              kt.key_task_text
+            FROM sf_role_work_function wf
+            LEFT JOIN sf_role_key_task kt
+              ON kt.work_function_id = wf.work_function_id
+            WHERE wf.job_role_id = %s
+            ORDER BY wf.work_function_name, kt.key_task_id;
+            """,
+            (job_role_id,),
+        )
+        work_function_rows = cur.fetchall()
+
+        cur.execute(
+            """
+            SELECT
+              sk.title AS skill_title,
+              COALESCE(sk.skill_type, '') AS skill_type,
+              sk.tsc_ccs_code,
+              req.proficiency_level,
+              COALESCE(sl.proficiency_description, '') AS proficiency_description,
+              ci.item_type,
+              ci.item_text
+            FROM sf_role_skill_req req
+            JOIN sf_skill sk
+              ON sk.sf_skill_id = req.sf_skill_id
+            LEFT JOIN sf_skill_level sl
+              ON sl.sf_skill_id = req.sf_skill_id
+              AND sl.proficiency_level = req.proficiency_level
+            LEFT JOIN sf_competency_item ci
+              ON ci.sf_skill_id = req.sf_skill_id
+              AND ci.proficiency_level = req.proficiency_level
+            WHERE req.job_role_id = %s
+            ORDER BY sk.title, req.proficiency_level, sk.tsc_ccs_code, ci.item_type, ci.item_id;
+            """,
+            (job_role_id,),
+        )
+        skill_rows = cur.fetchall()
+    finally:
+        cur.close()
+        conn.close()
+
+    work_functions = [
+        JobRoleCriticalWorkFunction(**item)
+        for item in build_work_function_groups(work_function_rows)
+    ]
+    skills = [
+        JobRoleSkillDetail(**item)
+        for item in build_job_role_skill_groups(skill_rows)
+    ]
+
+    return JobRoleDetailResponse(
+        job_role_id=parse_int(role_row.get("job_role_id")),
+        sector=str(role_row.get("sector") or ""),
+        track=str(role_row.get("track") or ""),
+        job_role_name=str(role_row.get("job_role_name") or ""),
+        role_description=str(role_row.get("role_description") or ""),
+        performance_expectation=str(role_row.get("performance_expectation") or ""),
+        critical_work_functions=work_functions,
+        skills=skills,
     )
 
 
