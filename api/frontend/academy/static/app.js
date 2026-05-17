@@ -225,6 +225,10 @@ function App() {
   const [mapData, setMapData] = useState(null);
   const [selectedProficiency, setSelectedProficiency] = useState("");
   const [selectedCompetency, setSelectedCompetency] = useState("");
+  const [competencySectionsOpen, setCompetencySectionsOpen] = useState({
+    knowledge: false,
+    ability: false,
+  });
 
   const [extraContext, setExtraContext] = useState("");
   const [topK, setTopK] = useState(6);
@@ -1027,6 +1031,58 @@ function App() {
     ? `${selectedSector} · ${selectedSkill}${selectedProficiency ? ` · ${selectedProficiency}` : ""}`
     : "No skill path selected yet.";
 
+  const recommendationLoading = recommendStatus.text === "Generating recommendations...";
+  const recommendationStep = selectedCompetency ? (hasRecommended ? 3 : 2) : selectedSkill ? 2 : 1;
+
+  const formatCompetencyLabel = (value) => {
+    const parts = String(value || "").split(":");
+    return parts.length > 1 ? parts.slice(1).join(":").trim() : value;
+  };
+
+  const renderCompetencySection = (type, title, items) => {
+    const open = Boolean(competencySectionsOpen[type]);
+    const count = Array.isArray(items) ? items.length : 0;
+    return html`
+      <section className="competency-section">
+        <button
+          type="button"
+          className="competency-section-toggle"
+          onClick=${() => setCompetencySectionsOpen((current) => ({ ...current, [type]: !current[type] }))}
+          aria-expanded=${open}
+        >
+          <span className="competency-section-title">${title}</span>
+          <span className="competency-section-count">${count}</span>
+        </button>
+        ${open
+          ? html`
+              <div className="chip-row">
+                ${count
+                  ? items.map((item) => {
+                      const text = `${type}: ${item}`;
+                      const active =
+                        selectedMapEntry?.proficiency_level === selectedProficiency &&
+                        selectedCompetency === text;
+                      return html`
+                        <button
+                          key=${`${type}-${selectedMapEntry?.proficiency_level || "level"}-${item}`}
+                          type="button"
+                          className=${`chip competency-chip ${active ? "active" : ""}`}
+                          onClick=${() => onSelectCompetency(selectedMapEntry.proficiency_level, text)}
+                          aria-pressed=${active}
+                        >
+                          <span className="chip-check" aria-hidden="true"></span>
+                          <span>${formatCompetencyLabel(text)}</span>
+                        </button>
+                      `;
+                    })
+                  : html`<span className="inline-note">No mapped ${title.toLowerCase()}.</span>`}
+              </div>
+            `
+          : null}
+      </section>
+    `;
+  };
+
   const selectedPreviewCount = previewVideos.reduce(
     (count, video) => count + (previewSelection[video.video_id] ? 1 : 0),
     0,
@@ -1091,9 +1147,21 @@ function App() {
     openOverlayForSector(bestSectorMatch.sector);
   };
 
-  const recommendationContent = !hasRecommended
-    ? html`<p className="empty-note">Run recommendation after selecting a competency.</p>`
-    : displayedRecommendations.length
+  const recommendationContent = recommendationLoading
+    ? html`
+        <div className="recommendation-loading" role="status" aria-live="polite">
+          <div className="spinner"></div>
+          <div>
+            <p className="recommendation-empty-title">Finding the best matches...</p>
+            <p className="recommendation-empty-copy">Recommendations are being generated for the selected path.</p>
+          </div>
+        </div>
+      `
+    : !selectedCompetency
+      ? html`<p className="empty-note">Select a competency to continue.</p>`
+      : !hasRecommended
+        ? html`<p className="empty-note">Ready when you are. Generate recommendations for this competency.</p>`
+        : displayedRecommendations.length
       ? displayedRecommendations.map((video) => {
           const url = video.video_id
             ? `https://www.youtube.com/watch?v=${encodeURIComponent(video.video_id)}`
@@ -1442,16 +1510,34 @@ function App() {
                   <button type="button" className="close-btn" onClick=${closeOverlay}>Close</button>
                 </div>
 
+                <div className="flow-steps" aria-label="Recommendation flow">
+                  ${[
+                    { number: 1, label: "Choose Skill" },
+                    { number: 2, label: "Select Competency" },
+                    { number: 3, label: "Generate Recommendations" },
+                  ].map((step) => html`
+                    <div
+                      key=${step.number}
+                      className=${`flow-step ${recommendationStep === step.number ? "active" : ""} ${recommendationStep > step.number ? "complete" : ""}`}
+                    >
+                      <span className="flow-step-number">${step.number}</span>
+                      <span className="flow-step-label">${step.label}</span>
+                    </div>
+                  `)}
+                </div>
+
                 <div className="overlay-grid">
                   <aside className="picker-col">
                     <label className="field-label" htmlFor="skill-search">Find Skill</label>
-                    <input
-                      id="skill-search"
-                      type="search"
-                      placeholder="Type to filter skills..."
-                      value=${skillSearch}
-                      onInput=${(event) => setSkillSearch(event.target.value)}
-                    />
+                    <div className="search-input-wrap">
+                      <input
+                        id="skill-search"
+                        type="search"
+                        placeholder="Type to filter skills..."
+                        value=${skillSearch}
+                        onInput=${(event) => setSkillSearch(event.target.value)}
+                      />
+                    </div>
                     <p className="panel-status" data-tone=${skillStatus.tone || undefined}>${skillStatus.text}</p>
                     <div className="skill-list">
                       ${skills.length
@@ -1476,7 +1562,13 @@ function App() {
                           <div className="detail-layout">
                             <div className="detail-main">
                               <div className="map-block">
-                                <p className="selected-skill">Skill: ${selectedSkill}</p>
+                                <div className="map-block-head">
+                                  <div>
+                                    <p className="selection-label">Step 2</p>
+                                    <p className="selected-skill">Select a competency</p>
+                                  </div>
+                                  <span className="selected-skill-pill">${selectedSkill}</span>
+                                </div>
                                 <p className="panel-status" data-tone=${mapStatus.tone || undefined}>${mapStatus.text}</p>
 
                                 ${selectedMapEntry
@@ -1499,50 +1591,17 @@ function App() {
                                         ${selectedMapEntry.proficiency_description || "No proficiency description provided."}
                                       </p>
 
-                                      <p className="map-group-title">Knowledge Competencies</p>
-                                      <div className="chip-row">
-                                        ${selectedMapEntry.knowledge_items.length
-                                          ? selectedMapEntry.knowledge_items.map((item) => {
-                                              const text = `knowledge: ${item}`;
-                                              const active =
-                                                selectedMapEntry.proficiency_level === selectedProficiency &&
-                                                selectedCompetency === text;
-                                              return html`
-                                                <button
-                                                  key=${`k-${selectedMapEntry.proficiency_level}-${item}`}
-                                                  type="button"
-                                                  className=${`chip ${active ? "active" : ""}`}
-                                                  onClick=${() =>
-                                                    onSelectCompetency(selectedMapEntry.proficiency_level, text)}
-                                                >
-                                                  ${text}
-                                                </button>
-                                              `;
-                                            })
-                                          : html`<span className="inline-note">No mapped knowledge items.</span>`}
-                                      </div>
-
-                                      <p className="map-group-title">Ability Competencies</p>
-                                      <div className="chip-row">
-                                        ${selectedMapEntry.ability_items.length
-                                          ? selectedMapEntry.ability_items.map((item) => {
-                                              const text = `ability: ${item}`;
-                                              const active =
-                                                selectedMapEntry.proficiency_level === selectedProficiency &&
-                                                selectedCompetency === text;
-                                              return html`
-                                                <button
-                                                  key=${`a-${selectedMapEntry.proficiency_level}-${item}`}
-                                                  type="button"
-                                                  className=${`chip ${active ? "active" : ""}`}
-                                                  onClick=${() =>
-                                                    onSelectCompetency(selectedMapEntry.proficiency_level, text)}
-                                                >
-                                                  ${text}
-                                                </button>
-                                              `;
-                                            })
-                                          : html`<span className="inline-note">No mapped ability items.</span>`}
+                                      <div className="competency-sections">
+                                        ${renderCompetencySection(
+                                          "knowledge",
+                                          "Knowledge Competencies",
+                                          selectedMapEntry.knowledge_items,
+                                        )}
+                                        ${renderCompetencySection(
+                                          "ability",
+                                          "Ability Competencies",
+                                          selectedMapEntry.ability_items,
+                                        )}
                                       </div>
                                     `
                                   : html`<p className="empty-note">Choose a skill to view mapped details.</p>`}
@@ -1550,13 +1609,18 @@ function App() {
                             </div>
 
                             <aside className="result-panel">
-                              <p className="selection-label">Current Path</p>
-                              <p className="selection-value">${selectionSummary}</p>
-                              ${selectedCompetency
-                                ? html`<p className="selection-sub">${selectedCompetency}</p>`
-                                : html`<p className="selection-sub">Select one competency to complete the path.</p>`}
+                              <section className="recommend-card">
+                                <p className="selection-label">Current Path</p>
+                                <p className="selection-value">${selectionSummary}</p>
+                                ${selectedCompetency
+                                  ? html`<p className="selection-sub selected-path-competency">${formatCompetencyLabel(selectedCompetency)}</p>`
+                                  : html`<p className="selection-sub">Select a competency to continue.</p>`}
+                              </section>
 
-                              <div className="controls-card">
+                              <section className="recommend-card controls-card">
+                                <div className="recommend-card-head">
+                                  <p className="selection-label">Recommendation Settings</p>
+                                </div>
                                 <label className="field-label" htmlFor="extra-context">Additional context (optional)</label>
                                 <textarea
                                   id="extra-context"
@@ -1591,28 +1655,35 @@ function App() {
 
                                 <button
                                   type="button"
-                                  className="primary-btn"
+                                  className="primary-btn recommend-primary-btn"
                                   onClick=${recommendVideos}
-                                  disabled=${!selectedCompetency}
+                                  disabled=${!selectedCompetency || recommendationLoading}
                                 >
-                                  Recommend Videos
+                                  <span className="video-btn-icon" aria-hidden="true"></span>
+                                  ${recommendationLoading ? "Generating..." : "Generate Recommendations"}
                                 </button>
-                              </div>
+                              </section>
 
-                              <p className="panel-status" data-tone=${recommendStatus.tone || undefined}>${recommendStatus.text}</p>
-                              <div className="recommendation-list">${recommendationContent}</div>
+                              <section className="recommend-card recommendation-results-card">
+                                <div className="recommend-card-head">
+                                  <p className="selection-label">Recommendation Results</p>
+                                  ${hasRecommended && !recommendationLoading
+                                    ? html`<span className="recommend-count">${displayedRecommendations.length}</span>`
+                                    : null}
+                                </div>
+                                <p className="panel-status" data-tone=${recommendStatus.tone || undefined}>${recommendStatus.text}</p>
+                                <div className="recommendation-list">${recommendationContent}</div>
+                              </section>
 
-                              <section className="procurement-card">
+                              <section className="recommend-card procurement-card">
                                 <div className="procurement-head">
                                   <div>
                                     <p className="selection-label">Need More Videos?</p>
-                                    <p className="selection-sub">
-                                      Open a separate video finder to preview fresh candidates and ingest them into the library.
-                                    </p>
+                                    <p className="selection-sub">Preview fresh candidates and ingest them into the library.</p>
                                   </div>
                                   <button
                                     type="button"
-                                    className="utility-btn utility-btn-brand"
+                                    className="utility-btn"
                                     onClick=${openVideoFinder}
                                     disabled=${!selectedCompetency}
                                   >
