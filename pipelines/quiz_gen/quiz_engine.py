@@ -4,11 +4,11 @@ quiz_engine.py
 LLM-backed MCQ generator using a provider-agnostic LLM client.
 
 Five question types per quiz:
-  Q1  Conceptual     â€“ understanding a core concept from the competency
-  Q2  Application    â€“ applying an ability in a real work task
-  Q3  Scenario-Based â€“ workplace scenario tied to the proficiency requirement
-  Q4  Technical      â€“ specific technical knowledge or method
-  Q5  Evaluation     â€“ choosing the best approach to meet the proficiency
+  Q1  Conceptual     - understanding a core concept from the competency
+  Q2  Application    - applying an ability in a real work task
+  Q3  Scenario-Based - workplace scenario tied to the proficiency requirement
+  Q4  Technical      - specific technical knowledge or method
+  Q5  Evaluation     - choosing the best approach to meet the proficiency
 
 Priority context: competency item + proficiency requirement/description.
 Determinism is enforced by the persistent JSON cache (generate-once).
@@ -87,7 +87,7 @@ def _validate_mcq(data: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 _JSON_SCHEMA = """\
-Respond ONLY with a single valid JSON object â€” no extra text, no markdown fences:
+Respond ONLY with a single valid JSON object - no extra text, no markdown fences:
 {
   "question": "<question text>",
   "options": {"A": "...", "B": "...", "C": "...", "D": "..."},
@@ -255,7 +255,7 @@ def _build_question(
 def generate_quiz(ctx: dict[str, Any]) -> list[dict[str, Any]]:
     """
     Generate exactly 5 MCQ questions using Groq.
-    Returns a list — all 5 questions are generated before returning.
+    Returns a list - all 5 questions are generated before returning.
     Useful for serving from cache.
     """
     return list(generate_quiz_stream(ctx))

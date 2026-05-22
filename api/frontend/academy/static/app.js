@@ -218,6 +218,7 @@ function App() {
   const [skillSuggestionStatus, setSkillSuggestionStatus] = useState({ text: "", tone: "" });
 
   const [overlayOpen, setOverlayOpen] = useState(false);
+  const [overlayStep, setOverlayStep] = useState("skills");
   const [videoFinderOpen, setVideoFinderOpen] = useState(false);
   const [skillSearch, setSkillSearch] = useState("");
   const [skills, setSkills] = useState([]);
@@ -417,8 +418,16 @@ function App() {
   }, [overlayOpen, selectedSector, selectedSkill]);
 
   const loadQuiz = async (mode) => {
-    if (!selectedSector || !selectedSkill || !selectedProficiency || !selectedCompetency) {
-      setQuizStatus({ text: "Missing required selections.", tone: "error" });
+    if (!selectedSector || !selectedSkill) {
+      setQuizStatus({ text: "Choose an industry and skill first.", tone: "error" });
+      return;
+    }
+    if (mode === "competency" && !selectedCompetency) {
+      setQuizStatus({ text: "Select one competency before starting this quiz mode.", tone: "error" });
+      return;
+    }
+    if (["knowledge", "ability", "proficiency"].includes(mode) && !selectedProficiency) {
+      setQuizStatus({ text: "Select a proficiency level before starting this quiz mode.", tone: "error" });
       return;
     }
 
@@ -433,14 +442,22 @@ function App() {
     try {
       // Get proficiency description from mapData
       const proficiencyMappings = mapData && Array.isArray(mapData.mappings) ? mapData.mappings : [];
-      const selectedEntry = proficiencyMappings.find((entry) => entry.proficiency_level === selectedProficiency) || null;
+      const selectedEntry =
+        proficiencyMappings.find((entry) => entry.proficiency_level === selectedProficiency) ||
+        proficiencyMappings[0] ||
+        null;
+      const fallbackCompetency =
+        selectedCompetency ||
+        (selectedEntry?.knowledge_items?.length ? `knowledge: ${selectedEntry.knowledge_items[0]}` : "") ||
+        (selectedEntry?.ability_items?.length ? `ability: ${selectedEntry.ability_items[0]}` : "") ||
+        `${selectedSkill} skill quiz`;
       const proficiencyDesc = selectedEntry?.proficiency_description || "";
 
       const payload = {
         sector: selectedSector,
         skill: selectedSkill,
-        competency: selectedCompetency,
-        proficiency_level: selectedProficiency,
+        competency: fallbackCompetency,
+        proficiency_level: selectedProficiency || selectedEntry?.proficiency_level || "All proficiency levels",
         proficiency_description: proficiencyDesc,
         quiz_mode: mode,
       };
@@ -562,6 +579,7 @@ function App() {
 
     setSelectedSector(sectorName);
     setOverlayOpen(true);
+    setOverlayStep(suggestedSkill ? "competency" : "skills");
     setSkillSearch(suggestedSkill);
     setSkillStatus({
       text: suggestedSkill ? `Loading ${suggestedSkill}...` : "Loading skills...",
@@ -594,6 +612,7 @@ function App() {
 
   const closeOverlay = () => {
     setOverlayOpen(false);
+    setOverlayStep("skills");
     setVideoFinderOpen(false);
   };
 
@@ -601,9 +620,11 @@ function App() {
 
   const onSelectSkill = (skillName) => {
     setSelectedSkill(skillName);
+    setOverlayStep("competency");
     setMapData(null);
     setSelectedProficiency("");
     setSelectedCompetency("");
+    setCompetencySectionsOpen({ knowledge: false, ability: false });
     clearRecommendationFlow();
     clearPreviewFlow();
   };
@@ -614,6 +635,7 @@ function App() {
     }
     setSelectedProficiency(proficiencyLevel);
     setSelectedCompetency("");
+    setCompetencySectionsOpen({ knowledge: false, ability: false });
     clearRecommendationFlow();
     clearPreviewFlow();
   };
@@ -621,6 +643,7 @@ function App() {
   const onSelectCompetency = (proficiencyLevel, competencyText) => {
     setSelectedProficiency(proficiencyLevel);
     setSelectedCompetency(competencyText);
+    setOverlayStep("recommendations");
     clearRecommendationFlow();
     clearPreviewFlow();
   };
@@ -1032,7 +1055,8 @@ function App() {
     : "No skill path selected yet.";
 
   const recommendationLoading = recommendStatus.text === "Generating recommendations...";
-  const recommendationStep = selectedCompetency ? (hasRecommended ? 3 : 2) : selectedSkill ? 2 : 1;
+  const recommendationStep = overlayStep === "recommendations" ? 3 : overlayStep === "competency" ? 2 : 1;
+  const canTakeQuiz = overlayStep !== "skills" && Boolean(selectedSkill);
 
   const formatCompetencyLabel = (value) => {
     const parts = String(value || "").split(":");
@@ -1496,7 +1520,7 @@ function App() {
                     <p className="overlay-kicker">Industry</p>
                     <h2>${selectedSector || "Select an industry"}</h2>
                   </div>
-                  ${selectedSkill && selectedProficiency && selectedCompetency
+                  ${canTakeQuiz
                     ? html`
                         <button
                           type="button"
@@ -1506,7 +1530,7 @@ function App() {
                           📝 Take Quiz
                         </button>
                       `
-                    : html``}
+                    : html`<span></span>`}
                   <button type="button" className="close-btn" onClick=${closeOverlay}>Close</button>
                 </div>
 
@@ -1526,7 +1550,7 @@ function App() {
                   `)}
                 </div>
 
-                <div className="overlay-grid">
+                <div className=${`overlay-grid wizard-grid wizard-${overlayStep}`}>
                   <aside className="picker-col">
                     <label className="field-label" htmlFor="skill-search">Find Skill</label>
                     <div className="search-input-wrap">
@@ -1567,7 +1591,17 @@ function App() {
                                     <p className="selection-label">Step 2</p>
                                     <p className="selected-skill">Select a competency</p>
                                   </div>
-                                  <span className="selected-skill-pill">${selectedSkill}</span>
+                                  <div className="wizard-head-actions">
+                                    <span className="selected-skill-pill">${selectedSkill}</span>
+                                    <button
+                                      type="button"
+                                      className="wizard-back-btn"
+                                      onClick=${() => setOverlayStep("skills")}
+                                    >
+                                      <span aria-hidden="true">←</span>
+                                      Back to Skills
+                                    </button>
+                                  </div>
                                 </div>
                                 <p className="panel-status" data-tone=${mapStatus.tone || undefined}>${mapStatus.text}</p>
 
@@ -1610,7 +1644,17 @@ function App() {
 
                             <aside className="result-panel">
                               <section className="recommend-card">
-                                <p className="selection-label">Current Path</p>
+                                <div className="recommend-card-head">
+                                  <p className="selection-label">Current Path</p>
+                                  <button
+                                    type="button"
+                                    className="wizard-back-btn"
+                                    onClick=${() => setOverlayStep("competency")}
+                                  >
+                                    <span aria-hidden="true">←</span>
+                                    Back to Competencies
+                                  </button>
+                                </div>
                                 <p className="selection-value">${selectionSummary}</p>
                                 ${selectedCompetency
                                   ? html`<p className="selection-sub selected-path-competency">${formatCompetencyLabel(selectedCompetency)}</p>`
@@ -1839,32 +1883,36 @@ function App() {
                   <div className="quiz-mode-list">
                     <button
                       type="button"
-                      className="quiz-mode-btn"
+                      className=${`quiz-mode-btn ${!selectedCompetency ? "disabled" : ""}`}
                       onClick=${() => loadQuiz("competency")}
+                      disabled=${!selectedCompetency}
                     >
                       <p className="mode-title">Per Competency</p>
                       <p className="mode-desc">Quiz based on selected competency for this level</p>
                     </button>
                     <button
                       type="button"
-                      className="quiz-mode-btn"
+                      className=${`quiz-mode-btn ${!selectedProficiency ? "disabled" : ""}`}
                       onClick=${() => loadQuiz("knowledge")}
+                      disabled=${!selectedProficiency}
                     >
                       <p className="mode-title">Knowledge Only</p>
                       <p className="mode-desc">Quiz for Knowledge competencies for this level</p>
                     </button>
                     <button
                       type="button"
-                      className="quiz-mode-btn"
+                      className=${`quiz-mode-btn ${!selectedProficiency ? "disabled" : ""}`}
                       onClick=${() => loadQuiz("ability")}
+                      disabled=${!selectedProficiency}
                     >
                       <p className="mode-title">Ability Only</p>
                       <p className="mode-desc">Quiz for Ability competencies for this level</p>
                     </button>
                     <button
                       type="button"
-                      className="quiz-mode-btn"
+                      className=${`quiz-mode-btn ${!selectedProficiency ? "disabled" : ""}`}
                       onClick=${() => loadQuiz("proficiency")}
+                      disabled=${!selectedProficiency}
                     >
                       <p className="mode-title">Per Proficiency Level</p>
                       <p className="mode-desc">Knowledge + Ability for this level</p>

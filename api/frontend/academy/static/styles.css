@@ -545,17 +545,17 @@ body.overlay-open {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 1rem;
+  padding: 1.25rem;
   background: rgba(15, 24, 37, 0.56);
   backdrop-filter: blur(3px);
 }
 
 .overlay-panel {
-  width: min(1180px, 100%);
+  width: min(880px, 100%);
   max-height: min(90vh, 940px);
   background: var(--surface);
   border: 1px solid var(--line);
-  border-radius: 18px;
+  border-radius: 16px;
   box-shadow: var(--shadow-panel);
   overflow: hidden;
   display: flex;
@@ -577,7 +577,7 @@ body.overlay-open {
 .overlay-head {
   border-bottom: 1px solid var(--line);
   background: linear-gradient(130deg, #f6fbfd, #fdf7f2);
-  padding: 0.78rem 0.9rem;
+  padding: 0.66rem 0.78rem;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -595,7 +595,7 @@ body.overlay-open {
 .overlay-head h2 {
   margin: 0.2rem 0 0;
   font-family: "Fraunces", "Georgia", serif;
-  font-size: 1.2rem;
+  font-size: 1.06rem;
 }
 
 .overlay-head > div:first-child {
@@ -621,10 +621,73 @@ body.overlay-open {
   flex: 1;
 }
 
+.wizard-grid {
+  grid-template-columns: 1fr;
+}
+
+.wizard-grid .picker-col {
+  border-right: 0;
+  min-height: min(48vh, 500px);
+}
+
+.wizard-grid .detail-layout {
+  grid-template-columns: 1fr;
+}
+
+.wizard-grid.wizard-skills .detail-col,
+.wizard-grid.wizard-competency .picker-col,
+.wizard-grid.wizard-competency .result-panel,
+.wizard-grid.wizard-recommendations .picker-col,
+.wizard-grid.wizard-recommendations .detail-main {
+  display: none;
+}
+
+.wizard-grid.wizard-recommendations .detail-col,
+.wizard-grid.wizard-competency .detail-col {
+  max-height: none;
+}
+
+.wizard-grid.wizard-recommendations .recommendation-list {
+  max-height: 38vh;
+}
+
+.wizard-head-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.42rem;
+}
+
+.wizard-back-btn {
+  width: auto;
+  margin-top: 0;
+  border: 1px solid rgba(14, 101, 119, 0.42);
+  border-radius: 999px;
+  background: #ffffff;
+  color: var(--brand-strong);
+  font-family: inherit;
+  font-size: 0.78rem;
+  font-weight: 800;
+  padding: 0.32rem 0.62rem;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  box-shadow: 0 4px 10px rgba(18, 36, 58, 0.06);
+  transition: background 0.13s ease, border-color 0.13s ease, transform 0.13s ease;
+}
+
+.wizard-back-btn:hover {
+  border-color: rgba(14, 101, 119, 0.72);
+  background: #eef7fa;
+  transform: translateY(-1px);
+}
+
 .flow-steps {
   border-bottom: 1px solid var(--line);
   background: #fbfdff;
-  padding: 0.62rem 0.9rem;
+  padding: 0.5rem 0.78rem;
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0.5rem;
@@ -635,7 +698,7 @@ body.overlay-open {
   border-radius: 10px;
   background: var(--surface-soft);
   color: var(--muted);
-  padding: 0.48rem 0.58rem;
+  padding: 0.4rem 0.5rem;
   display: flex;
   align-items: center;
   gap: 0.45rem;
@@ -677,24 +740,24 @@ body.overlay-open {
 
 .picker-col {
   border-right: 1px solid var(--line);
-  padding: 0.78rem;
+  padding: 0.68rem;
   display: flex;
   flex-direction: column;
   min-height: 0;
 }
 
 .detail-col {
-  padding: 0.78rem;
+  padding: 0.68rem;
   display: flex;
   flex-direction: column;
-  gap: 0.72rem;
+  gap: 0.62rem;
   overflow: auto;
 }
 
 .detail-layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 360px;
-  gap: 0.72rem;
+  gap: 0.62rem;
   align-items: start;
   min-height: 0;
 }
@@ -702,7 +765,7 @@ body.overlay-open {
 .detail-main {
   display: flex;
   flex-direction: column;
-  gap: 0.72rem;
+  gap: 0.62rem;
   min-width: 0;
 }
 
@@ -821,7 +884,7 @@ textarea {
   border: 1px solid var(--line);
   border-radius: 12px;
   background: #ffffff;
-  padding: 0.68rem;
+  padding: 0.62rem;
 }
 
 .result-panel {
@@ -1135,7 +1198,7 @@ textarea {
 }
 
 .level-row {
-  margin-top: 0.6rem;
+  margin-top: 0.48rem;
   display: flex;
   flex-wrap: wrap;
   gap: 0.34rem;
@@ -1160,14 +1223,14 @@ textarea {
 }
 
 .map-desc {
-  margin: 0.44rem 0 0;
-  font-size: 0.79rem;
+  margin: 0.36rem 0 0;
+  font-size: 0.88rem;
   line-height: 1.42;
   color: var(--muted);
 }
 
 .competency-sections {
-  margin-top: 0.62rem;
+  margin-top: 0.48rem;
   display: flex;
   flex-direction: column;
   gap: 0.58rem;
@@ -1177,7 +1240,7 @@ textarea {
   border: 1px solid rgba(216, 225, 238, 0.9);
   border-radius: 10px;
   background: #fbfdff;
-  padding: 0.46rem;
+  padding: 0.4rem;
 }
 
 .competency-section-toggle {
@@ -1212,7 +1275,7 @@ textarea {
 
 .competency-section-title {
   flex: 1;
-  font-size: 0.74rem;
+  font-size: 0.78rem;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--accent);
@@ -1231,9 +1294,9 @@ textarea {
 }
 
 .chip-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.32rem;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.38rem;
 }
 
 .chip {
@@ -1242,13 +1305,14 @@ textarea {
   background: #ffffff;
   color: #203946;
   font-family: inherit;
-  font-size: 0.72rem;
+  font-size: 0.82rem;
   line-height: 1.34;
   padding: 0.34rem 0.58rem;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
+  width: 100%;
   text-align: left;
   transition: background 0.13s ease, border-color 0.13s ease, box-shadow 0.13s ease, transform 0.13s ease;
 }
@@ -1386,10 +1450,9 @@ textarea {
   align-items: center;
   gap: 0.3rem;
   margin: 0 !important;
-  width: 100% !important;
-  max-width: 280px;
-  padding: 0.42rem 0.72rem !important;
-  font-size: 0.8rem !important;
+  width: min(320px, 34vw) !important;
+  padding: 0.48rem 0.9rem !important;
+  font-size: 0.88rem !important;
   margin-top: 0 !important;
   justify-content: center;
 }
@@ -2005,6 +2068,20 @@ textarea {
   background: var(--surface-soft);
   transform: translateY(-2px);
   box-shadow: 0 4px 12px rgba(14, 101, 119, 0.15);
+}
+
+.quiz-mode-btn:disabled,
+.quiz-mode-btn.disabled {
+  opacity: 0.48;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+.quiz-mode-btn:disabled:hover,
+.quiz-mode-btn.disabled:hover {
+  border-color: var(--line);
+  background: var(--surface);
 }
 
 .quiz-mode-btn:active {
