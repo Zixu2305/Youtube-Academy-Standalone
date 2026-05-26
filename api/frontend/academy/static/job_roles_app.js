@@ -42,6 +42,14 @@ function App() {
   const [roleSearch, setRoleSearch] = useState("");
   const [selectedRoleId, setSelectedRoleId] = useState(null);
   const [roleDetail, setRoleDetail] = useState(null);
+  const [activeTab, setActiveTab] = useState("overview");
+  const [selectedSkillDetail, setSelectedSkillDetail] = useState(null);
+  const [selectedSkillLevel, setSelectedSkillLevel] = useState("");
+  const [expandedSummary, setExpandedSummary] = useState({
+    description: false,
+    expectation: false,
+  });
+  const [expandedWorkFunctions, setExpandedWorkFunctions] = useState({});
   const [detailStatus, setDetailStatus] = useState({ text: "Select a job role to inspect its framework mapping.", tone: "" });
 
   const debouncedSearch = useDebouncedValue(roleSearch, 120);
@@ -135,12 +143,17 @@ function App() {
 
     async function loadRoleDetail() {
       setDetailStatus({ text: "Loading job role detail...", tone: "" });
+      setSelectedSkillDetail(null);
       try {
         const detail = await fetchJson(`/api/public/job-roles/${encodeURIComponent(selectedRoleId)}`);
         if (cancelled) {
           return;
         }
         setRoleDetail(detail);
+        setActiveTab("overview");
+        setSelectedSkillLevel("");
+        setExpandedSummary({ description: false, expectation: false });
+        setExpandedWorkFunctions({});
         const skillCount = Array.isArray(detail.skills) ? detail.skills.length : 0;
         const workFunctionCount = Array.isArray(detail.critical_work_functions)
           ? detail.critical_work_functions.length
@@ -164,7 +177,67 @@ function App() {
     };
   }, [selectedRoleId]);
 
-  const currentRole = visibleRoles.find((role) => role.job_role_id === selectedRoleId) || null;
+  const previewText = (value, maxLength = 220) => {
+    const text = String(value || "").replace(/\s+/g, " ").trim();
+    if (!text) {
+      return "";
+    }
+    return text.length > maxLength ? `${text.slice(0, maxLength).trim()}...` : text;
+  };
+
+  const isLongText = (value, maxLength) => String(value || "").replace(/\s+/g, " ").trim().length > maxLength;
+
+  const toggleSummary = (key) => {
+    setExpandedSummary((current) => ({
+      ...current,
+      [key]: !current[key],
+    }));
+  };
+
+  const toggleWorkFunction = (name) => {
+    setExpandedWorkFunctions((current) => ({
+      ...current,
+      [name]: !current[name],
+    }));
+  };
+
+  const keyItems = (items, count = 3) => (Array.isArray(items) ? items.filter(Boolean).slice(0, count) : []);
+
+  const skillKey = (skill) => `${skill.skill_title}-${skill.proficiency_level}-${skill.skill_type}`;
+
+  const levelSortValue = (level) => {
+    const numeric = Number(String(level || "").match(/\d+/)?.[0] || 999);
+    return Number.isFinite(numeric) ? numeric : 999;
+  };
+
+  const skillLevels = useMemo(() => {
+    const skills = Array.isArray(roleDetail?.skills) ? roleDetail.skills : [];
+    return Array.from(new Set(skills.map((skill) => String(skill.proficiency_level || "").trim()).filter(Boolean)))
+      .sort((left, right) => levelSortValue(left) - levelSortValue(right) || left.localeCompare(right));
+  }, [roleDetail]);
+
+  const visibleRoleSkills = useMemo(() => {
+    const skills = Array.isArray(roleDetail?.skills) ? roleDetail.skills : [];
+    return skills
+      .filter((skill) => !selectedSkillLevel || String(skill.proficiency_level) === selectedSkillLevel)
+      .slice()
+      .sort((left, right) => (
+        levelSortValue(left.proficiency_level) - levelSortValue(right.proficiency_level) ||
+        String(left.skill_title || "").localeCompare(String(right.skill_title || ""))
+      ));
+  }, [roleDetail, selectedSkillLevel]);
+
+  const detailMetrics = useMemo(() => {
+    const skills = Array.isArray(roleDetail?.skills) ? roleDetail.skills : [];
+    const workFunctions = Array.isArray(roleDetail?.critical_work_functions) ? roleDetail.critical_work_functions : [];
+    return {
+      workFunctions: workFunctions.length,
+      skills: skills.length,
+      knowledge: skills.reduce((total, skill) => total + (skill.knowledge_items?.length || 0), 0),
+      ability: skills.reduce((total, skill) => total + (skill.ability_items?.length || 0), 0),
+      levels: new Set(skills.map((skill) => String(skill.proficiency_level || "").trim()).filter(Boolean)).size,
+    };
+  }, [roleDetail]);
 
   const metrics = useMemo(() => {
     const sectorCount = sectorOptions.length;
@@ -176,11 +249,35 @@ function App() {
     };
   }, [roles, sectorOptions]);
 
+  const resetRoleSelection = () => {
+    setSelectedRoleId(null);
+    setRoleDetail(null);
+    setSelectedSkillDetail(null);
+    setActiveTab("overview");
+    setExpandedSummary({ description: false, expectation: false });
+    setExpandedWorkFunctions({});
+    setSelectedSkillLevel("");
+  };
+
   const clearFilters = () => {
     setSelectedSector("");
     setSelectedTrack("");
     setRoleSearch("");
+    resetRoleSelection();
   };
+
+  const onSectorChange = (value) => {
+    setSelectedSector(value);
+    setSelectedTrack("");
+    resetRoleSelection();
+  };
+
+  const onTrackChange = (value) => {
+    setSelectedTrack(value);
+    resetRoleSelection();
+  };
+
+  const roleListScope = `${selectedSector || "All sectors"} · ${selectedTrack || "All tracks"}`;
 
   return html`
     <main className="academy-shell role-lookup-shell">
@@ -234,7 +331,7 @@ function App() {
             <select
               id="role-sector-filter"
               value=${selectedSector}
-              onChange=${(event) => setSelectedSector(event.target.value)}
+              onChange=${(event) => onSectorChange(event.target.value)}
             >
               <option value="">All sectors</option>
               ${sectorOptions.map((sector) => html`<option key=${sector} value=${sector}>${sector}</option>`)}
@@ -245,7 +342,7 @@ function App() {
             <select
               id="role-track-filter"
               value=${selectedTrack}
-              onChange=${(event) => setSelectedTrack(event.target.value)}
+              onChange=${(event) => onTrackChange(event.target.value)}
             >
               <option value="">All tracks</option>
               ${trackOptions.map((track) => html`<option key=${track} value=${track}>${track}</option>`)}
@@ -274,7 +371,7 @@ function App() {
             <div className="role-list-head">
               <p className="selection-label">Job Roles</p>
               <p className="selection-sub">
-                ${currentRole ? `${currentRole.sector} · ${currentRole.track}` : "Select a role from the filtered list."}
+                ${roleListScope}
               </p>
             </div>
             <div className="role-list">
@@ -317,49 +414,220 @@ function App() {
 
                     <p className="panel-status" data-tone=${detailStatus.tone || undefined}>${detailStatus.text}</p>
 
-                    <div className="role-summary-grid">
-                      <article className="map-block role-summary-card">
-                        <p className="selection-label">Role Description</p>
-                        <p className="role-copy">
-                          ${roleDetail.role_description || "No role description provided in the source sheet."}
-                        </p>
-                      </article>
-                      <article className="map-block role-summary-card">
-                        <p className="selection-label">Performance Expectation</p>
-                        <p className="role-copy">
-                          ${roleDetail.performance_expectation || "No performance expectation provided in the source sheet."}
-                        </p>
-                      </article>
+                    <div className="role-tabs" role="tablist" aria-label="Job role detail sections">
+                      ${[
+                        ["overview", "Overview"],
+                        ["work", "Work Functions"],
+                        ["skills", "Skills & Competencies"],
+                      ].map(([tab, label]) => html`
+                        <button
+                          key=${tab}
+                          type="button"
+                          className=${`role-tab ${activeTab === tab ? "active" : ""}`}
+                          onClick=${() => setActiveTab(tab)}
+                          aria-selected=${activeTab === tab}
+                        >
+                          ${label}
+                        </button>
+                      `)}
                     </div>
 
-                    <section className="detail-section">
-                      <div className="detail-section-head">
-                        <div>
-                          <p className="selection-label">Critical Work Functions</p>
-                          <h3>Role responsibilities</h3>
-                        </div>
-                      </div>
-                      ${roleDetail.critical_work_functions.length
-                        ? html`
-                            <div className="work-function-grid">
-                              ${roleDetail.critical_work_functions.map((workFunction) => html`
-                                <article key=${workFunction.name} className="map-block work-function-card">
-                                  <p className="role-card-title">${workFunction.name}</p>
-                                  ${workFunction.key_tasks.length
-                                    ? html`
-                                        <ul className="task-list">
-                                          ${workFunction.key_tasks.map((task) => html`<li key=${task}>${task}</li>`)}
-                                        </ul>
-                                      `
-                                    : html`<p className="inline-note">No key tasks listed for this work function.</p>`}
-                                </article>
-                              `)}
+                    ${activeTab === "overview"
+                      ? html`
+                          <section className="detail-section">
+                            <div className="role-summary-grid compact">
+                              <article className="map-block role-summary-card">
+                                <p className="selection-label">Role Description</p>
+                                <p className="role-copy">
+                                  ${(expandedSummary.description
+                                    ? roleDetail.role_description
+                                    : previewText(roleDetail.role_description, 300)) || "No role description provided in the source sheet."}
+                                </p>
+                                ${isLongText(roleDetail.role_description, 300)
+                                  ? html`
+                                      <button
+                                        type="button"
+                                        className="read-more-btn"
+                                        onClick=${() => toggleSummary("description")}
+                                      >
+                                        ${expandedSummary.description ? "Show less" : "Read more"}
+                                      </button>
+                                    `
+                                  : null}
+                              </article>
+                              <article className="map-block role-summary-card">
+                                <p className="selection-label">Performance Expectation</p>
+                                <p className="role-copy">
+                                  ${(expandedSummary.expectation
+                                    ? roleDetail.performance_expectation
+                                    : previewText(roleDetail.performance_expectation, 260)) || "No performance expectation provided in the source sheet."}
+                                </p>
+                                ${isLongText(roleDetail.performance_expectation, 260)
+                                  ? html`
+                                      <button
+                                        type="button"
+                                        className="read-more-btn"
+                                        onClick=${() => toggleSummary("expectation")}
+                                      >
+                                        ${expandedSummary.expectation ? "Show less" : "Read more"}
+                                      </button>
+                                    `
+                                  : null}
+                              </article>
                             </div>
-                          `
-                        : html`<p className="empty-note">No critical work functions were seeded for this role.</p>`}
-                    </section>
 
-                    <section className="detail-section">
+                            <div className="detail-section-head">
+                              <div>
+                                <p className="selection-label">Framework Snapshot</p>
+                                <h3>Mapped scope</h3>
+                              </div>
+                            </div>
+                            <div className="overview-metric-grid">
+                              <article className="overview-metric-card">
+                                <span className="metric-value">${detailMetrics.workFunctions}</span>
+                                <span className="metric-label">Work functions</span>
+                              </article>
+                              <article className="overview-metric-card">
+                                <span className="metric-value">${detailMetrics.skills}</span>
+                                <span className="metric-label">Skill groups</span>
+                              </article>
+                              <article className="overview-metric-card">
+                                <span className="metric-value">${detailMetrics.levels}</span>
+                                <span className="metric-label">Levels</span>
+                              </article>
+                              <article className="overview-metric-card">
+                                <span className="metric-value">${detailMetrics.knowledge}</span>
+                                <span className="metric-label">Knowledge items</span>
+                              </article>
+                              <article className="overview-metric-card">
+                                <span className="metric-value">${detailMetrics.ability}</span>
+                                <span className="metric-label">Ability items</span>
+                              </article>
+                            </div>
+                          </section>
+                        `
+                      : null}
+
+                    ${activeTab === "work"
+                      ? html`
+                          <section className="detail-section">
+                            <div className="detail-section-head">
+                              <div>
+                                <p className="selection-label">Work Functions</p>
+                                <h3>Responsibilities and key tasks</h3>
+                              </div>
+                            </div>
+                            ${roleDetail.critical_work_functions.length
+                              ? html`
+                                  <div className="work-function-grid">
+                                    ${roleDetail.critical_work_functions.map((workFunction) => {
+                                      const open = Boolean(expandedWorkFunctions[workFunction.name]);
+                                      return html`
+                                        <article key=${workFunction.name} className="map-block work-function-card accordion">
+                                          <button
+                                            type="button"
+                                            className="work-function-toggle"
+                                            onClick=${() => toggleWorkFunction(workFunction.name)}
+                                            aria-expanded=${open}
+                                          >
+                                            <span className="role-card-title">${workFunction.name}</span>
+                                            <span className="work-function-count">
+                                              ${workFunction.key_tasks.length} task${workFunction.key_tasks.length === 1 ? "" : "s"}
+                                            </span>
+                                          </button>
+                                          ${open
+                                            ? workFunction.key_tasks.length
+                                              ? html`
+                                                  <div className="topic-chip-row">
+                                                    ${workFunction.key_tasks.map((task) => html`<span key=${task} className="topic-chip">${task}</span>`)}
+                                                  </div>
+                                                `
+                                              : html`<p className="inline-note">No key tasks listed for this work function.</p>`
+                                            : null}
+                                        </article>
+                                      `;
+                                    })}
+                                  </div>
+                                `
+                              : html`<p className="empty-note">No critical work functions were seeded for this role.</p>`}
+                          </section>
+                        `
+                      : null}
+
+                    ${activeTab === "skills"
+                      ? html`
+                          <section className="detail-section">
+                            <div className="detail-section-head">
+                              <div>
+                                <p className="selection-label">Skills and Competencies</p>
+                                <h3>Framework-linked requirements</h3>
+                              </div>
+                            </div>
+                            <div className="level-filter-row" aria-label="Filter skills by proficiency level">
+                              <button
+                                type="button"
+                                className=${`level-filter-chip ${selectedSkillLevel ? "" : "active"}`}
+                                onClick=${() => setSelectedSkillLevel("")}
+                              >
+                                All levels
+                              </button>
+                              ${skillLevels.map((level) => html`
+                                <button
+                                  key=${level}
+                                  type="button"
+                                  className=${`level-filter-chip ${selectedSkillLevel === level ? "active" : ""}`}
+                                  onClick=${() => setSelectedSkillLevel(level)}
+                                >
+                                  Level ${level}
+                                </button>
+                              `)}
+                              <span className="selection-sub level-filter-count">
+                                ${visibleRoleSkills.length} skill${visibleRoleSkills.length === 1 ? "" : "s"}
+                              </span>
+                            </div>
+                            ${roleDetail.skills.length
+                              ? html`
+                                  <div className="role-skill-grid compact">
+                                    ${visibleRoleSkills.map((skill) => {
+                                      const knowledgePreview = keyItems(skill.knowledge_items, 2);
+                                      const abilityPreview = keyItems(skill.ability_items, 2);
+                                      return html`
+                                        <article key=${skillKey(skill)} className="map-block role-skill-card compact">
+                                          <div className="role-skill-top">
+                                            <div>
+                                              <p className="role-card-title role-skill-title">${skill.skill_title}</p>
+                                              <p className="role-card-meta">${(skill.skill_type || "unspecified").toUpperCase()}</p>
+                                            </div>
+                                            <span className="role-skill-level">Level ${skill.proficiency_level}</span>
+                                          </div>
+                                          <p className="role-copy role-skill-description">
+                                            ${previewText(skill.proficiency_description, 130) || "No proficiency description provided."}
+                                          </p>
+                                          <div className="role-code-list">
+                                            ${skill.tsc_ccs_codes.slice(0, 3).map((code) => html`<span key=${code} className="role-code-chip">${code}</span>`)}
+                                          </div>
+                                          <div className="competency-preview-grid">
+                                            <span className="topic-chip">${skill.knowledge_items.length} knowledge</span>
+                                            <span className="topic-chip">${skill.ability_items.length} ability</span>
+                                          </div>
+                                          <button
+                                            type="button"
+                                            className="utility-btn role-detail-btn"
+                                            onClick=${() => setSelectedSkillDetail(skill)}
+                                          >
+                                            View details
+                                          </button>
+                                        </article>
+                                      `;
+                                    })}
+                                  </div>
+                                `
+                              : html`<p className="empty-note">This role has no skill requirement rows in the job role mapping sheet.</p>`}
+                          </section>
+                        `
+                      : null}
+
+                    <section className="detail-section legacy-skill-section">
                       <div className="detail-section-head">
                         <div>
                           <p className="selection-label">Skills and Competencies</p>
@@ -426,6 +694,58 @@ function App() {
           </section>
         </div>
       </section>
+
+      ${selectedSkillDetail
+        ? html`
+            <div className="role-detail-drawer-backdrop" onClick=${() => setSelectedSkillDetail(null)}>
+              <aside
+                className="role-detail-drawer"
+                role="dialog"
+                aria-modal="true"
+                aria-label="Skill competency details"
+                onClick=${(event) => event.stopPropagation()}
+              >
+                <div className="drawer-head">
+                  <div>
+                    <p className="selection-label">${(selectedSkillDetail.skill_type || "skill").toUpperCase()}</p>
+                    <h3>${selectedSkillDetail.skill_title}</h3>
+                    <p className="role-card-meta">Proficiency level ${selectedSkillDetail.proficiency_level}</p>
+                  </div>
+                  <button type="button" className="close-btn" onClick=${() => setSelectedSkillDetail(null)}>Close</button>
+                </div>
+
+                <div className="drawer-content">
+                  <p className="role-copy">${selectedSkillDetail.proficiency_description || "No proficiency description provided."}</p>
+                  <div className="role-code-list">
+                    ${selectedSkillDetail.tsc_ccs_codes.map((code) => html`<span key=${code} className="role-code-chip">${code}</span>`)}
+                  </div>
+
+                  <section className="drawer-section">
+                    <p className="selection-label">Knowledge</p>
+                    ${selectedSkillDetail.knowledge_items.length
+                      ? html`
+                          <div className="drawer-chip-list">
+                            ${selectedSkillDetail.knowledge_items.map((item) => html`<span key=${item} className="topic-chip">${item}</span>`)}
+                          </div>
+                        `
+                      : html`<p className="inline-note">No knowledge items.</p>`}
+                  </section>
+
+                  <section className="drawer-section">
+                    <p className="selection-label">Ability</p>
+                    ${selectedSkillDetail.ability_items.length
+                      ? html`
+                          <div className="drawer-chip-list">
+                            ${selectedSkillDetail.ability_items.map((item) => html`<span key=${item} className="topic-chip">${item}</span>`)}
+                          </div>
+                        `
+                      : html`<p className="inline-note">No ability items.</p>`}
+                  </section>
+                </div>
+              </aside>
+            </div>
+          `
+        : null}
     </main>
   `;
 }
