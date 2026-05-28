@@ -1375,7 +1375,6 @@ function App() {
             <a className="utility-btn utility-btn-brand hero-link" href="/job-roles">
               <span className="hero-link-icon" aria-hidden="true"></span>
               <span>Open job role lookup</span>
-              <span className="hero-link-arrow" aria-hidden="true">-&gt;</span>
             </a>
             <p>Browse roles, work functions, and linked competencies.</p>
           </div>
