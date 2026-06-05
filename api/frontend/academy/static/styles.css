@@ -97,22 +97,57 @@ body.overlay-open {
   margin-top: 0.72rem;
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem;
+  gap: 0.72rem;
+  align-items: flex-start;
 }
 
-.hero-lookup-cta {
+.hero-lookup-cta,
+.hero-video-cta {
+  position: relative;
   display: inline-flex;
   flex-direction: column;
   gap: 0.32rem;
   align-items: flex-start;
 }
 
-.hero-lookup-cta p {
+.hero-lookup-cta p,
+.hero-video-cta > p {
   margin: 0;
   max-width: 34ch;
   color: rgba(225, 241, 247, 0.84);
   font-size: 0.74rem;
   line-height: 1.38;
+}
+
+.hero-video-popout {
+  position: absolute;
+  z-index: 20;
+  left: 0;
+  top: calc(100% + 0.5rem);
+  width: min(360px, calc(100vw - 2rem));
+  border: 1px solid rgba(14, 101, 119, 0.22);
+  border-radius: 12px;
+  background: #ffffff;
+  color: var(--ink);
+  box-shadow: var(--shadow-panel);
+  padding: 0.72rem;
+  display: grid;
+  gap: 0.55rem;
+}
+
+.hero-video-popout-copy {
+  margin: 0.18rem 0 0;
+  color: var(--muted);
+  font-size: 0.76rem;
+  line-height: 1.38;
+}
+
+.hero-video-popout .utility-btn {
+  width: 100%;
+}
+
+.hero-video-popout .panel-status {
+  min-height: 0;
 }
 
 .metric-pill {
@@ -1115,6 +1150,11 @@ textarea {
   animation: overlayIn 0.18s ease;
 }
 
+.video-finder-panel[data-mode="direct"] {
+  width: min(1180px, 100%);
+  height: min(94vh, 980px);
+}
+
 .video-finder-head {
   border-bottom: 1px solid var(--line);
   background: linear-gradient(130deg, #f6fbfd, #fdf7f2);
@@ -1147,12 +1187,98 @@ textarea {
   overflow: auto;
 }
 
+.video-finder-panel[data-mode="direct"] .video-finder-content {
+  flex: 1 1 auto;
+}
+
 .video-finder-topbar {
   display: flex;
   flex-wrap: wrap;
   align-items: flex-start;
   justify-content: space-between;
   gap: 0.62rem;
+}
+
+.video-finder-panel[data-mode="direct"] .video-finder-topbar {
+  display: none;
+}
+
+.direct-search-panel,
+.direct-map-panel {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: linear-gradient(135deg, #f8fbfd, #ffffff);
+  padding: 0.72rem;
+}
+
+.video-finder-panel[data-mode="direct"] .direct-map-panel {
+  padding: 0.58rem 0.72rem;
+  gap: 0.46rem;
+}
+
+.direct-search-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.55rem;
+  align-items: center;
+}
+
+.direct-map-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.62rem;
+}
+
+.direct-map-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.65rem;
+}
+
+.direct-suggestion-card {
+  border: 1px solid rgba(14, 101, 119, 0.24);
+  border-radius: 12px;
+  background: #eef7f9;
+  padding: 0.58rem 0.68rem;
+}
+
+.direct-suggestion-reason {
+  margin: 0.32rem 0 0;
+  color: var(--muted);
+  font-size: 0.74rem;
+  line-height: 1.4;
+}
+
+.direct-map-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.4fr) minmax(120px, 0.4fr);
+  gap: 0.48rem;
+  align-items: end;
+}
+
+.direct-map-grid .field-label {
+  margin: 0;
+}
+
+.direct-competency-picker {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+
+.direct-competency-list {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.34rem;
+  max-height: 180px;
+  overflow: auto;
+}
+
+.direct-competency-list .competency-chip {
+  justify-content: flex-start;
+  width: 100%;
+  text-align: left;
 }
 
 .video-finder-footer {
@@ -1178,6 +1304,12 @@ textarea {
 
 .preview-list-modal {
   max-height: 46vh;
+}
+
+.video-finder-panel[data-mode="direct"] .preview-list-modal {
+  flex: 1 1 360px;
+  min-height: 300px;
+  max-height: none;
 }
 
 .selected-skill,
@@ -1637,6 +1769,16 @@ textarea {
     border-radius: 14px;
   }
 
+  .hero-actions {
+    flex-direction: column;
+  }
+
+  .hero-video-popout {
+    position: static;
+    width: 100%;
+    margin-top: 0.12rem;
+  }
+
   .controls-row {
     grid-template-columns: 1fr;
   }
@@ -1714,6 +1856,17 @@ textarea {
 
   .video-finder-topbar,
   .video-finder-footer {
+    align-items: stretch;
+  }
+
+  .direct-search-row,
+  .direct-map-grid,
+  .direct-competency-picker {
+    grid-template-columns: 1fr;
+  }
+
+  .direct-map-head {
+    flex-direction: column;
     align-items: stretch;
   }
 

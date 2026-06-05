@@ -210,6 +210,17 @@ function createEmptyRecommendMeta() {
   };
 }
 
+function createEmptyDirectMapping() {
+  return {
+    sector: "",
+    skill: "",
+    proficiency: "",
+    competency: "",
+    itemType: "",
+    proficiencyDescription: "",
+  };
+}
+
 function App() {
   const [sectors, setSectors] = useState([]);
   const [selectedSector, setSelectedSector] = useState("");
@@ -220,6 +231,15 @@ function App() {
   const [overlayOpen, setOverlayOpen] = useState(false);
   const [overlayStep, setOverlayStep] = useState("skills");
   const [videoFinderOpen, setVideoFinderOpen] = useState(false);
+  const [videoShortcutOpen, setVideoShortcutOpen] = useState(false);
+  const [videoFinderMode, setVideoFinderMode] = useState("path");
+  const [directSearchQuery, setDirectSearchQuery] = useState("");
+  const [directMapping, setDirectMapping] = useState(createEmptyDirectMapping());
+  const [directSkills, setDirectSkills] = useState([]);
+  const [directMapData, setDirectMapData] = useState(null);
+  const [directMapStatus, setDirectMapStatus] = useState({ text: "", tone: "" });
+  const [directSuggestBusy, setDirectSuggestBusy] = useState(false);
+  const [directSuggestion, setDirectSuggestion] = useState(null);
   const [skillSearch, setSkillSearch] = useState("");
   const [skills, setSkills] = useState([]);
   const [selectedSkill, setSelectedSkill] = useState("");
@@ -417,6 +437,94 @@ function App() {
     loadMapping();
   }, [overlayOpen, selectedSector, selectedSkill]);
 
+  useEffect(() => {
+    if (!videoFinderOpen || videoFinderMode !== "direct" || !directMapping.sector) {
+      setDirectSkills([]);
+      return;
+    }
+
+    let cancelled = false;
+    const loadDirectSkills = async () => {
+      setDirectMapStatus({ text: "Loading seeded skills...", tone: "" });
+      try {
+        const params = new URLSearchParams({
+          sector: directMapping.sector,
+          limit: "700",
+        });
+        const skillRows = await fetchJson(`/api/public/skills?${params.toString()}`);
+        if (cancelled) {
+          return;
+        }
+        setDirectSkills(skillRows);
+        setDirectMapStatus({ text: `${skillRows.length} seeded skill(s) available.`, tone: "success" });
+      } catch (error) {
+        if (cancelled) {
+          return;
+        }
+        setDirectSkills([]);
+        setDirectMapStatus({ text: `Unable to load seeded skills: ${error.message}`, tone: "error" });
+      }
+    };
+
+    loadDirectSkills();
+    return () => {
+      cancelled = true;
+    };
+  }, [videoFinderOpen, videoFinderMode, directMapping.sector]);
+
+  useEffect(() => {
+    if (!videoFinderOpen || videoFinderMode !== "direct" || !directMapping.sector || !directMapping.skill) {
+      setDirectMapData(null);
+      return;
+    }
+
+    let cancelled = false;
+    const loadDirectMapping = async () => {
+      setDirectMapStatus({ text: "Loading seeded competencies...", tone: "" });
+      try {
+        const params = new URLSearchParams({
+          sector: directMapping.sector,
+          skill: directMapping.skill,
+        });
+        const mapResponse = await fetchJson(`/api/public/skill-map?${params.toString()}`);
+        if (cancelled) {
+          return;
+        }
+        setDirectMapData(mapResponse);
+        const levels = Array.isArray(mapResponse.mappings) ? mapResponse.mappings : [];
+        setDirectMapping((current) => {
+          const existingLevel = levels.find((entry) => entry.proficiency_level === current.proficiency);
+          const nextLevel = existingLevel || levels[0] || null;
+          const validCompetency = nextLevel && current.competency
+            ? [
+                ...(Array.isArray(nextLevel.knowledge_items) ? nextLevel.knowledge_items.map((item) => `knowledge: ${item}`) : []),
+                ...(Array.isArray(nextLevel.ability_items) ? nextLevel.ability_items.map((item) => `ability: ${item}`) : []),
+              ].includes(current.competency)
+            : false;
+          return {
+            ...current,
+            proficiency: nextLevel?.proficiency_level || "",
+            proficiencyDescription: nextLevel?.proficiency_description || "",
+            competency: validCompetency ? current.competency : "",
+            itemType: validCompetency ? current.itemType : "",
+          };
+        });
+        setDirectMapStatus({ text: `${mapResponse.count} level(s) mapped. Select one competency.`, tone: "success" });
+      } catch (error) {
+        if (cancelled) {
+          return;
+        }
+        setDirectMapData(null);
+        setDirectMapStatus({ text: `Unable to load seeded competencies: ${error.message}`, tone: "error" });
+      }
+    };
+
+    loadDirectMapping();
+    return () => {
+      cancelled = true;
+    };
+  }, [videoFinderOpen, videoFinderMode, directMapping.sector, directMapping.skill]);
+
   const loadQuiz = async (mode) => {
     if (!selectedSector || !selectedSkill) {
       setQuizStatus({ text: "Choose an industry and skill first.", tone: "error" });
@@ -530,7 +638,7 @@ function App() {
     });
   };
 
-  const clearPreviewFlow = () => {
+  const resetPreviewResults = () => {
     setPreviewVideos([]);
     setHasPreviewedVideos(false);
     setPreviewSelection({});
@@ -544,8 +652,31 @@ function App() {
     setPreviewBusy(false);
     setIngestBusy(false);
     setPreviewSessionUnits(0);
+  };
+
+  const clearPreviewFlow = () => {
+    resetPreviewResults();
     setVideoFinderOpen(false);
     setIngestionStatus({ text: "", tone: "" });
+  };
+
+  const resetDirectMappingState = () => {
+    setDirectMapping(createEmptyDirectMapping());
+    setDirectSkills([]);
+    setDirectMapData(null);
+    setDirectMapStatus({ text: "", tone: "" });
+    setDirectSuggestBusy(false);
+    setDirectSuggestion(null);
+  };
+
+  const clearDirectSearchFlow = () => {
+    setDirectSearchQuery("");
+    resetDirectMappingState();
+  };
+
+  const resetDirectVideoSearchFlow = () => {
+    resetPreviewResults();
+    clearDirectSearchFlow();
   };
 
   const clearRecommendationFlow = () => {
@@ -605,7 +736,32 @@ function App() {
       setIngestionStatus({ text: "Select one competency first.", tone: "error" });
       return;
     }
+    setVideoFinderMode("path");
+    resetPreviewResults();
+    clearDirectSearchFlow();
     setVideoFinderOpen(true);
+    setIngestionStatus({ text: "", tone: "" });
+  };
+
+  const openDirectVideoSearch = () => {
+    setVideoFinderMode("direct");
+    resetDirectVideoSearchFlow();
+    setVideoFinderOpen(true);
+    setIngestionStatus({ text: "Search YouTube directly, then map selected videos to seeded SkillsFuture data.", tone: "" });
+  };
+
+  const openShortcutVideoFinder = () => {
+    if (!selectedCompetency) {
+      setIngestionStatus({ text: "Choose a skill and competency first to use path-based video discovery.", tone: "error" });
+      return;
+    }
+    setVideoShortcutOpen(false);
+    openVideoFinder();
+  };
+
+  const openShortcutDirectVideoSearch = () => {
+    setVideoShortcutOpen(false);
+    openDirectVideoSearch();
   };
 
   const closeVideoFinder = () => setVideoFinderOpen(false);
@@ -614,6 +770,7 @@ function App() {
     setOverlayOpen(false);
     setOverlayStep("skills");
     setVideoFinderOpen(false);
+    setVideoShortcutOpen(false);
   };
 
   const clearSectorSearch = () => setSectorSearch("");
@@ -798,6 +955,7 @@ function App() {
     try {
       const response = await fetchJson("/api/public/videos/preview", {
         method: "POST",
+        cache: "no-store",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
@@ -863,6 +1021,82 @@ function App() {
     }
   };
 
+  const searchDirectYoutubeVideos = async () => {
+    const query = directSearchQuery.trim();
+    if (query.length < 2) {
+      setIngestionStatus({ text: "Enter a search prompt first.", tone: "error" });
+      return;
+    }
+
+    setPreviewBusy(true);
+    setHasPreviewedVideos(true);
+    resetDirectMappingState();
+    setIngestionStatus({ text: "Searching YouTube directly...", tone: "" });
+
+    try {
+      const response = await fetchJson("/api/public/videos/search", {
+        method: "POST",
+        cache: "no-store",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          query,
+          max_results: 8,
+          order: "relevance",
+        }),
+      });
+
+      const previewRows = Array.isArray(response.results) ? response.results : [];
+      const nextSelection = {};
+      previewRows.forEach((video) => {
+        if (video.video_id) {
+          nextSelection[video.video_id] = true;
+        }
+      });
+
+      setPreviewVideos(previewRows);
+      setPreviewSelection(nextSelection);
+      setPreviewMeta({
+        query: response.query || query,
+        alreadyIngestedCount: 0,
+        quotaExceeded: Boolean(response.quota_exceeded),
+        quotaMessage: response.quota_message || "",
+        quota: response.quota || null,
+      });
+      setPreviewSessionUnits((current) => current + Number(response.quota?.estimated_units || 0));
+
+      if (!previewRows.length) {
+        setIngestionStatus({
+          text: response.quota_message || "No YouTube videos matched this prompt.",
+          tone: "error",
+        });
+      } else {
+        setIngestionStatus({
+          text: `${previewRows.length} YouTube result(s) ready. Map selected videos before ingesting.`,
+          tone: response.quota_exceeded ? "error" : "success",
+        });
+      }
+    } catch (error) {
+      const payload = error.payload || {};
+      setPreviewVideos([]);
+      setPreviewSelection({});
+      setPreviewMeta({
+        query: payload.query || query,
+        alreadyIngestedCount: 0,
+        quotaExceeded: Boolean(payload.quota_exceeded),
+        quotaMessage: payload.quota_message || "",
+        quota: payload.quota || null,
+      });
+      setIngestionStatus({
+        text: error.status === 429
+          ? error.message
+          : `Unable to search YouTube: ${error.message}`,
+        tone: "error",
+      });
+    } finally {
+      setPreviewBusy(false);
+    }
+  };
+
   const togglePreviewSelection = (videoId) => {
     if (!videoId) {
       return;
@@ -887,10 +1121,126 @@ function App() {
     setPreviewSelection({});
   };
 
+  const onDirectSectorChange = (sectorName) => {
+    setDirectSuggestion(null);
+    setDirectMapping({
+      sector: sectorName,
+      skill: "",
+      proficiency: "",
+      competency: "",
+      itemType: "",
+      proficiencyDescription: "",
+    });
+    setDirectMapData(null);
+    setDirectSkills([]);
+  };
+
+  const onDirectSkillChange = (skillName) => {
+    setDirectSuggestion(null);
+    setDirectMapping((current) => ({
+      ...current,
+      skill: skillName,
+      proficiency: "",
+      competency: "",
+      itemType: "",
+      proficiencyDescription: "",
+    }));
+    setDirectMapData(null);
+  };
+
+  const onDirectProficiencyChange = (proficiencyLevel) => {
+    setDirectSuggestion(null);
+    const levels = Array.isArray(directMapData?.mappings) ? directMapData.mappings : [];
+    const entry = levels.find((item) => item.proficiency_level === proficiencyLevel) || null;
+    setDirectMapping((current) => ({
+      ...current,
+      proficiency: proficiencyLevel,
+      proficiencyDescription: entry?.proficiency_description || "",
+      competency: "",
+      itemType: "",
+    }));
+  };
+
+  const onDirectCompetencyChange = (itemType, itemText) => {
+    setDirectSuggestion(null);
+    setDirectMapping((current) => ({
+      ...current,
+      itemType,
+      competency: `${itemType}: ${itemText}`,
+    }));
+  };
+
+  const suggestDirectMapping = async () => {
+    const selectedVideos = previewVideos.filter((video) => previewSelection[video.video_id]);
+    const video = selectedVideos[0] || previewVideos[0];
+    if (!video) {
+      setDirectMapStatus({ text: "Search YouTube and select at least one video first.", tone: "error" });
+      return;
+    }
+
+    setDirectSuggestBusy(true);
+    setDirectMapStatus({ text: "Suggesting a seeded mapping...", tone: "" });
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
+    try {
+      const response = await fetchJson("/api/public/videos/suggest-mapping", {
+        method: "POST",
+        cache: "no-store",
+        headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
+        body: JSON.stringify({
+          search_query: directSearchQuery.trim() || previewMeta.query || "",
+          video: {
+            video_id: video.video_id || "",
+            title: video.title || "",
+            description: video.description || "",
+            channel_title: video.channel_title || "",
+            tags: Array.isArray(video.tags) ? video.tags : [],
+          },
+          use_ai: false,
+        }),
+      });
+      const suggestion = response.suggestion || null;
+      if (!suggestion) {
+        setDirectMapStatus({ text: "No mapping suggestion was returned.", tone: "error" });
+        return;
+      }
+      setDirectSuggestion(suggestion);
+      setDirectMapping({
+        sector: suggestion.sector || "",
+        skill: suggestion.skill || "",
+        proficiency: suggestion.proficiency_level || "",
+        competency: suggestion.competency || "",
+        itemType: suggestion.item_type || "",
+        proficiencyDescription: suggestion.proficiency_description || "",
+      });
+      setDirectMapStatus({
+        text: "Mapping suggestion filled. Review it before ingesting.",
+        tone: "success",
+      });
+    } catch (error) {
+      setDirectSuggestion(null);
+      const message = error.name === "AbortError"
+        ? "Mapping suggestion took longer than expected. Please try again or map manually."
+        : `Unable to suggest mapping: ${String(error.message || "").replace(/[.。]+$/, "")}. You can still map manually.`;
+      setDirectMapStatus({ text: message, tone: "error" });
+    } finally {
+      clearTimeout(timeoutId);
+      setDirectSuggestBusy(false);
+    }
+  };
+
   const ingestSelectedPreviewVideos = async () => {
     const selectedVideos = previewVideos.filter((video) => previewSelection[video.video_id]);
     if (!selectedVideos.length) {
       setIngestionStatus({ text: "Select at least one new preview video first.", tone: "error" });
+      return;
+    }
+    if (
+      videoFinderMode === "direct" &&
+      (!directMapping.sector || !directMapping.skill || !directMapping.proficiency || !directMapping.competency)
+    ) {
+      setIngestionStatus({ text: "Map selected videos to a seeded skill and competency before ingesting.", tone: "error" });
       return;
     }
 
@@ -899,12 +1249,12 @@ function App() {
 
     const payload = {
       videos: selectedVideos.map((video) => ({
-        sector: video.sector,
-        skill_name: video.skill_name,
-        competency: video.competency,
-        item_type: video.item_type,
-        proficiency_level: video.proficiency_level,
-        proficiency_description: video.proficiency_description,
+        sector: videoFinderMode === "direct" ? directMapping.sector : video.sector,
+        skill_name: videoFinderMode === "direct" ? directMapping.skill : video.skill_name,
+        competency: videoFinderMode === "direct" ? directMapping.competency : video.competency,
+        item_type: videoFinderMode === "direct" ? directMapping.itemType : video.item_type,
+        proficiency_level: videoFinderMode === "direct" ? directMapping.proficiency : video.proficiency_level,
+        proficiency_description: videoFinderMode === "direct" ? directMapping.proficiencyDescription : video.proficiency_description,
         videoId: video.video_id,
         publishedAt: video.published_at,
         title: video.title,
@@ -922,6 +1272,7 @@ function App() {
     try {
       const response = await fetchJson("/api/public/videos/ingest", {
         method: "POST",
+        cache: "no-store",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
@@ -939,9 +1290,11 @@ function App() {
         ...current,
         alreadyIngestedCount: current.alreadyIngestedCount + selectedIds.size,
       }));
+      const embeddingStatus = response.embedding_status || "skipped";
+      const ingestErrorCount = Number(response.error_count || 0);
       setIngestionStatus({
         text: `${response.message} Indexed ${Number(response.embedding_indexed || 0)} video(s).`,
-        tone: response.embedding_status === "failed" || Number(response.error_count || 0) > 0 ? "error" : "success",
+        tone: embeddingStatus === "failed" ? "error" : ingestErrorCount > 0 ? "warning" : "success",
       });
     } catch (error) {
       setIngestionStatus({ text: `Unable to ingest selected videos: ${error.message}`, tone: "error" });
@@ -1019,6 +1372,23 @@ function App() {
     proficiencyMappings.find((entry) => entry.proficiency_level === selectedProficiency) ||
     proficiencyMappings[0] ||
     null;
+  const directProficiencyMappings = directMapData && Array.isArray(directMapData.mappings) ? directMapData.mappings : [];
+  const selectedDirectMapEntry =
+    directProficiencyMappings.find((entry) => entry.proficiency_level === directMapping.proficiency) ||
+    directProficiencyMappings[0] ||
+    null;
+  const directKnowledgeItems = Array.isArray(selectedDirectMapEntry?.knowledge_items)
+    ? selectedDirectMapEntry.knowledge_items
+    : [];
+  const directAbilityItems = Array.isArray(selectedDirectMapEntry?.ability_items)
+    ? selectedDirectMapEntry.ability_items
+    : [];
+  const directMappingComplete = Boolean(
+    directMapping.sector &&
+    directMapping.skill &&
+    directMapping.proficiency &&
+    directMapping.competency,
+  );
 
   const sectorMetrics = useMemo(
     () => ({
@@ -1111,6 +1481,7 @@ function App() {
     (count, video) => count + (previewSelection[video.video_id] ? 1 : 0),
     0,
   );
+  const directIngestBlocked = videoFinderMode === "direct" && !directMappingComplete;
 
   const previewQuotaFeedback = useMemo(() => {
     const quota = previewMeta.quota;
@@ -1289,11 +1660,13 @@ function App() {
             : "#";
           const isSelected = Boolean(previewSelection[video.video_id]);
           const isDisabled = video.already_ingested || ingestBusy;
-          const metrics = [
-            video.channel_title || "Unknown channel",
-            video.duration || "n/a",
-            `${Number(video.view_count || 0).toLocaleString()} views`,
-          ];
+          const metrics = videoFinderMode === "direct"
+            ? [video.channel_title || "Unknown channel"]
+            : [
+                video.channel_title || "Unknown channel",
+                video.duration || "n/a",
+                `${Number(video.view_count || 0).toLocaleString()} views`,
+              ];
           return html`
             <article
               key=${`preview-${video.video_id}`}
@@ -1328,7 +1701,9 @@ function App() {
                 <p className="video-meta">${metrics.join(" · ")}</p>
                 <p className="preview-desc">${video.description || "No description provided."}</p>
                 <div className="preview-footer">
-                  <span className="video-chip">${video.skill_name || selectedSkill || "Skill"}</span>
+                  ${videoFinderMode === "direct"
+                    ? html`<span></span>`
+                    : html`<span className="video-chip">${video.skill_name || selectedSkill || "Skill"}</span>`}
                   <a
                     className="preview-link"
                     href=${url}
@@ -1377,6 +1752,48 @@ function App() {
               <span>Open job role lookup</span>
             </a>
             <p>Browse roles, work functions, and linked competencies.</p>
+          </div>
+          <div className="hero-video-cta">
+            <button
+              type="button"
+              className="utility-btn utility-btn-brand hero-link"
+              onClick=${() => setVideoShortcutOpen((current) => !current)}
+              aria-expanded=${videoShortcutOpen}
+              aria-haspopup="dialog"
+            >
+              <span className="hero-video-icon" aria-hidden="true"></span>
+              <span>Direct Video Search?</span>
+            </button>
+            <p>Preview or search YouTube candidates.</p>
+            ${videoShortcutOpen
+              ? html`
+                  <div className="hero-video-popout" role="dialog" aria-label="Need more videos">
+                    <div>
+                      <p className="selection-label">Video Discovery</p>
+                      <p className="hero-video-popout-copy">
+                        Choose path-based discovery or start a clean direct YouTube search.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      className="utility-btn"
+                      onClick=${openShortcutVideoFinder}
+                    >
+                      Find Another Video
+                    </button>
+                    <button
+                      type="button"
+                      className="utility-btn utility-btn-brand"
+                      onClick=${openShortcutDirectVideoSearch}
+                    >
+                      Search YouTube Directly
+                    </button>
+                    ${ingestionStatus.text && !selectedCompetency
+                      ? html`<p className="panel-status" data-tone=${ingestionStatus.tone || undefined}>${ingestionStatus.text}</p>`
+                      : null}
+                  </div>
+                `
+              : null}
           </div>
         </div>
       </header>
@@ -1737,6 +2154,13 @@ function App() {
                                   >
                                     Find Another Video
                                   </button>
+                                  <button
+                                    type="button"
+                                    className="utility-btn utility-btn-brand"
+                                    onClick=${openDirectVideoSearch}
+                                  >
+                                    Search YouTube Directly
+                                  </button>
                                 </div>
                                 ${hasPreviewedVideos
                                   ? html`
@@ -1766,6 +2190,7 @@ function App() {
             <div className="video-finder-backdrop" onClick=${closeVideoFinder}>
               <section
                 className="video-finder-panel"
+                data-mode=${videoFinderMode}
                 role="dialog"
                 aria-modal="true"
                 aria-label="Video finder"
@@ -1773,17 +2198,46 @@ function App() {
               >
                 <div className="video-finder-head">
                   <div>
-                    <p className="quiz-kicker">Video Finder</p>
-                    <h2>${selectedSkill || "Find More Videos"}</h2>
+                    <p className="quiz-kicker">${videoFinderMode === "direct" ? "Direct YouTube Search" : "Video Finder"}</p>
+                    <h2>${videoFinderMode === "direct" ? "Search YouTube Directly" : selectedSkill || "Find More Videos"}</h2>
                     <p className="video-finder-path">
-                      ${selectionSummary}
-                      ${selectedCompetency ? ` · ${selectedCompetency}` : ""}
+                      ${videoFinderMode === "direct" ? "Search any prompt, then map selected videos to seeded SkillsFuture data before ingesting." : selectionSummary}
+                      ${videoFinderMode === "direct" ? "" : selectedCompetency ? ` · ${selectedCompetency}` : ""}
                     </p>
                   </div>
                   <button type="button" className="close-btn" onClick=${closeVideoFinder}>Close</button>
                 </div>
 
                 <div className="video-finder-content">
+                  ${videoFinderMode === "direct"
+                    ? html`
+                        <div className="direct-search-panel">
+                          <label className="field-label" htmlFor="direct-youtube-query">YouTube search prompt</label>
+                          <div className="direct-search-row">
+                            <input
+                              id="direct-youtube-query"
+                              type="search"
+                              placeholder="Example: beginner accounting standards tutorial"
+                              value=${directSearchQuery}
+                              onInput=${(event) => setDirectSearchQuery(event.target.value)}
+                              onKeyDown=${(event) => {
+                                if (event.key === "Enter") {
+                                  searchDirectYoutubeVideos();
+                                }
+                              }}
+                            />
+                            <button
+                              type="button"
+                              className="utility-btn utility-btn-brand"
+                              onClick=${searchDirectYoutubeVideos}
+                              disabled=${previewBusy || ingestBusy}
+                            >
+                              ${previewBusy ? "Searching..." : hasPreviewedVideos ? "Search Again" : "Search YouTube"}
+                            </button>
+                          </div>
+                        </div>
+                      `
+                    : null}
                   <div className="video-finder-topbar">
                     <p className="selection-sub">
                       Search for fresh YouTube candidates using the current path, then ingest the ones worth keeping.
@@ -1811,6 +2265,123 @@ function App() {
                       `
                     : null}
 
+                  ${videoFinderMode === "direct" && previewVideos.length
+                    ? html`
+                        <section className="direct-map-panel">
+                          <div className="direct-map-head">
+                            <div>
+                              <p className="selection-label">Map selected videos</p>
+                              <p className="selection-sub">Required before ingestion so these videos can appear in recommendations.</p>
+                            </div>
+                            <button
+                              type="button"
+                              className="utility-btn utility-btn-brand"
+                              onClick=${suggestDirectMapping}
+                              disabled=${directSuggestBusy || previewBusy || ingestBusy || !previewVideos.length}
+                            >
+                              ${directSuggestBusy ? "Suggesting..." : "Suggest Mapping"}
+                            </button>
+                          </div>
+                          ${directSuggestion
+                            ? html`
+                                <div className="direct-suggestion-card">
+                                  <p className="selection-label">Suggested mapping</p>
+                                  <p className="selection-value">
+                                    ${directSuggestion.sector} · ${directSuggestion.skill} · Level ${directSuggestion.proficiency_level}
+                                  </p>
+                                  <p className="selection-sub">${formatCompetencyLabel(directSuggestion.competency)}</p>
+                                  ${directSuggestion.reason
+                                    ? html`<p className="direct-suggestion-reason">${directSuggestion.reason}</p>`
+                                    : null}
+                                </div>
+                              `
+                            : null}
+                          <div className="direct-map-grid">
+                            <label className="field-label" htmlFor="direct-map-sector">
+                              Sector
+                              <select
+                                id="direct-map-sector"
+                                value=${directMapping.sector}
+                                onChange=${(event) => onDirectSectorChange(event.target.value)}
+                              >
+                                <option value="">Choose sector</option>
+                                ${sectors.map((sector) => html`<option key=${sector.sector} value=${sector.sector}>${sector.sector}</option>`)}
+                              </select>
+                            </label>
+                            <label className="field-label" htmlFor="direct-map-skill">
+                              Skill
+                              <select
+                                id="direct-map-skill"
+                                value=${directMapping.skill}
+                                onChange=${(event) => onDirectSkillChange(event.target.value)}
+                                disabled=${!directMapping.sector}
+                              >
+                                <option value="">Choose skill</option>
+                                ${directSkills.map((skill) => html`<option key=${skill.skill} value=${skill.skill}>${skill.skill}</option>`)}
+                              </select>
+                            </label>
+                            <label className="field-label" htmlFor="direct-map-level">
+                              Level
+                              <select
+                                id="direct-map-level"
+                                value=${directMapping.proficiency}
+                                onChange=${(event) => onDirectProficiencyChange(event.target.value)}
+                                disabled=${!directProficiencyMappings.length}
+                              >
+                                <option value="">Choose level</option>
+                                ${directProficiencyMappings.map((entry) => html`
+                                  <option key=${entry.proficiency_level} value=${entry.proficiency_level}>${entry.proficiency_level}</option>
+                                `)}
+                              </select>
+                            </label>
+                          </div>
+                          <p className="panel-status" data-tone=${directMapStatus.tone || undefined}>${directMapStatus.text}</p>
+                          ${selectedDirectMapEntry
+                            ? html`
+                                <div className="direct-competency-picker">
+                                  <div>
+                                    <p className="selection-label">Knowledge Competencies</p>
+                                    <div className="direct-competency-list">
+                                      ${directKnowledgeItems.length
+                                        ? directKnowledgeItems.map((item) => html`
+                                            <button
+                                              type="button"
+                                              key=${`direct-knowledge-${item}`}
+                                              className=${`chip competency-chip ${directMapping.competency === `knowledge: ${item}` ? "active" : ""}`}
+                                              onClick=${() => onDirectCompetencyChange("knowledge", item)}
+                                            >
+                                              ${directMapping.competency === `knowledge: ${item}` ? html`<span className="chip-check" aria-hidden="true"></span>` : null}
+                                              ${item}
+                                            </button>
+                                          `)
+                                        : html`<p className="empty-note">No knowledge competencies mapped for this level.</p>`}
+                                    </div>
+                                  </div>
+                                  <div>
+                                    <p className="selection-label">Ability Competencies</p>
+                                    <div className="direct-competency-list">
+                                      ${directAbilityItems.length
+                                        ? directAbilityItems.map((item) => html`
+                                            <button
+                                              type="button"
+                                              key=${`direct-ability-${item}`}
+                                              className=${`chip competency-chip ${directMapping.competency === `ability: ${item}` ? "active" : ""}`}
+                                              onClick=${() => onDirectCompetencyChange("ability", item)}
+                                            >
+                                              ${directMapping.competency === `ability: ${item}` ? html`<span className="chip-check" aria-hidden="true"></span>` : null}
+                                              ${item}
+                                            </button>
+                                          `)
+                                        : html`<p className="empty-note">No ability competencies mapped for this level.</p>`}
+                                    </div>
+                                  </div>
+                                </div>
+                              `
+                            : null}
+                        </section>
+                      `
+                    : null}
+
                   ${previewVideos.length
                     ? html`
                         <div className="preview-toolbar">
@@ -1827,7 +2398,7 @@ function App() {
                               onClick=${selectAllPreviewVideos}
                               disabled=${previewBusy || ingestBusy}
                             >
-                              Select new
+                              ${videoFinderMode === "direct" ? "Select all" : "Select new"}
                             </button>
                             <button
                               type="button"
@@ -1853,7 +2424,7 @@ function App() {
                     type="button"
                     className="primary-btn video-finder-ingest-btn"
                     onClick=${ingestSelectedPreviewVideos}
-                    disabled=${!selectedPreviewCount || previewBusy || ingestBusy}
+                    disabled=${!selectedPreviewCount || directIngestBlocked || previewBusy || ingestBusy}
                   >
                     ${ingestBusy
                       ? "Ingesting selected videos..."

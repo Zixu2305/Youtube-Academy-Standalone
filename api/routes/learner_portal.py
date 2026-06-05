@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from functools import lru_cache
 from pathlib import Path
@@ -44,6 +45,7 @@ PORTAL_YOUTUBE_API_KEY_ENV_NAMES = (
     "GOOGLE_API_KEY",
     "YOUTUBE_DATA_API_KEY",
 )
+MAPPING_SUGGESTION_MIN_SCORE = 2.0
 
 page_router = APIRouter()
 api_router = APIRouter()
@@ -344,6 +346,12 @@ class PublicVideoPreviewRequest(BaseModel):
     extra_context: str | None = None
 
 
+class PublicDirectVideoSearchRequest(BaseModel):
+    query: str = Field(..., min_length=2, max_length=240)
+    max_results: int = Field(default=PORTAL_PREVIEW_LIMIT, ge=1, le=PORTAL_PREVIEW_LIMIT)
+    order: str = Field(default="relevance", max_length=30)
+
+
 class PublicPreviewVideo(BaseModel):
     sector: str
     skill_name: str
@@ -407,7 +415,39 @@ class PublicVideoIngestResponse(BaseModel):
     unchanged: int
     error_count: int
     embedding_status: str
+    embedding_requested: int = 0
     embedding_indexed: int
+    embedding_skipped_invalid: int = 0
+
+
+class PublicMappingVideo(BaseModel):
+    video_id: str = ""
+    title: str = ""
+    description: str = ""
+    channel_title: str = ""
+    tags: list[str] = Field(default_factory=list)
+
+
+class PublicVideoMappingSuggestRequest(BaseModel):
+    video: PublicMappingVideo
+    search_query: str | None = None
+    use_ai: bool = False
+
+
+class PublicVideoMappingSuggestion(BaseModel):
+    sector: str
+    skill: str
+    proficiency_level: str
+    competency: str
+    item_type: str
+    proficiency_description: str = ""
+    confidence: float = 0.0
+    reason: str = ""
+
+
+class PublicVideoMappingSuggestResponse(BaseModel):
+    suggestion: PublicVideoMappingSuggestion
+    alternatives: list[PublicVideoMappingSuggestion] = Field(default_factory=list)
 
 
 @lru_cache(maxsize=1)
@@ -471,6 +511,194 @@ def get_skill_suggestion_index() -> list[dict[str, object]]:
         entry["sector_count"] = len(entry["sectors"])
 
     return list(grouped.values())
+
+
+def score_text_overlap(query: str, label: str) -> float:
+    query_tokens = set(tokenize_search_text(query))
+    label_tokens = set(tokenize_search_text(label))
+    if not query_tokens or not label_tokens:
+        return 0.0
+    overlap = query_tokens & label_tokens
+    if not overlap:
+        return 0.0
+    return len(overlap) / max(1, len(query_tokens))
+
+
+def get_mapping_candidate_headers(query_text: str, limit: int = 80) -> list[dict[str, object]]:
+    tokens = [
+        token
+        for token in tokenize_search_text(query_text)
+        if len(token) >= 3
+    ][:6]
+    if not tokens:
+        return []
+
+    where_clauses = []
+    params: list[object] = []
+    for token in tokens:
+        like_value = f"%{token}%"
+        where_clauses.append("(m.sector_name_raw LIKE %s OR m.source_skill_title LIKE %s)")
+        params.extend([like_value, like_value])
+
+    sql = f"""
+    SELECT
+      m.source_skill_title AS skill,
+      m.sector_name_raw AS sector,
+      COUNT(DISTINCT CONCAT(m.sf_skill_id, ':', m.proficiency_level)) AS mapped_proficiency_count
+    FROM map_sf_to_cat_skill m
+    WHERE m.source_skill_title IS NOT NULL
+      AND m.source_skill_title <> ''
+      AND m.sector_name_raw IS NOT NULL
+      AND m.sector_name_raw <> ''
+      AND ({' OR '.join(where_clauses)})
+    GROUP BY m.source_skill_title, m.sector_name_raw
+    ORDER BY mapped_proficiency_count DESC, m.sector_name_raw, m.source_skill_title
+    LIMIT %s;
+    """
+    params.append(limit)
+
+    conn = get_mysql_connection()
+    cur = conn.cursor(dictionary=True)
+    try:
+        cur.execute(sql, params)
+        rows = cur.fetchall()
+    finally:
+        cur.close()
+        conn.close()
+
+    return [
+        {
+            "sector": str(row.get("sector") or "").strip(),
+            "skill": str(row.get("skill") or "").strip(),
+            "mapped_skill_count": parse_int(row.get("mapped_proficiency_count")),
+        }
+        for row in rows
+        if str(row.get("sector") or "").strip() and str(row.get("skill") or "").strip()
+    ]
+
+
+def get_mapping_candidates_for_video(
+    *,
+    video: PublicMappingVideo,
+    search_query: str,
+    limit: int = 4,
+) -> list[dict[str, object]]:
+    query_text = " ".join(
+        [
+            search_query,
+            video.title,
+            video.description,
+            video.channel_title,
+            " ".join(video.tags[:12]),
+        ]
+    ).strip()
+    base_search_text = search_query.strip() or query_text
+    scored_entries: list[tuple[float, dict[str, object]]] = []
+    header_entries = get_mapping_candidate_headers(base_search_text)
+
+    for entry in header_entries:
+        skill = str(entry.get("skill") or "")
+        skill_score = score_label_match(base_search_text, skill)
+        sector = str(entry.get("sector") or "")
+        sector_score = score_label_match(base_search_text, sector)
+        mapped_count = parse_int(entry.get("mapped_skill_count"))
+        score = sector_score * 2.4 + skill_score * 2.8 + min(1.0, mapped_count / 8) * 0.25
+        if score < MAPPING_SUGGESTION_MIN_SCORE:
+            continue
+        scored_entries.append((score, entry))
+
+    candidates = []
+    scored_entries.sort(
+        key=lambda item: (
+            -item[0],
+            -parse_int(item[1].get("mapped_skill_count")),
+            str(item[1].get("sector") or "").lower(),
+            str(item[1].get("skill") or "").lower(),
+        )
+    )
+
+    for score, entry in scored_entries[:limit]:
+        try:
+            skill_map = get_skill_map(
+                sector=str(entry.get("sector") or ""),
+                skill=str(entry.get("skill") or ""),
+            )
+        except HTTPException:
+            continue
+
+        mappings = []
+        for mapping in skill_map.mappings[:3]:
+            competencies = [
+                {"item_type": "knowledge", "item_text": item}
+                for item in mapping.knowledge_items[:4]
+            ] + [
+                {"item_type": "ability", "item_text": item}
+                for item in mapping.ability_items[:4]
+            ]
+            if not competencies:
+                continue
+            mappings.append({
+                "proficiency_level": mapping.proficiency_level,
+                "proficiency_description": mapping.proficiency_description,
+                "competencies": competencies,
+            })
+        if not mappings:
+            continue
+
+        candidates.append({
+            "candidate_id": len(candidates),
+            "sector": entry["sector"],
+            "skill": entry["skill"],
+            "score": round(float(score), 4),
+            "mappings": mappings,
+        })
+    return candidates
+
+
+def _parse_mapping_suggestion(raw: str) -> dict:
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if start >= 0 and end > start:
+            return json.loads(raw[start : end + 1])
+        raise
+
+
+def _fallback_mapping_suggestion(
+    candidates: list[dict[str, object]],
+    query_text: str = "",
+) -> PublicVideoMappingSuggestion | None:
+    best_match: tuple[float, dict[str, object], dict[str, object], dict[str, object]] | None = None
+    for candidate in candidates:
+        mappings = candidate.get("mappings", [])
+        for mapping in mappings:
+            competencies = mapping.get("competencies", [])
+            for competency in competencies:
+                competency_text = str(competency.get("item_text") or "")
+                score = (
+                    score_label_match(query_text, competency_text)
+                    + score_text_overlap(query_text, competency_text) * 3.2
+                    + score_text_overlap(query_text, str(mapping.get("proficiency_description") or "")) * 0.7
+                )
+                if best_match is None or score > best_match[0]:
+                    best_match = (score, candidate, mapping, competency)
+
+    if best_match is not None:
+        score, candidate, mapping, competency = best_match
+        confidence = 0.42 if score > 0 else 0.32
+        return PublicVideoMappingSuggestion(
+            sector=str(candidate.get("sector") or ""),
+            skill=str(candidate.get("skill") or ""),
+            proficiency_level=str(mapping.get("proficiency_level") or ""),
+            proficiency_description=str(mapping.get("proficiency_description") or ""),
+            item_type=str(competency.get("item_type") or ""),
+            competency=f"{competency.get('item_type')}: {competency.get('item_text')}",
+            confidence=confidence,
+            reason="Suggested from the closest seeded SkillsFuture mapping.",
+        )
+    return None
 
 
 def get_portal_youtube_api_key() -> str:
@@ -550,6 +778,8 @@ def annotate_existing_ingestion(
             for row in existing_rows
             if row.get("videoId")
         }
+    except Exception:
+        existing_ids = set()
     finally:
         if client:
             client.close()
@@ -1285,6 +1515,210 @@ def public_preview_videos(payload: PublicVideoPreviewRequest):
     )
 
 
+@api_router.post("/public/videos/search", response_model=PublicVideoPreviewResponse)
+def public_search_videos(payload: PublicDirectVideoSearchRequest):
+    from pipelines.youtube.youtube_ingestion_service import fetch_direct_youtube_search
+
+    query = payload.query.strip()
+    api_key = get_portal_youtube_api_key()
+    quota_context = get_portal_quota_context()
+    allowed_orders = {"date", "rating", "relevance", "title", "videoCount", "viewCount"}
+    search_order = payload.order if payload.order in allowed_orders else "relevance"
+
+    try:
+        videos, summary = fetch_direct_youtube_search(
+            query=query,
+            api_key=api_key,
+            search_max_results=payload.max_results,
+            search_order=search_order,
+            search_constraints={},
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Direct YouTube search failed: {exc}",
+        ) from exc
+
+    results = [
+        PublicPreviewVideo(
+            sector="",
+            skill_name="",
+            competency="",
+            item_type="",
+            proficiency_level="",
+            proficiency_description="",
+            video_id=str(item.get("videoId") or ""),
+            published_at=str(item.get("publishedAt") or ""),
+            title=str(item.get("title") or ""),
+            description=str(item.get("description") or ""),
+            view_count=parse_int(item.get("viewCount")),
+            like_count=parse_int(item.get("likeCount")),
+            comment_count=parse_int(item.get("commentCount")),
+            tags=[str(tag) for tag in item.get("tags", []) if str(tag).strip()],
+            duration=str(item.get("duration") or ""),
+            channel_title=str(item.get("channelTitle") or ""),
+            thumbnail_url=str(item.get("thumbnailUrl") or ""),
+            already_ingested=False,
+        )
+        for item in videos
+        if str(item.get("videoId") or "").strip()
+    ]
+
+    quota_message = None
+    if summary.get("quota_exceeded"):
+        quota_message = (
+            "YouTube API daily credit limit was reached while searching for more videos. "
+            "Try again later."
+        )
+
+    if summary.get("quota_exceeded") and not results:
+        return JSONResponse(
+            status_code=429,
+            content={
+                "detail": quota_message,
+                "query": query,
+                "count": 0,
+                "already_ingested_count": 0,
+                "quota_exceeded": True,
+                "quota_message": quota_message,
+                "quota": quota_context,
+                "results": [],
+            },
+        )
+
+    return PublicVideoPreviewResponse(
+        query=query,
+        count=len(results),
+        already_ingested_count=0,
+        quota_exceeded=bool(summary.get("quota_exceeded")),
+        quota_message=quota_message,
+        quota=quota_context,
+        results=results,
+    )
+
+
+@api_router.post("/public/videos/suggest-mapping", response_model=PublicVideoMappingSuggestResponse)
+def public_suggest_video_mapping(payload: PublicVideoMappingSuggestRequest):
+    search_query = (payload.search_query or "").strip()
+    candidates = get_mapping_candidates_for_video(
+        video=payload.video,
+        search_query=search_query,
+    )
+    if not candidates:
+        raise HTTPException(status_code=404, detail="No seeded SkillsFuture mapping candidates were found for this video.")
+
+    query_text = " ".join(
+        [
+            search_query,
+            payload.video.title,
+            payload.video.description,
+            payload.video.channel_title,
+            " ".join(payload.video.tags[:12]),
+        ]
+    ).strip()
+    fallback = _fallback_mapping_suggestion(candidates, query_text)
+    if not payload.use_ai:
+        if not fallback:
+            raise HTTPException(status_code=404, detail="No seeded competency candidates were found for this video.")
+        return PublicVideoMappingSuggestResponse(suggestion=fallback)
+
+    from pipelines.llm_client import call_llm_chat
+
+    candidate_payload = json.dumps(candidates, ensure_ascii=False)
+    prompt = f"""
+You suggest SkillsFuture mappings for YouTube learning videos.
+
+Rules:
+- Choose only from the provided candidates.
+- Do not invent sectors, skills, levels, or competencies.
+- Return JSON only.
+- Use this schema:
+{{
+  "candidate_id": 0,
+  "proficiency_level": "3",
+  "item_type": "knowledge",
+  "item_text": "Programming and coding languages, logics and styles",
+  "confidence": 0.0,
+  "reason": "Short reason"
+}}
+
+Video:
+Title: {payload.video.title}
+Description: {payload.video.description[:1200]}
+Channel: {payload.video.channel_title}
+Tags: {", ".join(payload.video.tags[:12])}
+Search query: {search_query}
+
+Seeded candidates:
+{candidate_payload}
+""".strip()
+
+    try:
+        raw = call_llm_chat(
+            prompt,
+            temperature=0.1,
+            max_tokens=500,
+            timeout=20,
+            expect_json=True,
+            rate_limit_retries=0,
+        )
+        parsed = _parse_mapping_suggestion(raw)
+    except Exception as exc:
+        if fallback:
+            return PublicVideoMappingSuggestResponse(suggestion=fallback)
+        raise HTTPException(status_code=503, detail=f"AI mapping suggestion is unavailable: {exc}") from exc
+
+    candidate_id = parse_int(parsed.get("candidate_id"), default=-1)
+    selected_candidate = next(
+        (candidate for candidate in candidates if parse_int(candidate.get("candidate_id"), default=-2) == candidate_id),
+        None,
+    )
+    if not selected_candidate:
+        if not fallback:
+            raise HTTPException(status_code=500, detail="AI returned a mapping that did not match seeded candidates.")
+        return PublicVideoMappingSuggestResponse(suggestion=fallback)
+
+    selected_level = str(parsed.get("proficiency_level") or "").strip()
+    selected_type = str(parsed.get("item_type") or "").strip().lower()
+    selected_text = str(parsed.get("item_text") or "").strip()
+    matched_mapping = None
+    matched_competency = None
+    for mapping in selected_candidate.get("mappings", []):
+        if str(mapping.get("proficiency_level") or "") != selected_level:
+            continue
+        for competency in mapping.get("competencies", []):
+            if (
+                str(competency.get("item_type") or "").strip().lower() == selected_type
+                and str(competency.get("item_text") or "").strip() == selected_text
+            ):
+                matched_mapping = mapping
+                matched_competency = competency
+                break
+        if matched_competency:
+            break
+
+    if not matched_mapping or not matched_competency:
+        fallback = _fallback_mapping_suggestion([selected_candidate], query_text)
+        if not fallback:
+            raise HTTPException(status_code=500, detail="AI returned a competency that did not match seeded candidates.")
+        return PublicVideoMappingSuggestResponse(suggestion=fallback)
+
+    confidence = max(0.0, min(1.0, float(parsed.get("confidence") or 0)))
+    suggestion = PublicVideoMappingSuggestion(
+        sector=str(selected_candidate.get("sector") or ""),
+        skill=str(selected_candidate.get("skill") or ""),
+        proficiency_level=str(matched_mapping.get("proficiency_level") or ""),
+        proficiency_description=str(matched_mapping.get("proficiency_description") or ""),
+        item_type=str(matched_competency.get("item_type") or ""),
+        competency=f"{matched_competency.get('item_type')}: {matched_competency.get('item_text')}",
+        confidence=confidence,
+        reason=str(parsed.get("reason") or "").strip(),
+    )
+    return PublicVideoMappingSuggestResponse(suggestion=suggestion)
+
+
 @api_router.post("/public/videos/ingest", response_model=PublicVideoIngestResponse)
 def public_ingest_videos(payload: PublicVideoIngestRequest):
     from pipelines.youtube.youtube_ingestion_service import upsert_selected_videos
@@ -1300,13 +1734,19 @@ def public_ingest_videos(payload: PublicVideoIngestRequest):
     touched_docs: list[dict] = []
 
     try:
+        requested_docs = [video.model_dump() for video in payload.videos]
         client, videos_collection = get_portal_videos_collection()
         summary = upsert_selected_videos(
             videos_collection,
-            [video.model_dump() for video in payload.videos],
+            requested_docs,
             touched_docs=touched_docs,
         )
-        embed_portal_videos(summary, touched_docs)
+        docs_for_embedding = touched_docs or [
+            doc
+            for doc in requested_docs
+            if str(doc.get("videoId") or "").strip() and str(doc.get("skill_name") or "").strip()
+        ]
+        embed_portal_videos(summary, docs_for_embedding)
         get_bm25_index.cache_clear()
         get_cached_portal_retrieval.cache_clear()
         get_cached_reranker_scores.cache_clear()
@@ -1322,14 +1762,14 @@ def public_ingest_videos(payload: PublicVideoIngestRequest):
             client.close()
 
     message = "Selected videos ingested successfully."
-    if summary.get("embedding_status") == "completed" and summary.get("embedding_indexed", 0) > 0:
+    if summary.get("embedding_status") == "failed":
+        message = "Selected videos ingested, but embedding failed."
+    elif summary.get("embedding_status") == "completed" and summary.get("embedding_indexed", 0) > 0:
         message = "Selected videos ingested and indexed successfully."
+    elif summary.get("error_count", 0) > 0:
+        message = "Selected videos ingested with warnings."
     elif summary.get("embedding_status") == "skipped":
         message = "Selected videos ingested. No valid videos required indexing."
-    elif summary.get("embedding_status") == "failed":
-        message = "Selected videos ingested, but embedding failed."
-    elif summary.get("error_count", 0) > 0:
-        message = "Selected videos ingested with errors."
 
     return PublicVideoIngestResponse(
         message=message,
@@ -1339,7 +1779,9 @@ def public_ingest_videos(payload: PublicVideoIngestRequest):
         unchanged=parse_int(summary.get("unchanged")),
         error_count=parse_int(summary.get("error_count")),
         embedding_status=str(summary.get("embedding_status") or "skipped"),
+        embedding_requested=parse_int(summary.get("embedding_requested")),
         embedding_indexed=parse_int(summary.get("embedding_indexed")),
+        embedding_skipped_invalid=parse_int(summary.get("embedding_skipped_invalid")),
     )
 
 

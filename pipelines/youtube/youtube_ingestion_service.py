@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+from html import unescape
 import json
 import os
 import re
@@ -25,6 +26,16 @@ QUOTA_ERROR_REASONS = {
     "dailyLimitExceededUnreg",
     "rateLimitExceeded",
 }
+SHORT_FORM_EXCLUSION_TERMS = ("shorts", "#shorts", "short", "reels", "reel")
+
+
+def looks_like_short_form_video(title: str, description: str) -> bool:
+    text = f"{title} {description}".lower()
+    return any(term in text for term in SHORT_FORM_EXCLUSION_TERMS)
+
+
+def clean_youtube_text(value: object) -> str:
+    return unescape(str(value or "")).strip()
 
 # --- LLM CONFIGURATION ---
 _LLM_TIMEOUT = 10  # Fast timeout for keywords
@@ -524,18 +535,146 @@ def fetch_videos_for_preview(
                 "proficiency_level": proficiency,
                 "proficiency_description": proficiency_description,
                 "videoId": video_id,
-                "publishedAt": snippet.get("publishedAt", ""),
-                "title": snippet.get("title", ""),
-                "description": snippet.get("description", ""),
+                "publishedAt": clean_youtube_text(snippet.get("publishedAt", "")),
+                "title": clean_youtube_text(snippet.get("title", "")),
+                "description": clean_youtube_text(snippet.get("description", "")),
                 "viewCount": view_count,
                 "likeCount": like_count,
                 "commentCount": comment_count,
                 "tags": tags,
                 "duration": parse_duration(duration),
-                "channelTitle": snippet.get("channelTitle", ""),
+                "channelTitle": clean_youtube_text(snippet.get("channelTitle", "")),
                 "thumbnailUrl": snippet.get("thumbnails", {}).get("default", {}).get("url", ""),
             }
             videos.append(video_doc)
+    summary["error_count"] = len(summary["errors"])
+    summary["errors"] = summary["errors"][:MAX_ERROR_DETAILS]
+    return videos, summary
+
+
+def fetch_direct_youtube_search(
+    *,
+    query: str,
+    api_key: str,
+    search_max_results: int,
+    search_order: str = "relevance",
+    search_constraints: dict | None = None,
+):
+    search_constraints = search_constraints or {}
+    clean_query = query.strip()
+    summary = {
+        "query": clean_query,
+        "videos_found": 0,
+        "error_count": 0,
+        "errors": [],
+        "quota_exceeded": False,
+    }
+    if not clean_query:
+        return [], summary
+
+    duration_items = {"medium": [], "long": []}
+    seen_video_ids = set()
+    for duration in ("medium", "long"):
+        search_params = {
+            "part": "snippet",
+            "maxResults": search_max_results,
+            "order": search_order,
+            "key": api_key,
+            "type": "video",
+            "q": clean_query,
+            "videoEmbeddable": "true",
+            "videoDuration": duration,
+            "safeSearch": "moderate",
+        }
+        _apply_search_constraints(search_params, search_constraints)
+
+        try:
+            search_response, search_data = request_json("https://www.googleapis.com/youtube/v3/search", search_params)
+        except requests.RequestException as exc:
+            summary["errors"].append(f"search request failed ({duration}): {exc}")
+            summary["error_count"] = len(summary["errors"])
+            continue
+
+        if search_response.status_code != 200:
+            summary["errors"].append(f"search request returned {_status_with_reason(search_response.status_code, search_data)} ({duration})")
+            summary["quota_exceeded"] = _is_quota_error(search_data)
+            summary["error_count"] = len(summary["errors"])
+            if summary["quota_exceeded"]:
+                break
+            continue
+
+        if "error" in search_data:
+            summary["errors"].append(f"YouTube error ({duration}): {search_data['error']}")
+            summary["quota_exceeded"] = _is_quota_error(search_data)
+            summary["error_count"] = len(summary["errors"])
+            if summary["quota_exceeded"]:
+                break
+            continue
+
+        for item in search_data.get("items", []):
+            video_id = item.get("id", {}).get("videoId")
+            if not video_id or video_id in seen_video_ids:
+                continue
+            seen_video_ids.add(video_id)
+            duration_items[duration].append(item)
+            if len(duration_items[duration]) >= search_max_results:
+                break
+
+    search_items = []
+    for index in range(search_max_results):
+        for duration in ("medium", "long"):
+            if index < len(duration_items[duration]):
+                search_items.append(duration_items[duration][index])
+            if len(search_items) >= search_max_results:
+                break
+        if len(search_items) >= search_max_results:
+            break
+
+    video_ids = [
+        item.get("id", {}).get("videoId")
+        for item in search_items
+        if item.get("id", {}).get("videoId")
+    ]
+    summary["videos_found"] = len(video_ids)
+    if not video_ids:
+        return [], summary
+
+    videos = []
+    for item in search_items:
+        video_id = item.get("id", {}).get("videoId", "")
+        if not video_id:
+            continue
+        snippet = item.get("snippet", {})
+        title = clean_youtube_text(snippet.get("title", ""))
+        description = clean_youtube_text(snippet.get("description", ""))
+        if looks_like_short_form_video(title, description):
+            continue
+        thumbnails = snippet.get("thumbnails", {})
+        thumbnail = (
+            thumbnails.get("medium", {}).get("url")
+            or thumbnails.get("default", {}).get("url")
+            or ""
+        )
+        videos.append({
+            "sector": "",
+            "skill_name": "",
+            "competency": "",
+            "item_type": "",
+            "proficiency_level": "",
+            "proficiency_description": "",
+            "videoId": video_id,
+            "publishedAt": snippet.get("publishedAt", ""),
+            "title": title,
+            "description": description,
+            "viewCount": 0,
+            "likeCount": 0,
+            "commentCount": 0,
+            "tags": [],
+            "duration": "",
+            "channelTitle": clean_youtube_text(snippet.get("channelTitle", "")),
+            "thumbnailUrl": thumbnail,
+        })
+
     summary["error_count"] = len(summary["errors"])
     summary["errors"] = summary["errors"][:MAX_ERROR_DETAILS]
     return videos, summary
@@ -709,9 +848,9 @@ def run_ingestion(
                 "proficiency_level": proficiency,
                 "proficiency_description": requirement,
                 "videoId": video_id,
-                "publishedAt": snippet.get("publishedAt", ""),
-                "title": snippet.get("title", ""),
-                "description": snippet.get("description", ""),
+                "publishedAt": clean_youtube_text(snippet.get("publishedAt", "")),
+                "title": clean_youtube_text(snippet.get("title", "")),
+                "description": clean_youtube_text(snippet.get("description", "")),
                 "viewCount": view_count,
                 "likeCount": like_count,
                 "commentCount": comment_count,
