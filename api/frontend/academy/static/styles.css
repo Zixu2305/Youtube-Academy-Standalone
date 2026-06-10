@@ -101,17 +101,15 @@ body.overlay-open {
   align-items: flex-start;
 }
 
-.hero-lookup-cta,
-.hero-video-cta {
+.hero-lookup-cta {
   position: relative;
-  display: inline-flex;
+  display: flex;
   flex-direction: column;
   gap: 0.32rem;
   align-items: flex-start;
 }
 
-.hero-lookup-cta p,
-.hero-video-cta > p {
+.hero-lookup-cta > p {
   margin: 0;
   max-width: 34ch;
   color: rgba(225, 241, 247, 0.84);
@@ -1209,6 +1207,41 @@ textarea {
   border-radius: 14px;
   background: linear-gradient(135deg, #f8fbfd, #ffffff);
   padding: 0.72rem;
+}
+
+.direct-source-toggle {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.32rem;
+  margin-bottom: 0.68rem;
+  border: 1px solid rgba(14, 101, 119, 0.16);
+  border-radius: 999px;
+  background: #edf6f8;
+  padding: 0.22rem;
+}
+
+.direct-source-btn {
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.74rem;
+  font-weight: 800;
+  padding: 0.34rem 0.72rem;
+  transition: background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.direct-source-btn.active {
+  background: #ffffff;
+  color: var(--brand-strong);
+  box-shadow: 0 5px 16px rgba(14, 101, 119, 0.14);
+}
+
+.direct-source-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
 }
 
 .video-finder-panel[data-mode="direct"] .direct-map-panel {

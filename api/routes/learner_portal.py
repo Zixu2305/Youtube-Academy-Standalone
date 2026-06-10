@@ -4,6 +4,7 @@ import json
 import os
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 import mysql.connector
@@ -350,9 +351,13 @@ class PublicDirectVideoSearchRequest(BaseModel):
     query: str = Field(..., min_length=2, max_length=240)
     max_results: int = Field(default=PORTAL_PREVIEW_LIMIT, ge=1, le=PORTAL_PREVIEW_LIMIT)
     order: str = Field(default="relevance", max_length=30)
+    source: Literal["youtube", "library"] = "youtube"
+    min_score: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
 class PublicPreviewVideo(BaseModel):
+    source: str = "youtube"
+    score: float | None = None
     sector: str
     skill_name: str
     competency: str
@@ -379,7 +384,7 @@ class PublicVideoPreviewResponse(BaseModel):
     already_ingested_count: int
     quota_exceeded: bool
     quota_message: str | None = None
-    quota: dict[str, int | str]
+    quota: dict[str, int | str] | None = None
     results: list[PublicPreviewVideo]
 
 
@@ -1520,6 +1525,13 @@ def public_search_videos(payload: PublicDirectVideoSearchRequest):
     from pipelines.youtube.youtube_ingestion_service import fetch_direct_youtube_search
 
     query = payload.query.strip()
+    if payload.source == "library":
+        return search_saved_library_videos(
+            query=query,
+            max_results=payload.max_results,
+            min_score=0.5,
+        )
+
     api_key = get_portal_youtube_api_key()
     quota_context = get_portal_quota_context()
     allowed_orders = {"date", "rating", "relevance", "title", "videoCount", "viewCount"}
@@ -1543,6 +1555,8 @@ def public_search_videos(payload: PublicDirectVideoSearchRequest):
 
     results = [
         PublicPreviewVideo(
+            source="youtube",
+            score=None,
             sector="",
             skill_name="",
             competency="",
@@ -1595,6 +1609,128 @@ def public_search_videos(payload: PublicDirectVideoSearchRequest):
         quota_exceeded=bool(summary.get("quota_exceeded")),
         quota_message=quota_message,
         quota=quota_context,
+        results=results,
+    )
+
+
+def search_saved_library_videos(*, query: str, max_results: int, min_score: float = 0.0) -> PublicVideoPreviewResponse:
+    query_text = query.strip()
+    if not query_text:
+        raise HTTPException(status_code=400, detail="Search query cannot be empty.")
+
+    try:
+        query_vector = list(get_cached_query_embedding(query_text))
+        reranker = get_reranker_model()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    qdrant = get_qdrant_client()
+    yt_collection = env("QDRANT_YT_COLLECTION", DEFAULT_YT_COLLECTION)
+    try:
+        semantic_hits = qdrant.search(
+            collection_name=yt_collection,
+            query_vector=query_vector,
+            limit=SEMANTIC_CANDIDATES,
+            with_payload=True,
+            with_vectors=False,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Saved video semantic search failed: {exc}",
+        ) from exc
+
+    semantic_ids = [str(hit.id) for hit in semantic_hits]
+    semantic_payloads = {str(hit.id): hit.payload or {} for hit in semantic_hits}
+
+    bm25, bm25_point_ids, bm25_payloads = get_bm25_index()
+    query_tokens = query_text.lower().split()
+    bm25_scores = bm25.get_scores(query_tokens)
+    top_bm25_indices = np.argsort(bm25_scores)[::-1][:BM25_CANDIDATES]
+    bm25_ranked_ids = [bm25_point_ids[i] for i in top_bm25_indices if bm25_scores[i] > 0]
+
+    rrf_scores = reciprocal_rank_fusion(semantic_ids, bm25_ranked_ids)
+    all_payloads: dict[str, dict] = {}
+    all_payloads.update(bm25_payloads)
+    all_payloads.update(semantic_payloads)
+    all_payloads = {pid: payload for pid, payload in all_payloads.items() if pid in rrf_scores}
+
+    sorted_candidates = sorted(rrf_scores.items(), key=lambda item: item[1], reverse=True)
+
+    rerank_pool_size = min(len(sorted_candidates), max(max_results * 3, PORTAL_DEFAULT_RERANK_CANDIDATES))
+    rerank_candidates = sorted_candidates[:rerank_pool_size]
+
+    if not rerank_candidates:
+        return PublicVideoPreviewResponse(
+            query=query_text,
+            count=0,
+            already_ingested_count=0,
+            quota_exceeded=False,
+            quota_message=None,
+            quota=None,
+            results=[],
+        )
+
+    rerank_pairs = []
+    rerank_pids = []
+    for pid, _ in rerank_candidates:
+        rerank_pairs.append((query_text, build_yt_rerank_text(all_payloads.get(pid, {}))))
+        rerank_pids.append(pid)
+
+    reranker_scores = reranker.predict(rerank_pairs)
+    ranked_indices = np.argsort(reranker_scores)[::-1]
+
+    results: list[PublicPreviewVideo] = []
+    seen_video_ids: set[str] = set()
+    for idx in ranked_indices:
+        if len(results) >= max_results:
+            break
+        pid = rerank_pids[idx]
+        item = all_payloads.get(pid, {})
+        video_id = str(item.get("video_id") or "").strip()
+        if not video_id or video_id in seen_video_ids:
+            continue
+        if float(reranker_scores[idx]) < min_score:
+            continue
+        seen_video_ids.add(video_id)
+        results.append(
+            PublicPreviewVideo(
+                source="library",
+                score=float(reranker_scores[idx]),
+                sector=str(item.get("sector") or ""),
+                skill_name=str(item.get("skill_name") or ""),
+                competency=str(item.get("competency") or ""),
+                item_type=str(item.get("item_type") or ""),
+                proficiency_level=str(item.get("proficiency_level") or ""),
+                proficiency_description=str(item.get("proficiency_description") or ""),
+                video_id=video_id,
+                published_at=str(item.get("published_at") or ""),
+                title=str(item.get("title") or ""),
+                description=str(item.get("description") or ""),
+                view_count=parse_int(item.get("view_count")),
+                like_count=parse_int(item.get("like_count")),
+                comment_count=parse_int(item.get("comment_count")),
+                tags=[str(tag) for tag in (item.get("tags") or [])],
+                duration=str(item.get("duration") or ""),
+                channel_title=str(item.get("channel_title") or ""),
+                thumbnail_url=str(item.get("thumbnail_url") or ""),
+                already_ingested=True,
+            )
+        )
+
+    no_results_message = (
+        "No relevant videos found. Try a different search term or lower the relevance threshold."
+        if not results
+        else None
+    )
+
+    return PublicVideoPreviewResponse(
+        query=query_text,
+        count=len(results),
+        already_ingested_count=len(results),
+        quota_exceeded=False,
+        quota_message=no_results_message,
+        quota=None,
         results=results,
     )
 

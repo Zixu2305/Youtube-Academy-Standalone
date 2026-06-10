@@ -25,6 +25,7 @@ Expose recommendation capabilities as stable HTTP APIs so another platform can i
 - discover sectors and skills
 - obtain mapped proficiency and competency context
 - retrieve personalized recommendations
+- search the saved video library semantically without requiring skill or competency context
 - submit user feedback (votes)
 - optionally trigger content curation workflows
 
@@ -46,10 +47,10 @@ Quick boundary summary:
 ### 3.1 Public Layer (`/api/public/*`)
 Purpose:
 - Partner-safe contract for UI and platform integration
-- Exposes domain-level operations (sector, skill, map, recommend, vote)
+- Exposes domain-level operations (sector, skill, map, recommend, vote, direct video search)
 
 Characteristics:
-- Input payloads are business-facing (sector/skill/proficiency)
+- Input payloads are business-facing (sector/skill/proficiency) or free-text query driven
 - Returns curated response payloads ready for frontend consumption
 - Includes caching and ranking logic behind the API boundary
 
@@ -90,6 +91,7 @@ Recommended for:
 - Qdrant:
   - vector indexes for skill and YouTube content retrieval
   - semantic and hybrid candidate retrieval
+  - required for both the recommendation endpoint and the saved library search mode
 
 - MongoDB:
   - ingested video documents
@@ -99,7 +101,7 @@ Recommended for:
 ### 4.2 External Dependencies
 
 - YouTube Data API:
-  - used by preview/ingest routes
+  - used by preview/ingest routes and the YouTube mode of the direct video search endpoint
   - constrained by daily quota
 
 - LLM Provider (Groq/OpenAI):
@@ -107,6 +109,7 @@ Recommended for:
 
 - Hugging Face model artifacts (embedding and reranker):
   - required for semantic embedding and cross-encoder reranking models
+  - used by both the recommendation endpoint and the saved library search mode
   - can be loaded from local cache or downloaded when network access is available
 
 ## 5. End-to-End Request Paths
@@ -129,6 +132,28 @@ Recommended for:
 2. User selects approved videos
 3. `POST /api/public/videos/ingest`
 4. Videos are upserted and indexed for retrieval
+
+### 5.4 Direct video search path
+This path supports two modes via the same endpoint (`POST /api/public/videos/search`) and does not require sector, skill, or competency context.
+
+**YouTube mode** (`source: "youtube"`):
+1. Caller sends a free-text query
+2. API calls YouTube Data API and returns fresh candidate videos
+3. Results include an `already_ingested` flag for videos already in the saved library
+4. Caller may select candidates and pass them to `POST /api/public/videos/ingest`
+
+**Library mode** (`source: "library"`):
+1. Caller sends a free-text query
+2. API encodes the query using the BGE embedding model
+3. Qdrant cosine ANN search retrieves semantic candidates from the saved video index
+4. BM25 keyword retrieval runs in parallel over title and tags
+5. Reciprocal Rank Fusion merges both candidate sets
+6. Cross-encoder reranker scores and reorders the top candidates
+7. Results below the configured minimum relevance score are excluded
+8. Remaining results are returned as view-only library matches with a `score` field
+9. Does not call YouTube API or consume quota
+
+Library mode requires Qdrant to be running and the YouTube video collection to be populated. Run `python scripts/embed_yt_videos.py` to backfill any videos in MongoDB that have not yet been indexed.
 
 ## 6. Integration Without Partner Codebase Access
 
@@ -167,6 +192,10 @@ Optional curation endpoints:
 - `POST /api/public/videos/preview`
 - `POST /api/public/videos/ingest`
 
+Optional free-text search endpoints:
+- `POST /api/public/videos/search` with `source: "youtube"` for fresh YouTube candidate discovery
+- `POST /api/public/videos/search` with `source: "library"` for semantic search over the saved video library
+
 ## 8. Security and Gateway Recommendations
 
 Current project state:
@@ -200,13 +229,16 @@ For cross-team production integration, place APIs behind a gateway with:
 1. FastAPI starts and `/docs` loads
 2. `GET /api/public/sectors` returns non-empty list (after SkillsFuture seed)
 3. `POST /api/public/recommend/videos` returns results for a known skill (after vector indexes are built)
-4. vote endpoints can increment and fetch counters
-5. optional: preview/ingest flow succeeds with valid YouTube API key
+4. `POST /api/public/videos/search` with `source: "library"` returns results for a known query (after videos are ingested and embedded)
+5. vote endpoints can increment and fetch counters
+6. optional: preview/ingest flow succeeds with valid YouTube API key
 
 ### 9.4 What to check first when debugging
 
 - If public discovery calls fail, confirm MySQL and the SkillsFuture seed are loaded
 - If recommendation calls fail, confirm Qdrant is running and collections were created
+- If library search returns no results, confirm Qdrant collections exist and `python scripts/embed_yt_videos.py` has been run
+- If library search returns a 503, confirm the embedding and reranker models are available
 - If preview or ingest fails, confirm the YouTube API key and quota state
 - If quiz generation fails, confirm the LLM configuration, MySQL connectivity, and MongoDB connectivity
 

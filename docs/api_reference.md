@@ -39,6 +39,7 @@ If you just brought the service up and want a quick sanity check, run these in o
 4. `GET /api/public/job-roles?limit=5` - confirms job role lookup data is available
 5. `POST /api/public/recommend/videos` - confirms retrieval and ranking are wired end to end
 6. `POST /api/search/skills` - confirms direct vector search against Qdrant is available
+7. `POST /api/public/videos/search` with `"source": "library"` - confirms saved library semantic search is available
 
 Example curl commands:
 
@@ -53,6 +54,9 @@ curl -X POST http://localhost:8000/api/public/recommend/videos \
 curl -X POST http://localhost:8000/api/search/skills \
   -H "Content-Type: application/json" \
   -d '{"query":"data analysis","top_k":5}'
+curl -X POST http://localhost:8000/api/public/videos/search \
+  -H "Content-Type: application/json" \
+  -d '{"query":"simple tutorial for accountancy basics","max_results":8,"source":"library"}'
 ```
 
 ---
@@ -610,6 +614,102 @@ Response:
 
 ---
 
+### POST `/api/public/videos/search`
+Direct video search with two modes controlled by the `source` field: YouTube Data API search and saved library semantic search. Both modes share the same endpoint and response shape.
+
+The `source` field determines which retrieval path is used:
+- `"youtube"` searches YouTube directly via the YouTube Data API and returns fresh candidates for review and ingestion
+- `"library"` performs a semantic search over saved and indexed videos in Qdrant without calling the YouTube API or consuming quota
+
+Request body:
+```json
+{
+  "query": "simple tutorial for accountancy basics",
+  "max_results": 8,
+  "order": "relevance",
+  "source": "youtube"
+}
+```
+
+Request fields:
+- `query` (string, required, min length 2, max length 240)
+- `max_results` (integer, optional, default 8, range 1-8)
+- `order` (string, optional, default `"relevance"`): YouTube sort order, one of `date`, `rating`, `relevance`, `title`, `videoCount`, `viewCount`. Ignored when `source` is `"library"`.
+- `source` (string, optional, default `"youtube"`): `"youtube"` or `"library"`
+
+**YouTube mode (`source: "youtube"`):**
+
+Calls the YouTube Data API with the query and returns candidate videos. Results include `already_ingested: true` for videos already in the saved library. Consumes YouTube API quota. Requires `YOUTUBE_API_KEY` to be configured.
+
+**Library mode (`source: "library"`):**
+
+Runs a hybrid semantic search over the saved video Qdrant index using the full recommendation pipeline: BGE embedding → Qdrant cosine ANN → BM25 keyword retrieval → Reciprocal Rank Fusion → cross-encoder reranking. Does not require sector, skill, or competency context. Only videos previously ingested and embedded are searchable. Results with a reranker score below the configured minimum threshold are excluded. Returns `already_ingested: true` for all results.
+
+Response shape (shared by both modes):
+```json
+{
+  "query": "simple tutorial for accountancy basics",
+  "count": 5,
+  "already_ingested_count": 5,
+  "quota_exceeded": false,
+  "quota_message": null,
+  "quota": null,
+  "results": [
+    {
+      "source": "library",
+      "score": 0.847,
+      "sector": "Accountancy",
+      "skill_name": "Financial Accounting",
+      "competency": "...",
+      "item_type": "",
+      "proficiency_level": "1",
+      "proficiency_description": "",
+      "video_id": "abcd1234",
+      "published_at": "2024-01-01T00:00:00Z",
+      "title": "Introduction to Financial Statements",
+      "description": "...",
+      "view_count": 12000,
+      "like_count": 500,
+      "comment_count": 30,
+      "tags": ["accounting", "finance"],
+      "duration": "PT14M20S",
+      "channel_title": "Example Channel",
+      "thumbnail_url": "https://...",
+      "already_ingested": true
+    }
+  ]
+}
+```
+
+Response field notes:
+- `source` on each result is `"library"` for library mode and `"youtube"` for YouTube mode
+- `score` is the cross-encoder reranker score (present on library results only, `null` on YouTube results)
+- `quota_message` is populated with `"No relevant videos found. Try a different search term or lower the relevance threshold."` when library mode returns zero results after score filtering
+- `quota` is populated with YouTube API credit context for YouTube mode; `null` for library mode
+
+Key failures:
+- `400` when `query` is empty or below minimum length
+- `503` when embedding or reranker model is unavailable (library mode)
+- `503` when YouTube API key is not configured (YouTube mode)
+- `429` when YouTube quota is exceeded and no results can be returned (YouTube mode)
+- `500` when Qdrant search fails (library mode)
+
+Examples:
+
+```bash
+# Library semantic search
+curl -X POST http://localhost:8000/api/public/videos/search \
+  -H "Content-Type: application/json" \
+  -d '{"query":"simple tutorial for accountancy basics","max_results":8,"source":"library"}'
+
+# YouTube direct search
+curl -X POST http://localhost:8000/api/public/videos/search \
+  -H "Content-Type: application/json" \
+  -d '{"query":"beginner accounting standards tutorial","max_results":8,"source":"youtube","order":"relevance"}'
+```
+
+---
+
 ### POST `/api/public/recommend/videos`
 Public recommendation endpoint with explicit filtering and vote-aware ranking.
 
@@ -731,9 +831,10 @@ For cross-platform integration where partner codebase access is not available, u
 4. `POST /api/public/recommend/videos`
 5. `POST /api/public/videos/{video_id}/vote` and `GET /api/public/videos/votes` (optional feedback loop)
 
-Optional ingestion flow (if partner needs to curate new content):
-1. `POST /api/public/videos/preview`
-2. `POST /api/public/videos/ingest`
+Optional ingestion and search flow:
+1. `POST /api/public/videos/search` with `"source": "youtube"` to preview YouTube candidates
+2. `POST /api/public/videos/ingest` to add selected videos to the library
+3. `POST /api/public/videos/search` with `"source": "library"` to search the saved library semantically
 
 For full architecture and operational guidance, see `docs/api_layers_integration_guide.md`.
 
@@ -743,13 +844,14 @@ If an endpoint returns an error, the cause usually maps to one of these layers:
 
 - `400` means the request payload or query params are invalid
 - `404` usually means the sector, skill, or quiz key was not found
-- `429` usually means the LLM provider rate limit was hit during quiz generation
+- `429` usually means the LLM provider rate limit was hit during quiz generation, or the YouTube API quota was exceeded
 - `500` or `503` usually means a dependency is missing or unhealthy
 
 Likely dependency checks:
 
 - MySQL for sector, skill, and mapping discovery endpoints
-- Qdrant for search and recommendation endpoints
+- Qdrant for search and recommendation endpoints; also required for library mode of `/api/public/videos/search`
 - MongoDB for quiz storage and ingested videos
-- YouTube API key for preview and ingest endpoints
+- YouTube API key for preview, ingest, and YouTube mode of `/api/public/videos/search`
 - LLM provider configuration for quiz generation and query enhancement
+- Embedding and reranker models for library search and recommendation endpoints

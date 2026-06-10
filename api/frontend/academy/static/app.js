@@ -233,6 +233,7 @@ function App() {
   const [videoFinderOpen, setVideoFinderOpen] = useState(false);
   const [videoShortcutOpen, setVideoShortcutOpen] = useState(false);
   const [videoFinderMode, setVideoFinderMode] = useState("path");
+  const [directSearchSource, setDirectSearchSource] = useState("youtube");
   const [directSearchQuery, setDirectSearchQuery] = useState("");
   const [directMapping, setDirectMapping] = useState(createEmptyDirectMapping());
   const [directSkills, setDirectSkills] = useState([]);
@@ -671,6 +672,7 @@ function App() {
 
   const clearDirectSearchFlow = () => {
     setDirectSearchQuery("");
+    setDirectSearchSource("youtube");
     resetDirectMappingState();
   };
 
@@ -747,7 +749,7 @@ function App() {
     setVideoFinderMode("direct");
     resetDirectVideoSearchFlow();
     setVideoFinderOpen(true);
-    setIngestionStatus({ text: "Search YouTube directly, then map selected videos to seeded SkillsFuture data.", tone: "" });
+    setIngestionStatus({ text: "Search YouTube directly or search saved indexed videos from the internal library.", tone: "" });
   };
 
   const openShortcutVideoFinder = () => {
@@ -1031,7 +1033,10 @@ function App() {
     setPreviewBusy(true);
     setHasPreviewedVideos(true);
     resetDirectMappingState();
-    setIngestionStatus({ text: "Searching YouTube directly...", tone: "" });
+    setIngestionStatus({
+      text: directSearchSource === "library" ? "Searching saved indexed videos..." : "Searching YouTube directly...",
+      tone: "",
+    });
 
     try {
       const response = await fetchJson("/api/public/videos/search", {
@@ -1042,13 +1047,14 @@ function App() {
           query,
           max_results: 8,
           order: "relevance",
+          source: directSearchSource,
         }),
       });
 
       const previewRows = Array.isArray(response.results) ? response.results : [];
       const nextSelection = {};
       previewRows.forEach((video) => {
-        if (video.video_id) {
+        if (video.video_id && directSearchSource === "youtube" && !video.already_ingested) {
           nextSelection[video.video_id] = true;
         }
       });
@@ -1062,16 +1068,24 @@ function App() {
         quotaMessage: response.quota_message || "",
         quota: response.quota || null,
       });
-      setPreviewSessionUnits((current) => current + Number(response.quota?.estimated_units || 0));
+      if (directSearchSource === "youtube") {
+        setPreviewSessionUnits((current) => current + Number(response.quota?.estimated_units || 0));
+      }
 
       if (!previewRows.length) {
         setIngestionStatus({
-          text: response.quota_message || "No YouTube videos matched this prompt.",
+          text: response.quota_message || (
+            directSearchSource === "library"
+              ? "No saved indexed videos matched this prompt."
+              : "No YouTube videos matched this prompt."
+          ),
           tone: "error",
         });
       } else {
         setIngestionStatus({
-          text: `${previewRows.length} YouTube result(s) ready. Map selected videos before ingesting.`,
+          text: directSearchSource === "library"
+            ? `${previewRows.length} saved video result(s) ready.`
+            : `${previewRows.length} YouTube result(s) ready. Map selected videos before ingesting.`,
           tone: response.quota_exceeded ? "error" : "success",
         });
       }
@@ -1089,7 +1103,9 @@ function App() {
       setIngestionStatus({
         text: error.status === 429
           ? error.message
-          : `Unable to search YouTube: ${error.message}`,
+          : directSearchSource === "library"
+            ? `Unable to search saved videos: ${error.message}`
+            : `Unable to search YouTube: ${error.message}`,
         tone: "error",
       });
     } finally {
@@ -1481,9 +1497,15 @@ function App() {
     (count, video) => count + (previewSelection[video.video_id] ? 1 : 0),
     0,
   );
-  const directIngestBlocked = videoFinderMode === "direct" && !directMappingComplete;
+  const directIngestBlocked = videoFinderMode === "direct" && directSearchSource === "youtube" && !directMappingComplete;
 
   const previewQuotaFeedback = useMemo(() => {
+    if (videoFinderMode === "direct" && directSearchSource === "library") {
+      return {
+        text: "Saved library search uses the internal semantic index and does not consume YouTube API credits.",
+        tone: "",
+      };
+    }
     const quota = previewMeta.quota;
     if (!quota) {
       return {
@@ -1521,7 +1543,7 @@ function App() {
       };
     }
     return { text: baseText, tone: "success" };
-  }, [previewMeta, previewSessionUnits]);
+  }, [previewMeta, previewSessionUnits, videoFinderMode, directSearchSource]);
 
   const youtubeQuotaResetNote =
     "YouTube daily credits reset at midnight Pacific Time. In Singapore, that is 3:00 PM during U.S. daylight saving time and 4:00 PM otherwise.";
@@ -1659,9 +1681,13 @@ function App() {
             ? `https://www.youtube.com/watch?v=${encodeURIComponent(video.video_id)}`
             : "#";
           const isSelected = Boolean(previewSelection[video.video_id]);
-          const isDisabled = video.already_ingested || ingestBusy;
+          const isLibraryResult = videoFinderMode === "direct" && directSearchSource === "library";
+          const isDisabled = video.already_ingested || ingestBusy || isLibraryResult;
           const metrics = videoFinderMode === "direct"
-            ? [video.channel_title || "Unknown channel"]
+            ? [
+                video.channel_title || "Unknown channel",
+                isLibraryResult && video.score ? `Match ${Number(video.score).toFixed(3)}` : "",
+              ].filter(Boolean)
             : [
                 video.channel_title || "Unknown channel",
                 video.duration || "n/a",
@@ -1672,15 +1698,19 @@ function App() {
               key=${`preview-${video.video_id}`}
               className=${`preview-card ${isSelected ? "active" : ""} ${video.already_ingested ? "ingested" : ""}`}
             >
-              <div className="preview-select">
-                <input
-                  type="checkbox"
-                  checked=${isSelected}
-                  disabled=${isDisabled}
-                  onChange=${() => togglePreviewSelection(video.video_id)}
-                  aria-label=${`Select ${video.title || "preview video"} for ingest`}
-                />
-              </div>
+              ${isLibraryResult
+                ? html`<div className="preview-select preview-select-placeholder" aria-hidden="true"></div>`
+                : html`
+                    <div className="preview-select">
+                      <input
+                        type="checkbox"
+                        checked=${isSelected}
+                        disabled=${isDisabled}
+                        onChange=${() => togglePreviewSelection(video.video_id)}
+                        aria-label=${`Select ${video.title || "preview video"} for ingest`}
+                      />
+                    </div>
+                  `}
               ${video.thumbnail_url
                 ? html`
                     <img
@@ -1695,7 +1725,7 @@ function App() {
                 <div className="preview-card-top">
                   <p className="video-title">${video.title || "Untitled video"}</p>
                   <span className=${`preview-state-chip ${video.already_ingested ? "ingested" : isSelected ? "selected" : "fresh"}`}>
-                    ${video.already_ingested ? "Already ingested" : isSelected ? "Selected" : "New candidate"}
+                    ${isLibraryResult ? "Saved library" : video.already_ingested ? "Already ingested" : isSelected ? "Selected" : "New candidate"}
                   </span>
                 </div>
                 <p className="video-meta">${metrics.join(" · ")}</p>
@@ -1752,8 +1782,7 @@ function App() {
               <span>Open job role lookup</span>
             </a>
             <p>Browse roles, work functions, and linked competencies.</p>
-          </div>
-          <div className="hero-video-cta">
+          
             <button
               type="button"
               className="utility-btn utility-btn-brand hero-link"
@@ -1771,7 +1800,7 @@ function App() {
                     <div>
                       <p className="selection-label">Video Discovery</p>
                       <p className="hero-video-popout-copy">
-                        Choose path-based discovery or start a clean direct YouTube search.
+                        Choose path-based discovery or search YouTube / saved library videos directly.
                       </p>
                     </div>
                     <button
@@ -1786,7 +1815,7 @@ function App() {
                       className="utility-btn utility-btn-brand"
                       onClick=${openShortcutDirectVideoSearch}
                     >
-                      Search YouTube Directly
+                      Search Videos Directly
                     </button>
                     ${ingestionStatus.text && !selectedCompetency
                       ? html`<p className="panel-status" data-tone=${ingestionStatus.tone || undefined}>${ingestionStatus.text}</p>`
@@ -2159,7 +2188,7 @@ function App() {
                                     className="utility-btn utility-btn-brand"
                                     onClick=${openDirectVideoSearch}
                                   >
-                                    Search YouTube Directly
+                                    Search Videos Directly
                                   </button>
                                 </div>
                                 ${hasPreviewedVideos
@@ -2198,10 +2227,10 @@ function App() {
               >
                 <div className="video-finder-head">
                   <div>
-                    <p className="quiz-kicker">${videoFinderMode === "direct" ? "Direct YouTube Search" : "Video Finder"}</p>
-                    <h2>${videoFinderMode === "direct" ? "Search YouTube Directly" : selectedSkill || "Find More Videos"}</h2>
+                    <p className="quiz-kicker">${videoFinderMode === "direct" ? "Direct Video Search" : "Video Finder"}</p>
+                    <h2>${videoFinderMode === "direct" ? "Search Videos Directly" : selectedSkill || "Find More Videos"}</h2>
                     <p className="video-finder-path">
-                      ${videoFinderMode === "direct" ? "Search any prompt, then map selected videos to seeded SkillsFuture data before ingesting." : selectionSummary}
+                      ${videoFinderMode === "direct" ? "Search YouTube for new videos, or search saved indexed videos semantically without selecting a skill first." : selectionSummary}
                       ${videoFinderMode === "direct" ? "" : selectedCompetency ? ` · ${selectedCompetency}` : ""}
                     </p>
                   </div>
@@ -2212,12 +2241,42 @@ function App() {
                   ${videoFinderMode === "direct"
                     ? html`
                         <div className="direct-search-panel">
-                          <label className="field-label" htmlFor="direct-youtube-query">YouTube search prompt</label>
+                          <div className="direct-source-toggle" role="group" aria-label="Direct search source">
+                            <button
+                              type="button"
+                              className=${`direct-source-btn ${directSearchSource === "youtube" ? "active" : ""}`}
+                              onClick=${() => {
+                                setDirectSearchSource("youtube");
+                                resetPreviewResults();
+                                resetDirectMappingState();
+                                setIngestionStatus({ text: "Search YouTube directly, then map selected videos before ingesting.", tone: "" });
+                              }}
+                              disabled=${previewBusy || ingestBusy}
+                            >
+                              YouTube Data API
+                            </button>
+                            <button
+                              type="button"
+                              className=${`direct-source-btn ${directSearchSource === "library" ? "active" : ""}`}
+                              onClick=${() => {
+                                setDirectSearchSource("library");
+                                resetPreviewResults();
+                                resetDirectMappingState();
+                                setIngestionStatus({ text: "Search saved indexed videos using semantic similarity.", tone: "" });
+                              }}
+                              disabled=${previewBusy || ingestBusy}
+                            >
+                              Saved Library
+                            </button>
+                          </div>
+                          <label className="field-label" htmlFor="direct-youtube-query">
+                            ${directSearchSource === "library" ? "Saved video search prompt" : "YouTube search prompt"}
+                          </label>
                           <div className="direct-search-row">
                             <input
                               id="direct-youtube-query"
                               type="search"
-                              placeholder="Example: beginner accounting standards tutorial"
+                              placeholder=${directSearchSource === "library" ? "Example: simple tutorial for accountancy basics" : "Example: beginner accounting standards tutorial"}
                               value=${directSearchQuery}
                               onInput=${(event) => setDirectSearchQuery(event.target.value)}
                               onKeyDown=${(event) => {
@@ -2232,7 +2291,11 @@ function App() {
                               onClick=${searchDirectYoutubeVideos}
                               disabled=${previewBusy || ingestBusy}
                             >
-                              ${previewBusy ? "Searching..." : hasPreviewedVideos ? "Search Again" : "Search YouTube"}
+                              ${previewBusy
+                                ? "Searching..."
+                                : hasPreviewedVideos
+                                  ? "Search Again"
+                                  : directSearchSource === "library" ? "Search Library" : "Search YouTube"}
                             </button>
                           </div>
                         </div>
@@ -2265,7 +2328,7 @@ function App() {
                       `
                     : null}
 
-                  ${videoFinderMode === "direct" && previewVideos.length
+                  ${videoFinderMode === "direct" && directSearchSource === "youtube" && previewVideos.length
                     ? html`
                         <section className="direct-map-panel">
                           <div className="direct-map-head">
@@ -2391,24 +2454,28 @@ function App() {
                               : "All shown videos are new to the library"}
                             ${previewMeta.quotaExceeded ? " · quota limit reached during preview" : ""}
                           </p>
-                          <div className="preview-toolbar-actions">
-                            <button
-                              type="button"
-                              className="utility-btn"
-                              onClick=${selectAllPreviewVideos}
-                              disabled=${previewBusy || ingestBusy}
-                            >
-                              ${videoFinderMode === "direct" ? "Select all" : "Select new"}
-                            </button>
-                            <button
-                              type="button"
-                              className="utility-btn"
-                              onClick=${clearPreviewSelection}
-                              disabled=${!selectedPreviewCount || previewBusy || ingestBusy}
-                            >
-                              Clear
-                            </button>
-                          </div>
+                          ${!(videoFinderMode === "direct" && directSearchSource === "library")
+                            ? html`
+                                <div className="preview-toolbar-actions">
+                                  <button
+                                    type="button"
+                                    className="utility-btn"
+                                    onClick=${selectAllPreviewVideos}
+                                    disabled=${previewBusy || ingestBusy}
+                                  >
+                                    ${videoFinderMode === "direct" ? "Select all" : "Select new"}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="utility-btn"
+                                    onClick=${clearPreviewSelection}
+                                    disabled=${!selectedPreviewCount || previewBusy || ingestBusy}
+                                  >
+                                    Clear
+                                  </button>
+                                </div>
+                              `
+                            : null}
                         </div>
                       `
                     : null}
@@ -2419,18 +2486,22 @@ function App() {
                   <div className="preview-list preview-list-modal">${previewContent}</div>
                 </div>
 
-                <div className="video-finder-footer">
-                  <button
-                    type="button"
-                    className="primary-btn video-finder-ingest-btn"
-                    onClick=${ingestSelectedPreviewVideos}
-                    disabled=${!selectedPreviewCount || directIngestBlocked || previewBusy || ingestBusy}
-                  >
-                    ${ingestBusy
-                      ? "Ingesting selected videos..."
-                      : `Ingest ${selectedPreviewCount} selected video${selectedPreviewCount === 1 ? "" : "s"}`}
-                  </button>
-                </div>
+                ${!(videoFinderMode === "direct" && directSearchSource === "library")
+                  ? html`
+                      <div className="video-finder-footer">
+                        <button
+                          type="button"
+                          className="primary-btn video-finder-ingest-btn"
+                          onClick=${ingestSelectedPreviewVideos}
+                          disabled=${!selectedPreviewCount || directIngestBlocked || previewBusy || ingestBusy}
+                        >
+                          ${ingestBusy
+                            ? "Ingesting selected videos..."
+                            : `Ingest ${selectedPreviewCount} selected video${selectedPreviewCount === 1 ? "" : "s"}`}
+                        </button>
+                      </div>
+                    `
+                  : null}
               </section>
             </div>
           `
