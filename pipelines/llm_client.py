@@ -4,7 +4,7 @@ llm_client.py
 Provider-agnostic chat completion helper for Groq/OpenAI-compatible APIs.
 
 Environment variables (in priority order):
-- LLM_PROVIDER: groq | openai (default: groq)
+- LLM_PROVIDER: groq | openai (default: openai)
 - LLM_MODEL: provider model override
 - LLM_API_KEY: provider api key override
 
@@ -21,10 +21,10 @@ from typing import Any
 import requests
 
 _SUPPORTED_PROVIDERS = {"groq", "openai"}
-_DEFAULT_PROVIDER = "groq"
+_DEFAULT_PROVIDER = "openai"
 _DEFAULT_MODELS = {
     "groq": "llama-3.1-8b-instant",
-    "openai": "gpt-4o-mini",
+    "openai": "gpt-4.1-nano",
 }
 _PROVIDER_URLS = {
     "groq": "https://api.groq.com/openai/v1/chat/completions",
