@@ -73,9 +73,9 @@ curl -X POST http://localhost:8000/api/search/skills \
 
 ### Step 1: Ingest YouTube Videos
 
-**Manual Ingestion (via Flask web app)**
+**Manual Ingestion (via `admin_tools` Flask app)**
 ```bash
-docker compose up -d seed_youtube
+docker compose up -d admin_tools
 # Open http://localhost:5001
 ```
 

@@ -3,7 +3,7 @@
 Standalone repo for four connected components:
 
 1. Reproducible MySQL schema + SkillsFuture seeding.
-2. YouTube ingestion app (Flask) that writes to MongoDB.
+2. Admin tools app (Flask) for YouTube ingestion, MongoDB browsing, quiz generation, and soft-delete operations.
 3. Vector indexing pipelines (Qdrant + BGE embeddings) for SkillsFuture and YouTube.
 4. FastAPI endpoints for search/recommend/quiz APIs and the learner-facing academy portal.
 
@@ -18,7 +18,7 @@ If you are onboarding to the repo for the first time, follow this order:
 
 Suggested working path by area:
 
-- Ingestion and quiz admin work: `api/main.py`, `api/routes/*`, `pipelines/youtube/*`, `pipelines/quiz_gen/*`
+- Admin tools, ingestion, and quiz work: `api/main.py`, `api/routes/*`, `pipelines/youtube/*`, `pipelines/quiz_gen/*`
 - Search and recommendation work: `api/routes/search_videos.py`, `api/routes/search_skills.py`, `api/routes/recommend.py`, `pipelines/youtube/youtube_vector_index.py`
 - Learner portal work: `api/frontend/academy/`, `api/main.py`
 - Data and schema work: `db/init/001_schema.sql`, `pipelines/skillsfuture/*`, `scripts/embed_sf_skill_levels.py`
@@ -29,7 +29,7 @@ Implemented now:
 
 1. SkillsFuture relational pipeline into MySQL from Excel sources.
 2. Mapping table population (`map_sf_to_cat_skill`) + reconciliation reports in `out/`.
-3. YouTube ingestion UI/backend with preview/upsert, Mongo browser, and soft-delete tools.
+3. Admin tools UI/backend with YouTube preview/upsert, Mongo browser, quiz generation, and soft-delete tools.
 4. Groq-assisted query enhancement during YouTube ingestion.
 5. Quiz generation flow (admin UI at `/quiz_gen` + APIs) with MongoDB storage.
    - Hierarchical filtering: sector → skill → proficiency level → competency.
@@ -95,10 +95,10 @@ This is the quickest way to find the main entry points:
 
 This repo currently has two separate app surfaces:
 
-1. Internal ingestion/admin tools (prototype ops UI)
+1. Internal admin tools (prototype ops UI, Docker service: `admin_tools`)
    - Docker run: `http://localhost:5001`
    - Local run: `http://localhost:5000`
-   - Includes `/mongo_browser`, `/quiz_gen`, `/delete`, and ingestion controls.
+   - Includes `/` for YouTube ingestion, `/mongo_browser` for MongoDB browsing, `/quiz_gen` for generated quiz questions, and `/delete` for soft deletes.
 2. Learner-facing prototype portal
    - FastAPI host (default): `http://localhost:8000`
    - Learner page: `http://localhost:8000/academy`
@@ -210,8 +210,8 @@ docker compose up -d mysql mongodb adminer qdrant
 mkdir -p out
 docker compose run --rm seed_skillsfuture
 
-# 4) run internal ingestion UI (Docker)
-docker compose up -d seed_youtube
+# 4) run admin tools UI (Docker)
+docker compose up -d admin_tools
 # open: http://localhost:5001
 
 # 5) local vector jobs + API (requires Python deps)
@@ -243,7 +243,7 @@ Common symptoms:
 - quiz generation failures usually mean the LLM provider or API key is not configured
 - preview and ingest failures usually mean the YouTube API key is missing or quota is exhausted
 
-## Workflow A: YouTube Ingestion (Implemented)
+## Workflow A: Admin Tools / YouTube Ingestion (Implemented)
 
 Use this when you want to fetch YouTube video metadata/comments, generate quizzes, and manage MongoDB records.
 
@@ -252,10 +252,16 @@ Use this when you want to fetch YouTube video metadata/comments, generate quizze
 Option A (Docker):
 
 ```bash
-docker compose up -d seed_youtube
+docker compose up -d admin_tools
 ```
 
 Open `http://localhost:5001`.
+
+If this deployment previously used the old `seed_youtube` service name, start with:
+
+```bash
+docker compose up -d --build --remove-orphans admin_tools
+```
 
 Option B (Local):
 
@@ -276,7 +282,7 @@ Open `http://localhost:5000`.
 - Uses Groq to enrich query generation (sector/skill/competency/requirement aware).
 - Upserts documents into MongoDB (`videos`, `ingestion_runs`).
 - Embeds touched video-skill documents into Qdrant after successful upsert.
-- Provides Mongo browser and soft-delete tools at `/mongo_browser` and `/delete`.
+- Provides Mongo browser, quiz generation, and soft-delete tools at `/mongo_browser`, `/quiz_gen`, and `/delete`.
 
 ### Admin Quiz Generation (Included in this Workflow)
 

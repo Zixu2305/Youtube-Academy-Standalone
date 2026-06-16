@@ -74,7 +74,7 @@ services:
     volumes:
       - mongodb_data:/data/db
       
-  seed_youtube:
+  admin_tools:
     build:
       context: .
       dockerfile: etl/youtube/Dockerfile
@@ -110,6 +110,7 @@ services:
     volumes:
       - ./.env:/app/.env:ro
       - ./pipelines/__init__.py:/app/pipelines/__init__.py:ro
+      - ./pipelines/llm_client.py:/app/pipelines/llm_client.py:ro
       - ./pipelines/youtube:/app/pipelines/youtube:ro
       - ./pipelines/quiz_gen:/app/pipelines/quiz_gen
 
@@ -118,4 +119,3 @@ volumes:
   mysql_data:
   mongodb_data:
   qdrant_data:
-
