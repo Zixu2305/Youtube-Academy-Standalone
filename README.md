@@ -144,12 +144,49 @@ Set these in `.env`:
 LLM_PROVIDER=groq
 LLM_MODEL=llama-3.1-8b-instant
 LLM_API_KEY=<your_key>
-
-# Alternative OpenAI setup:
-# LLM_PROVIDER=openai
-# LLM_MODEL=gpt-4o-mini
-# LLM_API_KEY=<your_openai_key>
 ```
+
+#### Switching between providers and models
+
+To switch the LLM provider and model:
+
+- Set `LLM_PROVIDER` to `groq` or `openai`.
+- Set `LLM_MODEL` to the model you want to use for that provider.
+- Set `LLM_API_KEY` to the matching API key.
+- Restart the service after changing `.env` so the new values take effect.
+
+Example Groq configuration:
+
+```env
+LLM_PROVIDER=groq
+LLM_MODEL=llama-3.1-8b-instant
+LLM_API_KEY=<your_groq_key>
+```
+
+Example OpenAI configuration:
+
+```env
+LLM_PROVIDER=openai
+LLM_MODEL=gpt-4.1-nano
+LLM_API_KEY=<your_openai_key>
+```
+
+> Note: For OpenAI, this prototype accepts only GPT-4 family models. Do not use non-GPT-4 models such as `gpt-5` and above.
+
+#### Provider-specific fallback behavior
+
+If `LLM_MODEL` or `LLM_API_KEY` are unset, the service will fall back to provider-specific environment variables:
+- `GROQ_MODEL` / `GROQ_API_KEY`
+- `OPENAI_MODEL` / `OPENAI_API_KEY`
+
+This allows you to keep shared overrides empty and configure only one provider explicitly.
+
+Notes:
+- `LLM_PROVIDER` must be `groq` or `openai`.
+- `LLM_MODEL` and `LLM_API_KEY` are preferred shared overrides for the selected provider.
+- Default provider model choices are:
+  - `groq`: `llama-3.1-8b-instant`
+  - `openai`: `gpt-4.1-nano`
 
 Adminer:
 
@@ -511,6 +548,7 @@ Versioning notes:
 ## LLM Provider Notes (Quiz + Query Features)
 
 LLM setup is already covered in **Shared Setup → 2b**.  
+The runtime supports a shared override with `LLM_PROVIDER`, `LLM_MODEL`, `LLM_API_KEY`, and falls back to provider-specific variables only when shared values are unset.  
 Groq rate limits reference: https://console.groq.com/docs/rate-limits
 OpenAI rate limits reference: https://developers.openai.com/api/docs/guides/rate-limits
 Quick check:
