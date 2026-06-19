@@ -51,6 +51,19 @@ def _quota_warning_threshold():
     )
 
 
+def _get_videos_collection():
+    client = get_mongo_client()
+    database_name = env("MONGO_DATABASE", env("DB_NAME", "yta"))
+    return client, client[database_name]["videos"]
+
+
+def _mapping_key(mapping: dict) -> tuple[str, str]:
+    return (
+        str(mapping.get("proficiency_level") or "").strip(),
+        str(mapping.get("competency") or "").strip(),
+    )
+
+
 def _embed_touched_videos(summary: dict, docs: list[dict]) -> None:
     summary.setdefault("errors", [])
     try:
@@ -347,6 +360,11 @@ def create_app():
         """Render the delete question page."""
         return render_template("delete.html")
 
+    @app.route("/multi_label")
+    def multi_label():
+        """Render the multi-labelling page."""
+        return render_template("multi_label.html")
+
     @app.route("/search_skills", methods=["POST"])
     def search_skills_route():
         data = request.get_json(silent=True) or {}
@@ -371,6 +389,262 @@ def create_app():
         skill = data.get("skill")
         levels = search_proficiency_levels(sector, skill)
         return jsonify(levels)
+
+    # ───────────────────────────────────────────────────────────────────────
+    # Multi-Labelling Routes
+    # ───────────────────────────────────────────────────────────────────────
+
+    @app.route("/api/public/multi-label/search-videos", methods=["POST"])
+    def multi_label_search_videos_route():
+        """Search for videos to apply multi-labelling."""
+        try:
+            data = request.get_json(silent=True) or {}
+            query = data.get("query", "").strip().lower()
+            search_type = data.get("search_type", "title")
+            limit = data.get("limit", 20)
+
+            if not query:
+                return jsonify({"count": 0, "results": []}), 400
+
+            client, videos_collection = _get_videos_collection()
+            try:
+                # Build filter based on search type
+                if search_type == "video_id":
+                    filter_query = {"videoId": {"$regex": query, "$options": "i"}}
+                elif search_type == "skill":
+                    filter_query = {"skill_name": {"$regex": query, "$options": "i"}}
+                else:  # title
+                    filter_query = {"title": {"$regex": query, "$options": "i"}}
+
+                docs = list(
+                    videos_collection.find(
+                        filter_query,
+                        {
+                            "_id": 0,
+                            "videoId": 1,
+                            "title": 1,
+                            "sector": 1,
+                            "skill_name": 1,
+                            "description": 1,
+                            "channelTitle": 1,
+                            "competency": 1,
+                            "item_type": 1,
+                            "proficiency_level": 1,
+                            "proficiency_description": 1,
+                            "additional_mappings": 1,
+                        },
+                    )
+                    .limit(limit)
+                )
+
+                results = []
+                for doc in docs:
+                    video_id = doc.get("videoId", "")
+                    current_mappings = []
+                    saved_mappings = doc.get("additional_mappings")
+                    if not isinstance(saved_mappings, list):
+                        saved_mappings = doc.get("mappings")
+
+                    # Handle additional_mappings, legacy mappings, and old single-competency formats.
+                    if isinstance(saved_mappings, list):
+                        for mapping in saved_mappings:
+                            current_mappings.append({
+                                "competency": mapping.get("competency", ""),
+                                "item_type": mapping.get("item_type", ""),
+                                "proficiency_level": mapping.get("proficiency_level", ""),
+                                "proficiency_description": mapping.get("proficiency_description", ""),
+                            })
+                    elif "competency" in doc and doc["competency"]:
+                        current_mappings.append({
+                            "competency": doc.get("competency", ""),
+                            "item_type": doc.get("item_type", ""),
+                            "proficiency_level": doc.get("proficiency_level", ""),
+                            "proficiency_description": doc.get("proficiency_description", ""),
+                        })
+
+                    results.append({
+                        "video_id": video_id,
+                        "title": doc.get("title", ""),
+                        "sector": doc.get("sector", ""),
+                        "skill_name": doc.get("skill_name", ""),
+                        "current_mappings": current_mappings,
+                        "description": doc.get("description", ""),
+                        "channel_title": doc.get("channelTitle", ""),
+                    })
+
+                return jsonify({"count": len(results), "results": results})
+            finally:
+                client.close()
+
+        except Exception as e:
+            return jsonify({"count": 0, "results": [], "error": str(e)}), 500
+
+    @app.route("/api/public/multi-label/competencies", methods=["GET"])
+    def multi_label_competencies_route():
+        """Get available competencies for a proficiency level."""
+        try:
+            sector = (request.args.get("sector") or "").strip()
+            skill = (request.args.get("skill") or "").strip()
+            proficiency_level = (request.args.get("proficiency_level") or "").strip()
+
+            if not all([sector, skill, proficiency_level]):
+                return jsonify({"error": "sector, skill, and proficiency_level are required"}), 400
+
+            knowledge_items, ability_items, proficiency_description = search_competencies_by_level(
+                sector, skill, proficiency_level
+            )
+
+            return jsonify({
+                "proficiency_level": proficiency_level,
+                "proficiency_description": proficiency_description,
+                "knowledge_items": knowledge_items,
+                "ability_items": ability_items,
+            })
+
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/public/multi-label/update-video", methods=["POST"])
+    def multi_label_update_video_route():
+        """Update a video with multiple competency mappings."""
+        try:
+            data = request.get_json(silent=True) or {}
+            video_id = data.get("video_id", "").strip()
+            skill_name = data.get("skill_name", "").strip()
+            sector = data.get("sector", "").strip()
+            mappings_to_add = data.get("mappings_to_add", [])
+            mappings_to_remove = data.get("mappings_to_remove", [])
+
+            if not video_id or not skill_name:
+                return jsonify({"error": "video_id and skill_name are required"}), 400
+
+            if not mappings_to_add and not mappings_to_remove:
+                return jsonify({"error": "Either mappings_to_add or mappings_to_remove is required"}), 400
+
+            client, videos_collection = _get_videos_collection()
+            try:
+                # Get current document
+                doc = videos_collection.find_one({"videoId": video_id, "skill_name": skill_name})
+                if not doc:
+                    return jsonify({"error": "Video not found"}), 404
+
+                # Get or initialize additional_mappings array.
+                current_mappings = doc.get("additional_mappings")
+                if not isinstance(current_mappings, list):
+                    current_mappings = doc.get("mappings", [])
+                if not isinstance(current_mappings, list):
+                    # Migrate from old format
+                    if "competency" in doc and doc["competency"]:
+                        current_mappings = [{
+                            "competency": doc.get("competency", ""),
+                            "item_type": doc.get("item_type", ""),
+                            "proficiency_level": doc.get("proficiency_level", ""),
+                            "proficiency_description": doc.get("proficiency_description", ""),
+                        }]
+                    else:
+                        current_mappings = []
+
+                # Remove mappings
+                removed_count = 0
+                if mappings_to_remove:
+                    remove_keys = set()
+                    remove_competencies = set()
+                    for item in mappings_to_remove:
+                        if isinstance(item, dict):
+                            key = _mapping_key(item)
+                            if all(key):
+                                remove_keys.add(key)
+                        else:
+                            competency = str(item or "").strip()
+                            if competency:
+                                remove_competencies.add(competency)
+
+                    kept_mappings = []
+                    for mapping in current_mappings:
+                        key = _mapping_key(mapping)
+                        competency = key[1]
+                        should_remove = key in remove_keys or (
+                            competency in remove_competencies and not remove_keys
+                        )
+                        if should_remove:
+                            removed_count += 1
+                        else:
+                            kept_mappings.append(mapping)
+                    current_mappings = kept_mappings
+
+                # Add new mappings
+                existing_keys = {_mapping_key(m) for m in current_mappings}
+                added_count = 0
+                for mapping in mappings_to_add:
+                    if not isinstance(mapping, dict):
+                        continue
+                    key = _mapping_key(mapping)
+                    if all(key) and key not in existing_keys:
+                        current_mappings.append({
+                            "competency": key[1],
+                            "item_type": mapping.get("item_type", ""),
+                            "proficiency_level": key[0],
+                            "proficiency_description": mapping.get("proficiency_description", ""),
+                        })
+                        existing_keys.add(key)
+                        added_count += 1
+
+                # Update document
+                result = videos_collection.update_one(
+                    {"videoId": video_id, "skill_name": skill_name},
+                    {
+                        "$set": {
+                            "additional_mappings": current_mappings,
+                            "sector": sector,
+                            "updated_at": datetime.now(),
+                        },
+                        "$unset": {"mappings": ""},
+                    },
+                )
+
+                if result.matched_count == 0:
+                    return jsonify({"error": "Failed to update video"}), 500
+
+                return jsonify({
+                    "video_id": video_id,
+                    "message": "Successfully updated video mappings.",
+                    "total_mappings": len(current_mappings),
+                    "added": added_count,
+                    "removed": removed_count,
+                })
+            finally:
+                client.close()
+
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    def search_competencies_by_level(sector: str, skill: str, proficiency_level: str):
+        """Helper function to get competencies for a specific proficiency level."""
+        try:
+            knowledge_items = []
+            ability_items = []
+            proficiency_description = ""
+
+            # Search using existing search_competencies function
+            competencies = search_competencies(sector, skill, proficiency_level)
+            
+            for comp in competencies:
+                item_type_text = comp.lower()
+                if item_type_text.startswith("knowledge"):
+                    knowledge_items.append(comp)
+                elif item_type_text.startswith("ability"):
+                    ability_items.append(comp)
+
+            # Get proficiency description
+            description_list = search_proficiency_levels(sector, skill)
+            for desc in description_list:
+                if desc.get("proficiency_level") == proficiency_level:
+                    proficiency_description = desc.get("proficiency_description", "")
+                    break
+
+            return knowledge_items, ability_items, proficiency_description
+        except Exception:
+            return [], [], ""
 
     @app.route("/get_requirement", methods=["POST"])
     def get_requirement_route():
@@ -697,7 +971,7 @@ def create_app():
             elif collection_name == "videos":
                 query["deleted"] = {"$ne": True}
             
-            projection = None
+            projection = {"mappings": 0} if collection_name == "videos" else None
 
             cursor = (
                 collection.find(query, projection)
