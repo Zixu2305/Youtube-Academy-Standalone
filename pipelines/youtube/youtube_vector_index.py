@@ -184,8 +184,106 @@ def build_embed_text(doc: dict) -> str:
     return "\n\n".join(parts)
 
 
-def build_payload(doc: dict) -> dict:
+def _proficiency_sort_key(value: str) -> tuple[int, str]:
+    digits = "".join(ch for ch in value if ch.isdigit())
+    if digits:
+        return int(digits), value.lower()
+    return 9999, value.lower()
+
+
+def _mapping_key(mapping: dict) -> tuple[str, str]:
+    return (
+        str(mapping.get("proficiency_level") or "").strip(),
+        str(mapping.get("competency") or "").strip(),
+    )
+
+
+def mapping_from_single_fields(doc: dict) -> dict | None:
+    competency = str(doc.get("competency") or "").strip()
+    if not competency:
+        return None
     return {
+        "competency": competency,
+        "item_type": str(doc.get("item_type") or ""),
+        "proficiency_level": str(doc.get("proficiency_level") or doc.get("proficiency") or ""),
+        "proficiency_description": str(doc.get("proficiency_description") or ""),
+    }
+
+
+def normalize_video_mappings(doc: dict) -> list[dict]:
+    mappings: list[dict] = []
+    primary_mapping = mapping_from_single_fields(doc)
+    if primary_mapping:
+        mappings.append(primary_mapping)
+
+    saved_mappings = doc.get("additional_mappings")
+    if not isinstance(saved_mappings, list):
+        saved_mappings = doc.get("mappings")
+
+    if isinstance(saved_mappings, list):
+        for mapping in saved_mappings:
+            if not isinstance(mapping, dict):
+                continue
+            mappings.append(
+                {
+                    "competency": str(mapping.get("competency") or ""),
+                    "item_type": str(mapping.get("item_type") or ""),
+                    "proficiency_level": str(mapping.get("proficiency_level") or ""),
+                    "proficiency_description": str(mapping.get("proficiency_description") or ""),
+                }
+            )
+
+    normalized: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for mapping in mappings:
+        key = _mapping_key(mapping)
+        if not all(key) or key in seen:
+            continue
+        seen.add(key)
+        normalized.append(
+            {
+                "competency": key[1],
+                "item_type": str(mapping.get("item_type") or ""),
+                "proficiency_level": key[0],
+                "proficiency_description": str(mapping.get("proficiency_description") or ""),
+            }
+        )
+    return normalized
+
+
+def build_mapping_payload(doc: dict) -> dict:
+    mappings = normalize_video_mappings(doc)
+    mapped_proficiency_levels = sorted(
+        {mapping["proficiency_level"] for mapping in mappings if mapping.get("proficiency_level")},
+        key=_proficiency_sort_key,
+    )
+    mapped_competencies = [
+        mapping["competency"]
+        for mapping in mappings
+        if mapping.get("competency")
+    ]
+    mapping_keys = [
+        f"{mapping['proficiency_level']}||{mapping['competency']}"
+        for mapping in mappings
+        if mapping.get("proficiency_level") and mapping.get("competency")
+    ]
+    primary_proficiency_level = str(
+        doc.get("proficiency_level") or doc.get("proficiency") or ""
+    ).strip()
+    payload = {
+        "competency_mappings": mappings,
+        "mapped_proficiency_levels": mapped_proficiency_levels,
+        "mapped_competencies": mapped_competencies,
+        "mapped_competency_keys": mapping_keys,
+        "mapping_count": len(mappings),
+    }
+    if primary_proficiency_level:
+        payload["proficiency_level"] = primary_proficiency_level
+    return payload
+
+
+def build_payload(doc: dict) -> dict:
+    payload = {
         "video_id": doc.get("videoId", ""),
         "title": doc.get("title", ""),
         "description": (doc.get("description") or "")[:500],
@@ -200,14 +298,41 @@ def build_payload(doc: dict) -> dict:
         "sector": doc.get("sector", ""),
         "skill_name": doc.get("skill_name", ""),
         "competency": doc.get("competency", ""),
-        "proficiency_level": doc.get("proficiency_level", ""),
+        "proficiency_level": doc.get("proficiency_level") or doc.get("proficiency", ""),
     }
+    payload.update(build_mapping_payload(doc))
+    return payload
 
 
 def make_point_id(doc: dict) -> str:
-    video_id = doc.get("videoId", "")
+    video_id = doc.get("videoId", "") or doc.get("video_id", "")
     skill_name = doc.get("skill_name", "")
     return str(uuid5(NAMESPACE_URL, f"yt_video::{video_id}::{skill_name}"))
+
+
+def sync_video_mapping_payload(doc: dict, *, wait: bool = True) -> dict[str, object]:
+    video_id = str(doc.get("videoId") or doc.get("video_id") or "").strip()
+    skill_name = str(doc.get("skill_name") or "").strip()
+    if not video_id or not skill_name:
+        return {
+            "qdrant_payload_status": "skipped",
+            "qdrant_payload_updated": 0,
+            "qdrant_payload_error": "Missing videoId or skill_name.",
+        }
+
+    collection_name = env("QDRANT_YT_COLLECTION", DEFAULT_COLLECTION_NAME)
+    client = get_qdrant_client()
+    result = client.set_payload(
+        collection_name=collection_name,
+        payload=build_mapping_payload(doc),
+        points=[make_point_id(doc)],
+        wait=wait,
+    )
+    return {
+        "qdrant_payload_status": getattr(result, "status", "completed"),
+        "qdrant_payload_updated": 1,
+        "qdrant_payload_collection": collection_name,
+    }
 
 
 def ensure_collection_compatibility(

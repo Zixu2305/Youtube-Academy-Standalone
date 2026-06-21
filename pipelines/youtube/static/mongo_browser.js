@@ -64,6 +64,116 @@
         return `https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`;
     }
 
+    function normalizeMapping(mapping) {
+        return {
+            competency: String(mapping?.competency || "").trim(),
+            item_type: String(mapping?.item_type || "").trim(),
+            proficiency_level: String(mapping?.proficiency_level || "").trim(),
+            proficiency_description: String(mapping?.proficiency_description || "").trim(),
+        };
+    }
+
+    function hasMappingValue(mapping) {
+        return Boolean(mapping.competency || mapping.proficiency_level);
+    }
+
+    function mappingKey(mapping) {
+        return `${mapping.proficiency_level}\u0000${mapping.competency}`;
+    }
+
+    function getMainMapping(doc) {
+        const mapping = normalizeMapping({
+            competency: doc.competency,
+            item_type: doc.item_type,
+            proficiency_level: doc.proficiency_level || doc.proficiency,
+            proficiency_description: doc.proficiency_description,
+        });
+        return hasMappingValue(mapping) ? mapping : null;
+    }
+
+    function getAdditionalMappings(doc, mainMapping) {
+        const savedMappings = Array.isArray(doc.additional_mappings)
+            ? doc.additional_mappings
+            : Array.isArray(doc.mappings)
+                ? doc.mappings
+                : [];
+        const seen = new Set();
+        const mainCompetency = mainMapping?.competency || "";
+        const mainLevel = mainMapping?.proficiency_level || "";
+
+        return savedMappings
+            .map(normalizeMapping)
+            .filter(hasMappingValue)
+            .filter((mapping) => {
+                const duplicatesMainCompetency = mainCompetency && mapping.competency === mainCompetency;
+                const duplicatesMainLevel = mainLevel && mapping.proficiency_level === mainLevel;
+                if (duplicatesMainCompetency && (!mapping.proficiency_level || duplicatesMainLevel)) {
+                    return false;
+                }
+
+                const key = mappingKey(mapping);
+                if (seen.has(key)) return false;
+                seen.add(key);
+                return true;
+            });
+    }
+
+    function uniqueDisplay(values) {
+        const seen = new Set();
+        const unique = [];
+        values.forEach((value) => {
+            const text = String(value || "").trim();
+            if (!text || seen.has(text)) return;
+            seen.add(text);
+            unique.push(text);
+        });
+        return unique.length ? unique.join("; ") : "-";
+    }
+
+    function renderMappingList(title, mappings, emptyText) {
+        if (!mappings.length) {
+            return `
+                <div class="doc-title">
+                    <strong>${esc(title)}</strong>
+                    <div class="small-muted">${esc(emptyText)}</div>
+                </div>
+            `;
+        }
+        const items = mappings
+            .filter((mapping) => mapping.competency || mapping.proficiency_level)
+            .map((mapping) => {
+                const levelText = mapping.proficiency_level
+                    ? `Level ${mapping.proficiency_level}`
+                    : "Level -";
+                const typeText = mapping.item_type ? `${mapping.item_type}: ` : "";
+                const description = mapping.proficiency_description
+                    ? `<div class="small-muted">${esc(mapping.proficiency_description)}</div>`
+                    : "";
+                return `
+                    <li>
+                        <strong>${esc(levelText)}</strong>
+                        <span>${esc(typeText)}${esc(mapping.competency || "-")}</span>
+                        ${description}
+                    </li>
+                `;
+            })
+            .join("");
+        return `
+            <div class="doc-title">
+                <strong>${esc(title)}</strong>
+                <ul class="compact-list">${items}</ul>
+            </div>
+        `;
+    }
+
+    function renderSeparatedMappings(mainMapping, additionalMappings) {
+        const mainMappings = mainMapping ? [mainMapping] : [];
+        return `
+            ${renderMappingList("Main Mapping", mainMappings, "No main mapping found.")}
+            ${renderMappingList("Additional Mappings", additionalMappings, "No additional mappings assigned.")}
+        `;
+    }
+
     function getFilterOptionsForCollection(collectionName) {
         return FILTER_OPTIONS_BY_COLLECTION[collectionName] || FILTER_OPTIONS_BY_COLLECTION._default;
     }
@@ -106,10 +216,16 @@
                     const title = doc.title || "-";
                     const sector = doc.sector || "-";
                     const skillName = doc.skill_name || "-";
-                    const competency = doc.competency || "-";
-                    const proficiencyLevel = doc.proficiency_level || "-";
-                    const proficiencyDescription = doc.proficiency_description || "-";
-                    const itemType = doc.item_type || "-";
+                    const mainMapping = getMainMapping(doc);
+                    const additionalMappings = getAdditionalMappings(doc, mainMapping);
+                    const competency = mainMapping?.competency || "-";
+                    const proficiencyLevel = mainMapping?.proficiency_level || "-";
+                    const proficiencyDescription = mainMapping?.proficiency_description || "-";
+                    const itemType = mainMapping?.item_type || "-";
+                    const additionalLevels = uniqueDisplay(
+                        additionalMappings.map((mapping) => mapping.proficiency_level)
+                    );
+                    const additionalCount = String(additionalMappings.length);
                     const ingested = doc.ingested_timing || "-";
                     const publishedAt = doc.publishedAt || "-";
                     const actions = videoId
@@ -126,16 +242,19 @@
                             <div class="doc-meta">
                                 <div><strong>ID</strong><div class="mono">${esc(docId)}</div></div>
                                 <div><strong>Video ID</strong><div class="mono">${esc(videoId || "-")}</div></div>
-                                <div><strong>Competency</strong><div>${esc(competency)}</div></div>
-                                <div><strong>Proficiency Level</strong><div>${esc(proficiencyLevel)}</div></div>
-                                <div><strong>Proficiency Description</strong><div>${esc(proficiencyDescription)}</div></div>
-                                <div><strong>Item Type</strong><div>${esc(itemType)}</div></div>
+                                <div><strong>Main Competency</strong><div>${esc(competency)}</div></div>
+                                <div><strong>Main Proficiency Level</strong><div>${esc(proficiencyLevel)}</div></div>
+                                <div><strong>Main Proficiency Description</strong><div>${esc(proficiencyDescription)}</div></div>
+                                <div><strong>Main Item Type</strong><div>${esc(itemType)}</div></div>
+                                <div><strong>Additional Levels</strong><div>${esc(additionalLevels)}</div></div>
+                                <div><strong>Additional Count</strong><div>${esc(additionalCount)}</div></div>
                                 <div><strong>Skill</strong><div>${esc(skillName)}</div></div>
                                 <div><strong>Sector</strong><div>${esc(sector)}</div></div>
                                 <div><strong>Published</strong><div>${esc(publishedAt)}</div></div>
                                 <div><strong>Ingested</strong><div>${esc(ingested)}</div></div>
                             </div>
                             <div class="doc-title"><strong>Title</strong><div>${esc(title)}</div></div>
+                            ${renderSeparatedMappings(mainMapping, additionalMappings)}
                             ${actions}
                             <details>
                                 <summary>Raw JSON</summary>

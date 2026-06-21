@@ -29,6 +29,10 @@ RRF_K = 60
 RERANK_TOP_N = 10
 SECTOR_BOOST = 1.2
 PROFICIENCY_BOOST = 1.15
+ADDITIONAL_PROFICIENCY_BOOST = 1.08
+PRIMARY_COMPETENCY_BOOST = 1.12
+ADDITIONAL_COMPETENCY_BOOST = 1.08
+MAPPING_BOOST_CAP = 1.25
 QUERY_EMBED_CACHE_SIZE = 4096
 
 router = APIRouter()
@@ -239,11 +243,46 @@ def reciprocal_rank_fusion(
     return scores
 
 
+def _normalize_text(value: object) -> str:
+    return " ".join(str(value or "").split()).casefold()
+
+
+def _payload_list(payload: dict, key: str) -> list[str]:
+    value = payload.get(key)
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item or "").strip()]
+    if value:
+        return [str(value).strip()]
+    return []
+
+
+def payload_proficiency_matches(payload: dict, proficiency_level: str | None) -> bool:
+    requested = str(proficiency_level or "").strip()
+    if not requested:
+        return True
+    if str(payload.get("proficiency_level") or "").strip() == requested:
+        return True
+    return requested in _payload_list(payload, "mapped_proficiency_levels")
+
+
+def payload_competency_matches(payload: dict, competency: str | None) -> bool:
+    requested = _normalize_text(competency)
+    if not requested:
+        return True
+    if _normalize_text(payload.get("competency")) == requested:
+        return True
+    return any(
+        _normalize_text(mapped_competency) == requested
+        for mapped_competency in _payload_list(payload, "mapped_competencies")
+    )
+
+
 def apply_metadata_boosts(
     rrf_scores: dict[str, float],
     payloads: dict[str, dict],
     skill_category: str,
     skill_proficiency: str,
+    skill_competency: str = "",
 ) -> dict[str, float]:
     """Apply sector-alignment and proficiency-alignment multipliers."""
     boosted: dict[str, float] = {}
@@ -251,8 +290,22 @@ def apply_metadata_boosts(
         p = payloads.get(pid, {})
         if skill_category and p.get("sector", "") == skill_category:
             score *= SECTOR_BOOST
-        if skill_proficiency and p.get("proficiency_level", "") == skill_proficiency:
-            score *= PROFICIENCY_BOOST
+
+        mapping_multiplier = 1.0
+        if skill_proficiency:
+            if str(p.get("proficiency_level") or "").strip() == skill_proficiency:
+                mapping_multiplier *= PROFICIENCY_BOOST
+            elif payload_proficiency_matches(p, skill_proficiency):
+                mapping_multiplier *= ADDITIONAL_PROFICIENCY_BOOST
+
+        requested_competency = _normalize_text(skill_competency)
+        if requested_competency:
+            if _normalize_text(p.get("competency")) == requested_competency:
+                mapping_multiplier *= PRIMARY_COMPETENCY_BOOST
+            elif payload_competency_matches(p, skill_competency):
+                mapping_multiplier *= ADDITIONAL_COMPETENCY_BOOST
+
+        score *= min(mapping_multiplier, MAPPING_BOOST_CAP)
         boosted[pid] = score
     return boosted
 

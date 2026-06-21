@@ -453,6 +453,25 @@ th {
     margin-bottom: 4px;
 }
 
+.compact-list {
+    margin: 0;
+    padding-left: 18px;
+}
+
+.compact-list li {
+    margin-bottom: 6px;
+}
+
+.compact-list li:last-child {
+    margin-bottom: 0;
+}
+
+.small-muted {
+    color: #6b7280;
+    font-size: 12px;
+    line-height: 1.35;
+}
+
 details {
     margin-top: 8px;
 }

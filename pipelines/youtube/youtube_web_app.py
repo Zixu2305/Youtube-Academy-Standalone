@@ -34,7 +34,12 @@ from youtube_data_access import (
     get_requirement,
 )
 from youtube_ingestion_service import build_quota_estimate, run_ingestion
-from youtube_vector_index import DEFAULT_COLLECTION_NAME, embed_and_upsert_videos
+from youtube_vector_index import (
+    DEFAULT_COLLECTION_NAME,
+    embed_and_upsert_videos,
+    normalize_video_mappings,
+    sync_video_mapping_payload,
+)
 
 
 def _daily_quota_limit():
@@ -62,6 +67,22 @@ def _mapping_key(mapping: dict) -> tuple[str, str]:
         str(mapping.get("proficiency_level") or "").strip(),
         str(mapping.get("competency") or "").strip(),
     )
+
+
+def _mapping_from_single_fields(doc: dict) -> dict | None:
+    competency = str(doc.get("competency") or "").strip()
+    if not competency:
+        return None
+    return {
+        "competency": competency,
+        "item_type": str(doc.get("item_type") or ""),
+        "proficiency_level": str(doc.get("proficiency_level") or ""),
+        "proficiency_description": str(doc.get("proficiency_description") or ""),
+    }
+
+
+def _current_mappings_from_doc(doc: dict) -> list[dict]:
+    return normalize_video_mappings(doc)
 
 
 def _embed_touched_videos(summary: dict, docs: list[dict]) -> None:
@@ -432,6 +453,7 @@ def create_app():
                             "proficiency_level": 1,
                             "proficiency_description": 1,
                             "additional_mappings": 1,
+                            "mappings": 1,
                         },
                     )
                     .limit(limit)
@@ -440,27 +462,7 @@ def create_app():
                 results = []
                 for doc in docs:
                     video_id = doc.get("videoId", "")
-                    current_mappings = []
-                    saved_mappings = doc.get("additional_mappings")
-                    if not isinstance(saved_mappings, list):
-                        saved_mappings = doc.get("mappings")
-
-                    # Handle additional_mappings, legacy mappings, and old single-competency formats.
-                    if isinstance(saved_mappings, list):
-                        for mapping in saved_mappings:
-                            current_mappings.append({
-                                "competency": mapping.get("competency", ""),
-                                "item_type": mapping.get("item_type", ""),
-                                "proficiency_level": mapping.get("proficiency_level", ""),
-                                "proficiency_description": mapping.get("proficiency_description", ""),
-                            })
-                    elif "competency" in doc and doc["competency"]:
-                        current_mappings.append({
-                            "competency": doc.get("competency", ""),
-                            "item_type": doc.get("item_type", ""),
-                            "proficiency_level": doc.get("proficiency_level", ""),
-                            "proficiency_description": doc.get("proficiency_description", ""),
-                        })
+                    current_mappings = _current_mappings_from_doc(doc)
 
                     results.append({
                         "video_id": video_id,
@@ -529,20 +531,7 @@ def create_app():
                     return jsonify({"error": "Video not found"}), 404
 
                 # Get or initialize additional_mappings array.
-                current_mappings = doc.get("additional_mappings")
-                if not isinstance(current_mappings, list):
-                    current_mappings = doc.get("mappings", [])
-                if not isinstance(current_mappings, list):
-                    # Migrate from old format
-                    if "competency" in doc and doc["competency"]:
-                        current_mappings = [{
-                            "competency": doc.get("competency", ""),
-                            "item_type": doc.get("item_type", ""),
-                            "proficiency_level": doc.get("proficiency_level", ""),
-                            "proficiency_description": doc.get("proficiency_description", ""),
-                        }]
-                    else:
-                        current_mappings = []
+                current_mappings = _current_mappings_from_doc(doc)
 
                 # Remove mappings
                 removed_count = 0
@@ -605,12 +594,27 @@ def create_app():
                 if result.matched_count == 0:
                     return jsonify({"error": "Failed to update video"}), 500
 
+                updated_doc = dict(doc)
+                updated_doc["sector"] = sector
+                updated_doc["additional_mappings"] = current_mappings
+
+                qdrant_synced = True
+                qdrant_error = None
+                try:
+                    sync_result = sync_video_mapping_payload(updated_doc)
+                    qdrant_synced = sync_result.get("qdrant_payload_status") != "skipped"
+                except Exception as exc:
+                    qdrant_synced = False
+                    qdrant_error = str(exc)
+
                 return jsonify({
                     "video_id": video_id,
                     "message": "Successfully updated video mappings.",
                     "total_mappings": len(current_mappings),
                     "added": added_count,
                     "removed": removed_count,
+                    "qdrant_synced": qdrant_synced,
+                    "qdrant_error": qdrant_error,
                 })
             finally:
                 client.close()

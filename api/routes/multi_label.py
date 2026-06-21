@@ -10,6 +10,11 @@ from fastapi import APIRouter, HTTPException, Query
 from pymongo import MongoClient
 from pydantic import BaseModel, Field
 
+from pipelines.youtube.youtube_vector_index import (
+    normalize_video_mappings,
+    sync_video_mapping_payload,
+)
+
 
 router = APIRouter()
 ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -115,6 +120,8 @@ class MultiLabelUpdateResponse(BaseModel):
     total_mappings: int
     added: int
     removed: int
+    qdrant_synced: bool = True
+    qdrant_error: str | None = None
 
 
 class CompetencyListResponse(BaseModel):
@@ -133,6 +140,42 @@ def mapping_key(mapping: dict | CompetencyMapping) -> tuple[str, str]:
         str(mapping.get("proficiency_level") or "").strip(),
         str(mapping.get("competency") or "").strip(),
     )
+
+
+def mapping_from_single_fields(doc: dict) -> dict | None:
+    competency = str(doc.get("competency") or "").strip()
+    if not competency:
+        return None
+    return {
+        "competency": competency,
+        "item_type": str(doc.get("item_type") or ""),
+        "proficiency_level": str(doc.get("proficiency_level") or ""),
+        "proficiency_description": str(doc.get("proficiency_description") or ""),
+    }
+
+
+def current_mappings_from_doc(doc: dict) -> list[dict]:
+    return normalize_video_mappings(doc)
+
+
+def clear_recommendation_caches() -> None:
+    try:
+        from api.routes.recommend import get_bm25_index
+
+        get_bm25_index.cache_clear()
+    except Exception:
+        pass
+
+    try:
+        from api.routes.learner_portal import (
+            get_cached_portal_retrieval,
+            get_cached_reranker_scores,
+        )
+
+        get_cached_portal_retrieval.cache_clear()
+        get_cached_reranker_scores.cache_clear()
+    except Exception:
+        pass
 
 
 @router.post("/public/multi-label/search-videos", response_model=MultiLabelVideoSearchResponse)
@@ -175,30 +218,10 @@ def multi_label_search_videos(payload: MultiLabelVideoSearchRequest):
 
         results = []
         for doc in docs:
-            current_mappings = []
-            saved_mappings = doc.get("additional_mappings")
-            if not isinstance(saved_mappings, list):
-                saved_mappings = doc.get("mappings")
-
-            if isinstance(saved_mappings, list):
-                for mapping in saved_mappings:
-                    current_mappings.append(
-                        CompetencyMapping(
-                            competency=mapping.get("competency", ""),
-                            item_type=mapping.get("item_type", ""),
-                            proficiency_level=mapping.get("proficiency_level", ""),
-                            proficiency_description=mapping.get("proficiency_description", ""),
-                        )
-                    )
-            elif doc.get("competency"):
-                current_mappings.append(
-                    CompetencyMapping(
-                        competency=doc.get("competency", ""),
-                        item_type=doc.get("item_type", ""),
-                        proficiency_level=doc.get("proficiency_level", ""),
-                        proficiency_description=doc.get("proficiency_description", ""),
-                    )
-                )
+            current_mappings = [
+                CompetencyMapping(**mapping)
+                for mapping in current_mappings_from_doc(doc)
+            ]
 
             results.append(
                 VideoMappingInfo(
@@ -311,21 +334,7 @@ def multi_label_update_video(payload: MultiLabelUpdateRequest):
                 detail="Video not found. Make sure it has been ingested first.",
             )
 
-        current_mappings = doc.get("additional_mappings")
-        if not isinstance(current_mappings, list):
-            current_mappings = doc.get("mappings", [])
-        if not isinstance(current_mappings, list):
-            if doc.get("competency"):
-                current_mappings = [
-                    {
-                        "competency": doc.get("competency", ""),
-                        "item_type": doc.get("item_type", ""),
-                        "proficiency_level": doc.get("proficiency_level", ""),
-                        "proficiency_description": doc.get("proficiency_description", ""),
-                    }
-                ]
-            else:
-                current_mappings = []
+        current_mappings = current_mappings_from_doc(doc)
 
         removed_count = 0
         if mappings_to_remove:
@@ -385,12 +394,29 @@ def multi_label_update_video(payload: MultiLabelUpdateRequest):
         if result.matched_count == 0:
             raise HTTPException(status_code=500, detail="Failed to update video.")
 
+        updated_doc = dict(doc)
+        updated_doc["sector"] = sector
+        updated_doc["additional_mappings"] = current_mappings
+
+        qdrant_synced = True
+        qdrant_error = None
+        try:
+            sync_result = sync_video_mapping_payload(updated_doc)
+            qdrant_synced = sync_result.get("qdrant_payload_status") != "skipped"
+            if qdrant_synced:
+                clear_recommendation_caches()
+        except Exception as exc:
+            qdrant_synced = False
+            qdrant_error = str(exc)
+
         return MultiLabelUpdateResponse(
             video_id=video_id,
             message="Successfully updated video mappings.",
             total_mappings=len(current_mappings),
             added=added_count,
             removed=removed_count,
+            qdrant_synced=qdrant_synced,
+            qdrant_error=qdrant_error,
         )
     except HTTPException:
         raise

@@ -26,6 +26,7 @@ from api.routes.recommend import (
     reciprocal_rank_fusion,
     apply_metadata_boosts,
     build_yt_rerank_text,
+    payload_proficiency_matches,
     SEMANTIC_CANDIDATES,
     BM25_CANDIDATES,
 )
@@ -848,11 +849,21 @@ def build_video_filter(
         )
 
     if proficiency_level:
-        must_conditions.append(
-            models.FieldCondition(
-                key="proficiency_level",
-                match=models.MatchValue(value=proficiency_level),
-            )
+        return models.Filter(
+            must=must_conditions,
+            min_should=models.MinShould(
+                conditions=[
+                    models.FieldCondition(
+                        key="proficiency_level",
+                        match=models.MatchValue(value=proficiency_level),
+                    ),
+                    models.FieldCondition(
+                        key="mapped_proficiency_levels",
+                        match=models.MatchValue(value=proficiency_level),
+                    ),
+                ],
+                min_count=1,
+            ),
         )
 
     return models.Filter(must=must_conditions)
@@ -873,7 +884,7 @@ def payload_matches_video_filters(
         return False
     if strict_skill_match and skill and str(payload.get("skill_name") or "") != skill:
         return False
-    if proficiency_level and str(payload.get("proficiency_level") or "") != proficiency_level:
+    if proficiency_level and not payload_proficiency_matches(payload, proficiency_level):
         return False
     return True
 
@@ -884,6 +895,7 @@ def get_cached_portal_retrieval(
     sector: str,
     skill: str,
     proficiency_level: str | None,
+    competency: str,
     strict_skill_match: bool,
     query_text: str,
 ) -> tuple[str, tuple[tuple[str, float], ...]]:
@@ -953,6 +965,7 @@ def get_cached_portal_retrieval(
         all_payloads,
         skill_category=sector,
         skill_proficiency=active_proficiency or "",
+        skill_competency=competency,
     )
 
     sorted_candidates = tuple(
@@ -1942,6 +1955,7 @@ def public_recommend_videos(payload: PublicRecommendRequest):
             sector=sector,
             skill=skill,
             proficiency_level=proficiency_level,
+            competency=competency,
             strict_skill_match=active_strict,
             query_text=query_text,
         )
