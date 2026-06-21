@@ -47,7 +47,7 @@ Quick boundary summary:
 ### 3.1 Public Layer (`/api/public/*`)
 Purpose:
 - Partner-safe contract for UI and platform integration
-- Exposes domain-level operations (sector, skill, map, recommend, vote, direct video search)
+- Exposes domain-level operations (sector, skill, map, recommend, vote, direct video search, multi-label curation)
 
 Characteristics:
 - Input payloads are business-facing (sector/skill/proficiency) or free-text query driven
@@ -91,10 +91,12 @@ Recommended for:
 - Qdrant:
   - vector indexes for skill and YouTube content retrieval
   - semantic and hybrid candidate retrieval
+  - payload metadata for primary/additional video mappings used by filters and boosts
   - required for both the recommendation endpoint and the saved library search mode
 
 - MongoDB:
   - ingested video documents
+  - additional video mappings assigned by human curation
   - quiz storage
   - video vote counters
 
@@ -118,6 +120,8 @@ Recommended for:
 1. Partner calls `POST /api/public/recommend/videos`
 2. API builds query context from skill/proficiency/competency
 3. Retrieval stage executes semantic + BM25 + RRF + metadata boosts
+   - proficiency filtering can match either the primary video mapping or `mapped_proficiency_levels` payload
+   - competency boosts distinguish primary mapping matches from additional mapping matches
 4. Cross-encoder reranks candidate set (embedding/reranker model path)
 5. Vote-aware adjustment is applied
 6. Top K results returned with metadata
@@ -133,7 +137,14 @@ Recommended for:
 3. `POST /api/public/videos/ingest`
 4. Videos are upserted and indexed for retrieval
 
-### 5.4 Direct video search path
+### 5.4 Optional multi-label curation path
+1. `POST /api/public/multi-label/search-videos`
+2. `GET /api/public/multi-label/competencies`
+3. `POST /api/public/multi-label/update-video`
+4. MongoDB `additional_mappings` are updated and normalized mapping fields are synced to the existing Qdrant payload
+5. No video re-embedding is required unless the video has no Qdrant point yet
+
+### 5.5 Direct video search path
 This path supports two modes via the same endpoint (`POST /api/public/videos/search`) and does not require sector, skill, or competency context.
 
 **YouTube mode** (`source: "youtube"`):

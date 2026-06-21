@@ -12,6 +12,7 @@ Service scope:
 - Core retrieval APIs for skill search, video search, and recommendation
 - Quiz generation and retrieval APIs
 - Public learner APIs used by the `/academy` frontend
+- Public multi-label APIs used by the admin curation flow
 - Public job role lookup APIs used by the `/academy/job-roles` frontend
 
 ## API Layer Map
@@ -449,6 +450,123 @@ Failures:
 
 ---
 
+### POST `/api/public/multi-label/search-videos`
+Searches ingested MongoDB videos so an admin can review and edit their competency mappings.
+
+Request body:
+```json
+{
+  "query": "ASEAN Guide on AI Governance",
+  "limit": 20,
+  "search_type": "title"
+}
+```
+
+Request fields:
+- `query` (string, required, min length 1)
+- `limit` (integer, optional, default 20, range 1-100)
+- `search_type` (optional enum: `title`, `video_id`, `skill`; default `title`)
+
+Response shape:
+```json
+{
+  "count": 1,
+  "results": [
+    {
+      "video_id": "OwAY8fc1uOY",
+      "title": "Session on ASEAN Guide on AI Governance and Ethics...",
+      "sector": "Infocomm Technology",
+      "skill_name": "Artificial Intelligence Ethics and Governance",
+      "current_mappings": [
+        {
+          "competency": "knowledge: AI Ethics and Governance frameworks",
+          "item_type": "knowledge",
+          "proficiency_level": "2",
+          "proficiency_description": "..."
+        }
+      ],
+      "description": "...",
+      "channel_title": "..."
+    }
+  ]
+}
+```
+
+`current_mappings` is normalized from the root primary mapping plus `additional_mappings` in MongoDB.
+
+---
+
+### GET `/api/public/multi-label/competencies`
+Returns available competency items for a selected sector, skill, and proficiency level.
+
+Query params:
+- `sector` (required)
+- `skill` (required)
+- `proficiency_level` (required)
+
+Response shape:
+```json
+{
+  "proficiency_level": "2",
+  "proficiency_description": "...",
+  "knowledge_items": ["knowledge: AI Ethics and Governance frameworks"],
+  "ability_items": ["ability: Apply AI governance controls"]
+}
+```
+
+Failures:
+- `404` when no competency data exists for the selected path
+
+---
+
+### POST `/api/public/multi-label/update-video`
+Adds or removes additional competency mappings for an already ingested video.
+
+Request body:
+```json
+{
+  "video_id": "OwAY8fc1uOY",
+  "skill_name": "Artificial Intelligence Ethics and Governance",
+  "sector": "Infocomm Technology",
+  "mappings_to_add": [
+    {
+      "competency": "knowledge: AI Ethics and Governance frameworks",
+      "item_type": "knowledge",
+      "proficiency_level": "2",
+      "proficiency_description": "..."
+    }
+  ],
+  "mappings_to_remove": []
+}
+```
+
+Response shape:
+```json
+{
+  "video_id": "OwAY8fc1uOY",
+  "message": "Successfully updated video mappings.",
+  "total_mappings": 4,
+  "added": 1,
+  "removed": 0,
+  "qdrant_synced": true,
+  "qdrant_error": null
+}
+```
+
+Behavior notes:
+- The root MongoDB fields remain the primary mapping used for embedding.
+- Saved mappings are stored under `additional_mappings`; the legacy `mappings` field is removed on update.
+- The endpoint syncs normalized mapping fields to the existing Qdrant point payload (`competency_mappings`, `mapped_proficiency_levels`, `mapped_competencies`, `mapped_competency_keys`, `mapping_count`).
+- This is a payload-only update. It does not re-embed the video and does not change the vector.
+- If `qdrant_synced` is `false`, MongoDB was updated but the recommendation index payload should be checked or resynced.
+
+Failures:
+- `400` when `video_id`/`skill_name` are missing or there are no mappings to add/remove
+- `404` when the ingested video cannot be found
+- `500` when MongoDB update fails
+
+---
+
 ### GET `/api/public/job-roles`
 Returns read-only SkillsFuture job role summaries for lookup.
 
@@ -612,6 +730,10 @@ Response:
 }
 ```
 
+Embedding note:
+- New ingested videos are embedded with their primary mapping fields.
+- Additional mappings added later use the multi-label update endpoint and only sync Qdrant payload.
+
 ---
 
 ### POST `/api/public/videos/search`
@@ -760,6 +882,13 @@ Response shape:
   ]
 }
 ```
+
+Mapping behavior:
+- `sector` is always used as a Qdrant payload filter.
+- When `strict_skill_match` is true, `skill` must match the video's root `skill_name`.
+- `proficiency_level` matches either the root `proficiency_level` or `mapped_proficiency_levels` from additional mapping payload.
+- `competency` is used in metadata boosting. A root competency match receives the primary competency boost; an additional mapped competency match receives the smaller additional mapping boost.
+- Additional mappings can bring a video into the candidate pool for a mapped proficiency without re-embedding the video.
 
 ---
 

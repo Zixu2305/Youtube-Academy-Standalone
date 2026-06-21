@@ -29,7 +29,7 @@ Implemented now:
 
 1. SkillsFuture relational pipeline into MySQL from Excel sources.
 2. Mapping table population (`map_sf_to_cat_skill`) + reconciliation reports in `out/`.
-3. Admin tools UI/backend with YouTube preview/upsert, Mongo browser, quiz generation, and soft-delete tools.
+3. Admin tools UI/backend with YouTube preview/upsert, Mongo browser, multi-labelling, quiz generation, and soft-delete tools.
 4. Groq-assisted query enhancement during YouTube ingestion.
 5. Quiz generation flow (admin UI at `/quiz_gen` + APIs) with MongoDB storage.
    - Hierarchical filtering: sector → skill → proficiency level → competency.
@@ -56,6 +56,9 @@ Implemented now:
    - `POST /api/public/recommend/videos`
    - `POST /api/public/videos/preview`
    - `POST /api/public/videos/ingest`
+   - `POST /api/public/multi-label/search-videos`
+   - `GET /api/public/multi-label/competencies`
+   - `POST /api/public/multi-label/update-video`
    - `GET /academy` (learner portal)
 
 Reference docs:
@@ -98,7 +101,7 @@ This repo currently has two separate app surfaces:
 1. Internal admin tools (prototype ops UI, Docker service: `admin_tools`)
    - Docker run: `http://localhost:5001`
    - Local run: `http://localhost:5000`
-   - Includes `/` for YouTube ingestion, `/mongo_browser` for MongoDB browsing, `/quiz_gen` for generated quiz questions, and `/delete` for soft deletes.
+   - Includes `/` for YouTube ingestion, `/mongo_browser` for MongoDB browsing, `/multi_label` for assigning additional mappings, `/quiz_gen` for generated quiz questions, and `/delete` for soft deletes.
 2. Learner-facing prototype portal
    - FastAPI host (default): `http://localhost:8000`
    - Learner page: `http://localhost:8000/academy`
@@ -263,6 +266,8 @@ uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
 
 New videos ingested from the console or learner portal are embedded into Qdrant automatically after upsert. `scripts/embed_yt_videos.py` remains useful for backfills or full rebuilds.
 
+Additional mappings assigned from the multi-label tool are payload-only updates. They update MongoDB and the existing Qdrant point payload so recommendations can include the video for mapped proficiency values and boost mapped competency matches without re-embedding the video.
+
 ## Troubleshooting
 
 If startup fails, check these first:
@@ -319,6 +324,7 @@ Open `http://localhost:5000`.
 - Uses Groq to enrich query generation (sector/skill/competency/requirement aware).
 - Upserts documents into MongoDB (`videos`, `ingestion_runs`).
 - Embeds touched video-skill documents into Qdrant after successful upsert.
+- Lets admins assign additional competency/proficiency mappings at `/multi_label`; these sync to Qdrant payload without changing the existing vector.
 - Provides Mongo browser, quiz generation, and soft-delete tools at `/mongo_browser`, `/quiz_gen`, and `/delete`.
 
 ### Admin Quiz Generation (Included in this Workflow)
@@ -412,6 +418,8 @@ python scripts/embed_yt_videos.py
 
 New videos ingested from the console or learner portal are already embedded automatically after upsert. Use this script when you need to rebuild the YouTube collection or backfill older MongoDB records.
 
+Additional multi-label mappings do not need a rebuild. Use the multi-label save flow to sync the Qdrant payload for existing indexed videos.
+
 ### 6) Smoke test SkillsFuture vector index (optional)
 
 ```bash
@@ -445,6 +453,7 @@ The learner portal at `http://localhost:8000/academy` includes:
 - Fuzzy industry search and mapped skill suggestions on the main page.
 - Video recommendation with an optional strict skill filter.
 - A `Find Another Video` flow that previews YouTube candidates and ingests selected videos into the library.
+- Recommendation filtering can include videos whose requested proficiency appears in additional mapping payloads, while mapped competency matches receive bounded metadata boosts.
 - Interactive quiz taking.
 
 For learner-side video preview/ingest, set `YOUTUBE_API_KEY` in `.env` and restart the FastAPI process.

@@ -4,7 +4,7 @@
 
 A pipeline that takes YouTube videos stored in MongoDB (via the ingestion web app or batch script), embeds them into Qdrant, and provides a **recommender endpoint** that uses SkillsFuture skill embeddings as a semantic bridge to find the most relevant videos for a user query.
 
-**Flow:** YouTube API → MongoDB → SentenceTransformer (BGE) → Qdrant → FastAPI recommender API
+**Flow:** YouTube API -> MongoDB -> SentenceTransformer (BGE) -> Qdrant vector + payload -> FastAPI recommender API
 
 ---
 
@@ -89,7 +89,9 @@ Creates both `sf_skill_level_docs__bge_base__768` and `youtube_videos__bge_base_
 ```bash
 python scripts/embed_yt_videos.py
 ```
-Reads all videos from MongoDB, encodes them, and upserts into Qdrant. Re-run after ingesting more videos.
+Reads videos from MongoDB, encodes the primary video mapping text, and upserts vectors plus payload into Qdrant. Use this for backfills, rebuilds, or MongoDB records that do not yet have Qdrant points. New videos ingested through the app are embedded automatically after upsert.
+
+Additional mappings added through multi-labelling do not require this script. They are synchronized as Qdrant payload on the existing point.
 
 ### Step 4: Start the API
 ```bash
@@ -115,6 +117,33 @@ API docs at `http://localhost:8000/docs`.
 
 ---
 
+## Primary and Additional Mappings
+
+Each ingested video has one primary mapping on the root MongoDB document:
+
+- `sector`
+- `skill_name`
+- `competency`
+- `item_type`
+- `proficiency_level`
+- `proficiency_description`
+
+That primary mapping is included in the embedded text and therefore shapes the Qdrant vector. Future embeddings should continue to use only the primary mapping.
+
+Manual multi-labelling adds curated mappings to `additional_mappings` in MongoDB. The vector does not change. Instead, the existing Qdrant point payload is updated with normalized mapping metadata:
+
+- `competency_mappings`
+- `mapped_proficiency_levels`
+- `mapped_competencies`
+- `mapped_competency_keys`
+- `mapping_count`
+
+The public recommendation endpoint uses these payload fields so a video can be included when the requested proficiency matches an additional mapping. Mapped competency matches are used as bounded metadata boosts. This avoids a full re-embed/reindex cycle and keeps the additional mapping update to a lightweight MongoDB write plus Qdrant payload update.
+
+If the Qdrant point does not exist yet, run `python scripts/embed_yt_videos.py` to create the vector point first. After that, additional mapping changes can be handled by payload sync only.
+
+---
+
 ## Files
 
 | File | Purpose |
@@ -122,6 +151,7 @@ API docs at `http://localhost:8000/docs`.
 | `scripts/batch_ingest_yt.py` | Batch-ingests YouTube videos for all competencies across 8 Infocomm Technology skills |
 | `scripts/embed_yt_videos.py` | Reads videos from MongoDB, encodes with BGE model, upserts vectors into Qdrant |
 | `api/routes/recommend.py` | `POST /api/recommend/videos` — recommender endpoint (semantic bridge) |
+| `api/routes/multi_label.py` | Public multi-label endpoints for adding/removing additional mappings and syncing Qdrant payload |
 | `api/routes/search_skills.py` | `POST /api/search/skills` — direct skill search |
 | `api/routes/search_videos.py` | `POST /api/search/videos` — direct video search (useful for testing embeddings are retrievable) |
 | `qdrant/create_collections.py` | Creates/validates both Qdrant collections with payload indexes |
@@ -145,7 +175,8 @@ Longer, more specific queries produce better scores than short generic ones.
 
 - **Embedding model:** BAAI/bge-base-en-v1.5 (768 dimensions, cosine similarity)
 - **Point IDs:** Deterministic UUID5 from `(videoId, skill_name)` — matches MongoDB unique key
-- **Embedded text includes:** title, description (500 chars), tags, channel, sector, skill, competency, proficiency info
+- **Embedded text includes:** title, description (500 chars), tags, channel, sector, skill, primary competency, primary proficiency info
+- **Qdrant payload includes:** primary video metadata plus normalized mapping fields for all primary/additional mappings
 - **Qdrant payload indexes:** sector, skill_name, video_id, channel_title (for fast filtering)
 - **Batch size:** 32 (configurable via `EMBEDDING_BATCH_SIZE` env var)
 - **Data persistence:** All data (MongoDB, Qdrant, MySQL) stored in Docker volumes — survives restarts
