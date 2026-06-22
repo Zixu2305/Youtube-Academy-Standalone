@@ -231,10 +231,10 @@ function App() {
   const [overlayOpen, setOverlayOpen] = useState(false);
   const [overlayStep, setOverlayStep] = useState("skills");
   const [videoFinderOpen, setVideoFinderOpen] = useState(false);
-  const [videoShortcutOpen, setVideoShortcutOpen] = useState(false);
   const [videoFinderMode, setVideoFinderMode] = useState("path");
-  const [directSearchSource, setDirectSearchSource] = useState("youtube");
+  const [directSearchSource, setDirectSearchSource] = useState("library");
   const [directSearchQuery, setDirectSearchQuery] = useState("");
+  const [directResultsPage, setDirectResultsPage] = useState(1);
   const [directMapping, setDirectMapping] = useState(createEmptyDirectMapping());
   const [directSkills, setDirectSkills] = useState([]);
   const [directMapData, setDirectMapData] = useState(null);
@@ -672,7 +672,8 @@ function App() {
 
   const clearDirectSearchFlow = () => {
     setDirectSearchQuery("");
-    setDirectSearchSource("youtube");
+    setDirectSearchSource("library");
+    setDirectResultsPage(1);
     resetDirectMappingState();
   };
 
@@ -749,21 +750,7 @@ function App() {
     setVideoFinderMode("direct");
     resetDirectVideoSearchFlow();
     setVideoFinderOpen(true);
-    setIngestionStatus({ text: "Search YouTube directly or search saved indexed videos from the internal library.", tone: "" });
-  };
-
-  const openShortcutVideoFinder = () => {
-    if (!selectedCompetency) {
-      setIngestionStatus({ text: "Choose a skill and competency first to use path-based video discovery.", tone: "error" });
-      return;
-    }
-    setVideoShortcutOpen(false);
-    openVideoFinder();
-  };
-
-  const openShortcutDirectVideoSearch = () => {
-    setVideoShortcutOpen(false);
-    openDirectVideoSearch();
+    setIngestionStatus({ text: "If nothing fits, you can then search YouTube.", tone: "" });
   };
 
   const closeVideoFinder = () => setVideoFinderOpen(false);
@@ -1023,18 +1010,21 @@ function App() {
     }
   };
 
-  const searchDirectYoutubeVideos = async () => {
+  const searchDirectYoutubeVideos = async (sourceOverride = "library") => {
     const query = directSearchQuery.trim();
     if (query.length < 2) {
       setIngestionStatus({ text: "Enter a search prompt first.", tone: "error" });
       return;
     }
 
+    const searchSource = sourceOverride;
+    setDirectSearchSource(searchSource);
+    setDirectResultsPage(1);
     setPreviewBusy(true);
     setHasPreviewedVideos(true);
     resetDirectMappingState();
     setIngestionStatus({
-      text: directSearchSource === "library" ? "Searching saved indexed videos..." : "Searching YouTube directly...",
+      text: searchSource === "library" ? "Searching saved indexed videos..." : "Searching YouTube directly...",
       tone: "",
     });
 
@@ -1045,16 +1035,16 @@ function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           query,
-          max_results: 8,
+          max_results: searchSource === "library" ? 80 : 8,
           order: "relevance",
-          source: directSearchSource,
+          source: searchSource,
         }),
       });
 
       const previewRows = Array.isArray(response.results) ? response.results : [];
       const nextSelection = {};
       previewRows.forEach((video) => {
-        if (video.video_id && directSearchSource === "youtube" && !video.already_ingested) {
+        if (video.video_id && searchSource === "youtube" && !video.already_ingested) {
           nextSelection[video.video_id] = true;
         }
       });
@@ -1068,14 +1058,14 @@ function App() {
         quotaMessage: response.quota_message || "",
         quota: response.quota || null,
       });
-      if (directSearchSource === "youtube") {
+      if (searchSource === "youtube") {
         setPreviewSessionUnits((current) => current + Number(response.quota?.estimated_units || 0));
       }
 
       if (!previewRows.length) {
         setIngestionStatus({
           text: response.quota_message || (
-            directSearchSource === "library"
+            searchSource === "library"
               ? "No saved indexed videos matched this prompt."
               : "No YouTube videos matched this prompt."
           ),
@@ -1083,7 +1073,7 @@ function App() {
         });
       } else {
         setIngestionStatus({
-          text: directSearchSource === "library"
+          text: searchSource === "library"
             ? `${previewRows.length} saved video result(s) ready.`
             : `${previewRows.length} YouTube result(s) ready. Map selected videos before ingesting.`,
           tone: response.quota_exceeded ? "error" : "success",
@@ -1103,7 +1093,7 @@ function App() {
       setIngestionStatus({
         text: error.status === 429
           ? error.message
-          : directSearchSource === "library"
+          : searchSource === "library"
             ? `Unable to search saved videos: ${error.message}`
             : `Unable to search YouTube: ${error.message}`,
         tone: "error",
@@ -1497,6 +1487,14 @@ function App() {
     (count, video) => count + (previewSelection[video.video_id] ? 1 : 0),
     0,
   );
+  const directPageSize = 8;
+  const directResultCount = videoFinderMode === "direct" ? previewVideos.length : 0;
+  const directTotalPages = Math.max(1, Math.ceil(directResultCount / directPageSize));
+  const safeDirectResultsPage = Math.min(directResultsPage, directTotalPages);
+  const directPageStart = (safeDirectResultsPage - 1) * directPageSize;
+  const directVisibleVideos = videoFinderMode === "direct"
+    ? previewVideos.slice(directPageStart, directPageStart + directPageSize)
+    : previewVideos;
   const directIngestBlocked = videoFinderMode === "direct" && directSearchSource === "youtube" && !directMappingComplete;
 
   const previewQuotaFeedback = useMemo(() => {
@@ -1673,10 +1671,27 @@ function App() {
             </div>
           `;
 
+  const directYoutubeSearchQuery = (previewMeta.query || directSearchQuery.trim()).trim();
+  const directYoutubeFallbackButton = videoFinderMode === "direct" && directYoutubeSearchQuery
+    ? html`
+        <button
+          type="button"
+          className="utility-btn utility-btn-brand"
+          onClick=${() => searchDirectYoutubeVideos("youtube")}
+          disabled=${previewBusy || ingestBusy}
+        >
+          ${previewVideos.length
+            ? "Not finding what you need? Search YouTube"
+            : `Search YouTube for "${directYoutubeSearchQuery}"`}
+        </button>
+      `
+    : null;
+
   const previewContent = !hasPreviewedVideos
     ? html`<p className="empty-note">Preview candidate videos if the current recommendations miss the mark.</p>`
     : previewVideos.length
-      ? previewVideos.map((video) => {
+      ? html`
+          ${directVisibleVideos.map((video) => {
           const url = video.video_id
             ? `https://www.youtube.com/watch?v=${encodeURIComponent(video.video_id)}`
             : "#";
@@ -1746,8 +1761,19 @@ function App() {
               </div>
             </article>
           `;
-        })
-      : html`<p className="empty-note">No candidate videos matched the current path.</p>`;
+        })}
+          ${videoFinderMode === "direct" && directSearchSource === "library"
+            ? html`<div className="preview-youtube-fallback">${directYoutubeFallbackButton}</div>`
+            : null}
+        `
+      : videoFinderMode === "direct" && directSearchSource === "library"
+        ? html`
+            <div className="empty-note">
+              <p>No saved indexed videos matched this prompt.</p>
+              ${directYoutubeFallbackButton}
+            </div>
+          `
+        : html`<p className="empty-note">No candidate videos matched the current path.</p>`;
 
   return html`
     <main className="academy-shell">
@@ -1786,43 +1812,12 @@ function App() {
             <button
               type="button"
               className="utility-btn utility-btn-brand hero-link"
-              onClick=${() => setVideoShortcutOpen((current) => !current)}
-              aria-expanded=${videoShortcutOpen}
-              aria-haspopup="dialog"
+              onClick=${openDirectVideoSearch}
             >
               <span className="hero-video-icon" aria-hidden="true"></span>
-              <span>Direct Video Search?</span>
+              <span>Direct Video Search</span>
             </button>
-            <p>Preview or search YouTube candidates.</p>
-            ${videoShortcutOpen
-              ? html`
-                  <div className="hero-video-popout" role="dialog" aria-label="Need more videos">
-                    <div>
-                      <p className="selection-label">Video Discovery</p>
-                      <p className="hero-video-popout-copy">
-                        Choose path-based discovery or search YouTube / saved library videos directly.
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      className="utility-btn"
-                      onClick=${openShortcutVideoFinder}
-                    >
-                      Find Another Video
-                    </button>
-                    <button
-                      type="button"
-                      className="utility-btn utility-btn-brand"
-                      onClick=${openShortcutDirectVideoSearch}
-                    >
-                      Search Videos Directly
-                    </button>
-                    ${ingestionStatus.text && !selectedCompetency
-                      ? html`<p className="panel-status" data-tone=${ingestionStatus.tone || undefined}>${ingestionStatus.text}</p>`
-                      : null}
-                  </div>
-                `
-              : null}
+            <p>Search saved library videos first, then fall back to YouTube only if needed.</p>
           </div>
         </div>
       </header>
@@ -2241,42 +2236,12 @@ function App() {
                   ${videoFinderMode === "direct"
                     ? html`
                         <div className="direct-search-panel">
-                          <div className="direct-source-toggle" role="group" aria-label="Direct search source">
-                            <button
-                              type="button"
-                              className=${`direct-source-btn ${directSearchSource === "youtube" ? "active" : ""}`}
-                              onClick=${() => {
-                                setDirectSearchSource("youtube");
-                                resetPreviewResults();
-                                resetDirectMappingState();
-                                setIngestionStatus({ text: "Search YouTube directly, then map selected videos before ingesting.", tone: "" });
-                              }}
-                              disabled=${previewBusy || ingestBusy}
-                            >
-                              YouTube Data API
-                            </button>
-                            <button
-                              type="button"
-                              className=${`direct-source-btn ${directSearchSource === "library" ? "active" : ""}`}
-                              onClick=${() => {
-                                setDirectSearchSource("library");
-                                resetPreviewResults();
-                                resetDirectMappingState();
-                                setIngestionStatus({ text: "Search saved indexed videos using semantic similarity.", tone: "" });
-                              }}
-                              disabled=${previewBusy || ingestBusy}
-                            >
-                              Saved Library
-                            </button>
-                          </div>
-                          <label className="field-label" htmlFor="direct-youtube-query">
-                            ${directSearchSource === "library" ? "Saved video search prompt" : "YouTube search prompt"}
-                          </label>
+                          <label className="field-label" htmlFor="direct-youtube-query">Saved video search prompt</label>
                           <div className="direct-search-row">
                             <input
                               id="direct-youtube-query"
                               type="search"
-                              placeholder=${directSearchSource === "library" ? "Example: simple tutorial for accountancy basics" : "Example: beginner accounting standards tutorial"}
+                              placeholder="Example: simple tutorial for accountancy basics"
                               value=${directSearchQuery}
                               onInput=${(event) => setDirectSearchQuery(event.target.value)}
                               onKeyDown=${(event) => {
@@ -2294,8 +2259,8 @@ function App() {
                               ${previewBusy
                                 ? "Searching..."
                                 : hasPreviewedVideos
-                                  ? "Search Again"
-                                  : directSearchSource === "library" ? "Search Library" : "Search YouTube"}
+                                  ? "Search Library Again"
+                                  : "Search Library"}
                             </button>
                           </div>
                         </div>
@@ -2484,6 +2449,33 @@ function App() {
                     ${ingestionStatus.text}
                   </p>
                   <div className="preview-list preview-list-modal">${previewContent}</div>
+                  ${videoFinderMode === "direct" && previewVideos.length > directPageSize
+                    ? html`
+                        <div className="direct-results-pager">
+                          <button
+                            type="button"
+                            className="utility-btn"
+                            onClick=${() => setDirectResultsPage((page) => Math.max(1, page - 1))}
+                            disabled=${safeDirectResultsPage <= 1 || previewBusy || ingestBusy}
+                          >
+                            Previous
+                          </button>
+                          <span>
+                            Page ${safeDirectResultsPage} of ${directTotalPages}
+                            · showing ${directPageStart + 1}-${Math.min(directPageStart + directPageSize, previewVideos.length)}
+                            of ${previewVideos.length}
+                          </span>
+                          <button
+                            type="button"
+                            className="utility-btn"
+                            onClick=${() => setDirectResultsPage((page) => Math.min(directTotalPages, page + 1))}
+                            disabled=${safeDirectResultsPage >= directTotalPages || previewBusy || ingestBusy}
+                          >
+                            Next
+                          </button>
+                        </div>
+                      `
+                    : null}
                 </div>
 
                 ${!(videoFinderMode === "direct" && directSearchSource === "library")

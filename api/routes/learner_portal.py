@@ -39,6 +39,7 @@ ACADEMY_FRONTEND_DIR = ROOT_DIR / "api" / "frontend" / "academy"
 
 DEFAULT_YT_COLLECTION = "youtube_videos__bge_base__768"
 PORTAL_PREVIEW_LIMIT = 8
+PORTAL_DIRECT_SEARCH_LIMIT = 80
 PORTAL_RETRIEVAL_CACHE_SIZE = 512
 PORTAL_DEFAULT_RERANK_CANDIDATES = 8
 PORTAL_RERANK_CACHE_SIZE = 512
@@ -350,7 +351,7 @@ class PublicVideoPreviewRequest(BaseModel):
 
 class PublicDirectVideoSearchRequest(BaseModel):
     query: str = Field(..., min_length=2, max_length=240)
-    max_results: int = Field(default=PORTAL_PREVIEW_LIMIT, ge=1, le=PORTAL_PREVIEW_LIMIT)
+    max_results: int = Field(default=PORTAL_PREVIEW_LIMIT, ge=1, le=PORTAL_DIRECT_SEARCH_LIMIT)
     order: str = Field(default="relevance", max_length=30)
     source: Literal["youtube", "library"] = "youtube"
     min_score: float = Field(default=0.0, ge=0.0, le=1.0)
@@ -1542,7 +1543,7 @@ def public_search_videos(payload: PublicDirectVideoSearchRequest):
         return search_saved_library_videos(
             query=query,
             max_results=payload.max_results,
-            min_score=0.5,
+            min_score=0.02,
         )
 
     api_key = get_portal_youtube_api_key()
@@ -1633,7 +1634,6 @@ def search_saved_library_videos(*, query: str, max_results: int, min_score: floa
 
     try:
         query_vector = list(get_cached_query_embedding(query_text))
-        reranker = get_reranker_model()
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
@@ -1669,11 +1669,20 @@ def search_saved_library_videos(*, query: str, max_results: int, min_score: floa
     all_payloads = {pid: payload for pid, payload in all_payloads.items() if pid in rrf_scores}
 
     sorted_candidates = sorted(rrf_scores.items(), key=lambda item: item[1], reverse=True)
+    rerank_pool = sorted_candidates[: max_results * 3]
 
-    rerank_pool_size = min(len(sorted_candidates), max(max_results * 3, PORTAL_DEFAULT_RERANK_CANDIDATES))
-    rerank_candidates = sorted_candidates[:rerank_pool_size]
+    boosted_candidates: list[tuple[str, float]] = []
+    for pid, rrf_score in rerank_pool:
+        item = all_payloads.get(pid, {})
+        video_title = str(item.get("title") or "")
+        text_match_score = score_label_match(query_text, video_title)
+        final_score = float(rrf_score) + (text_match_score * 0.05)
+        boosted_candidates.append((pid, final_score))
 
-    if not rerank_candidates:
+    boosted_candidates.sort(key=lambda item: item[1], reverse=True)
+    ranked_candidates = boosted_candidates[:max_results]
+
+    if not ranked_candidates:
         return PublicVideoPreviewResponse(
             query=query_text,
             count=0,
@@ -1684,32 +1693,20 @@ def search_saved_library_videos(*, query: str, max_results: int, min_score: floa
             results=[],
         )
 
-    rerank_pairs = []
-    rerank_pids = []
-    for pid, _ in rerank_candidates:
-        rerank_pairs.append((query_text, build_yt_rerank_text(all_payloads.get(pid, {}))))
-        rerank_pids.append(pid)
-
-    reranker_scores = reranker.predict(rerank_pairs)
-    ranked_indices = np.argsort(reranker_scores)[::-1]
-
     results: list[PublicPreviewVideo] = []
     seen_video_ids: set[str] = set()
-    for idx in ranked_indices:
-        if len(results) >= max_results:
-            break
-        pid = rerank_pids[idx]
+    for pid, final_score in ranked_candidates:
         item = all_payloads.get(pid, {})
         video_id = str(item.get("video_id") or "").strip()
         if not video_id or video_id in seen_video_ids:
             continue
-        if float(reranker_scores[idx]) < min_score:
+        if final_score < min_score:
             continue
         seen_video_ids.add(video_id)
         results.append(
             PublicPreviewVideo(
                 source="library",
-                score=float(reranker_scores[idx]),
+                score=float(final_score),
                 sector=str(item.get("sector") or ""),
                 skill_name=str(item.get("skill_name") or ""),
                 competency=str(item.get("competency") or ""),

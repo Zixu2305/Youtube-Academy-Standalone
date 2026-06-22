@@ -117,37 +117,6 @@ body.overlay-open {
   line-height: 1.38;
 }
 
-.hero-video-popout {
-  position: absolute;
-  z-index: 20;
-  left: 0;
-  top: calc(100% + 0.5rem);
-  width: min(360px, calc(100vw - 2rem));
-  border: 1px solid rgba(14, 101, 119, 0.22);
-  border-radius: 12px;
-  background: #ffffff;
-  color: var(--ink);
-  box-shadow: var(--shadow-panel);
-  padding: 0.72rem;
-  display: grid;
-  gap: 0.55rem;
-}
-
-.hero-video-popout-copy {
-  margin: 0.18rem 0 0;
-  color: var(--muted);
-  font-size: 0.76rem;
-  line-height: 1.38;
-}
-
-.hero-video-popout .utility-btn {
-  width: 100%;
-}
-
-.hero-video-popout .panel-status {
-  min-height: 0;
-}
-
 .metric-pill {
   border-radius: 999px;
   border: 1px solid rgba(225, 241, 247, 0.34);
@@ -1209,41 +1178,6 @@ textarea {
   padding: 0.72rem;
 }
 
-.direct-source-toggle {
-  display: inline-flex;
-  flex-wrap: wrap;
-  gap: 0.32rem;
-  margin-bottom: 0.68rem;
-  border: 1px solid rgba(14, 101, 119, 0.16);
-  border-radius: 999px;
-  background: #edf6f8;
-  padding: 0.22rem;
-}
-
-.direct-source-btn {
-  border: 0;
-  border-radius: 999px;
-  background: transparent;
-  color: var(--muted);
-  cursor: pointer;
-  font: inherit;
-  font-size: 0.74rem;
-  font-weight: 800;
-  padding: 0.34rem 0.72rem;
-  transition: background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
-}
-
-.direct-source-btn.active {
-  background: #ffffff;
-  color: var(--brand-strong);
-  box-shadow: 0 5px 16px rgba(14, 101, 119, 0.14);
-}
-
-.direct-source-btn:disabled {
-  cursor: not-allowed;
-  opacity: 0.62;
-}
-
 .video-finder-panel[data-mode="direct"] .direct-map-panel {
   padding: 0.58rem 0.72rem;
   gap: 0.46rem;
@@ -1337,6 +1271,17 @@ textarea {
 
 .preview-list-modal {
   max-height: 46vh;
+}
+
+.direct-results-pager {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 0.76rem;
+  gap: 0.5rem;
+  justify-content: flex-end;
+  padding: 0.1rem 0.18rem 0.35rem;
 }
 
 .video-finder-panel[data-mode="direct"] .preview-list-modal {
@@ -1804,12 +1749,6 @@ textarea {
 
   .hero-actions {
     flex-direction: column;
-  }
-
-  .hero-video-popout {
-    position: static;
-    width: 100%;
-    margin-top: 0.12rem;
   }
 
   .controls-row {
