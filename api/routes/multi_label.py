@@ -49,6 +49,7 @@ def get_mongo_client() -> MongoClient:
     username = env("MONGO_ROOT_USERNAME")
     password = env("MONGO_ROOT_PASSWORD")
     auth_source = env("MONGO_AUTH_SOURCE", "admin")
+    auth_mechanism = env("MONGO_AUTH_MECHANISM", "SCRAM-SHA-256")
     if username and password:
         return MongoClient(
             host=host,
@@ -56,6 +57,7 @@ def get_mongo_client() -> MongoClient:
             username=username,
             password=password,
             authSource=auth_source,
+            authMechanism=auth_mechanism,
         )
     return MongoClient(host=host, port=port)
 

@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import numpy as np
 import mysql.connector
@@ -408,6 +409,7 @@ class PublicIngestVideo(BaseModel):
     duration: str = ""
     channelTitle: str = ""
     thumbnailUrl: str = ""
+    search_query: str = ""
 
 
 class PublicVideoIngestRequest(BaseModel):
@@ -425,6 +427,8 @@ class PublicVideoIngestResponse(BaseModel):
     embedding_requested: int = 0
     embedding_indexed: int
     embedding_skipped_invalid: int = 0
+    pending_review_count: int = 0
+    approved_ingested_count: int = 0
 
 
 class PublicMappingVideo(BaseModel):
@@ -455,6 +459,56 @@ class PublicVideoMappingSuggestion(BaseModel):
 class PublicVideoMappingSuggestResponse(BaseModel):
     suggestion: PublicVideoMappingSuggestion
     alternatives: list[PublicVideoMappingSuggestion] = Field(default_factory=list)
+
+
+class VideoCompetencyMapping(BaseModel):
+    sector: str = Field(..., min_length=1)
+    skill: str = Field(..., min_length=1)
+    proficiency_level: str = Field(..., min_length=1)
+    competency: str = Field(..., min_length=1)
+    item_type: str = Field(..., min_length=1)
+    proficiency_description: str = ""
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    reason: str = ""
+    source: Literal["ai", "admin", "fallback"] = "admin"
+
+
+class VideoMappingReviewRequest(BaseModel):
+    video_id: str
+    review_status: str
+    title: str = ""
+    channel_title: str = ""
+    thumbnail_url: str = ""
+    search_query: str = ""
+    suggested_mappings: list[VideoCompetencyMapping] = Field(default_factory=list)
+    approved_mappings: list[VideoCompetencyMapping] = Field(default_factory=list)
+    created_at: str = ""
+    updated_at: str = ""
+    reviewed_at: str = ""
+
+
+class VideoMappingReviewListResponse(BaseModel):
+    count: int
+    requests: list[VideoMappingReviewRequest]
+
+
+class AdminMappingUpdateRequest(BaseModel):
+    mappings: list[VideoCompetencyMapping] = Field(..., min_length=1, max_length=20)
+    reviewer: str = "admin"
+
+
+class AdminRejectMappingRequest(BaseModel):
+    reviewer: str = "admin"
+    reason: str = ""
+
+
+class AdminMappingActionResponse(BaseModel):
+    message: str
+    video_id: str
+    review_status: str
+    approved_mappings: list[VideoCompetencyMapping] = Field(default_factory=list)
+    embedding_status: str = "skipped"
+    embedding_indexed: int = 0
 
 
 @lru_cache(maxsize=1)
@@ -531,12 +585,218 @@ def score_text_overlap(query: str, label: str) -> float:
     return len(overlap) / max(1, len(query_tokens))
 
 
+def expand_mapping_query_text(query_text: str) -> str:
+    tokens = set(tokenize_search_text(query_text))
+    expansions: list[str] = []
+    if "ai" in tokens:
+        expansions.extend(["artificial intelligence", "machine learning"])
+    if "ethic" in tokens or "ethics" in tokens or "ethical" in tokens:
+        expansions.extend(["ethics", "ethical", "responsible", "governance", "risk"])
+    if "safety" in tokens or "safe" in tokens:
+        expansions.extend(["security", "risk", "governance"])
+    if "data" in tokens:
+        expansions.extend(["data governance", "responsible data use"])
+    return " ".join([query_text, *expansions]).strip()
+
+
+def build_mapping_search_tokens(query_text: str, limit: int = 10) -> list[str]:
+    expanded = expand_mapping_query_text(query_text)
+    stop_tokens = {
+        "and", "for", "the", "with", "from", "this", "that", "what", "when", "video",
+        "youtube", "tutorial", "learn", "learning", "news", "daily",
+    }
+    tokens: list[str] = []
+    for token in tokenize_search_text(expanded):
+        if len(token) < 3 and token != "ai":
+            continue
+        if token in stop_tokens:
+            continue
+        normalized_tokens = ["artificial", "intelligence"] if token == "ai" else [token]
+        for normalized in normalized_tokens:
+            if normalized not in tokens:
+                tokens.append(normalized)
+        if len(tokens) >= limit:
+            break
+    return tokens
+
+
+def score_mapping_candidate_row(query_text: str, row: dict[str, object]) -> float:
+    expanded_query = expand_mapping_query_text(query_text)
+    skill = str(row.get("skill") or "")
+    sector = str(row.get("sector") or "")
+    item_text = str(row.get("item_text") or "")
+    description = str(row.get("proficiency_description") or "")
+    combined_competency = f"{item_text}. {description}"
+
+    score = (
+        score_label_match(expanded_query, item_text) * 3.5
+        + score_text_overlap(expanded_query, item_text) * 8.0
+        + score_label_match(expanded_query, description) * 1.3
+        + score_text_overlap(expanded_query, description) * 3.2
+        + score_label_match(expanded_query, skill) * 1.4
+        + score_text_overlap(expanded_query, skill) * 2.4
+        + score_label_match(expanded_query, sector) * 0.4
+        + score_text_overlap(expanded_query, combined_competency) * 2.0
+    )
+
+    query_tokens = set(tokenize_search_text(expanded_query))
+    candidate_tokens = set(tokenize_search_text(" ".join([sector, skill, item_text, description])))
+    if {"ethics", "ethical", "responsible", "governance"} & query_tokens and candidate_tokens & {"ethics", "ethical", "responsible", "governance"}:
+        score += 4.0
+    if {"artificial", "intelligence", "machine", "learning"} & query_tokens and candidate_tokens & {"artificial", "intelligence", "machine", "learning", "ai"}:
+        score += 3.0
+    if (
+        {"artificial", "intelligence"} <= query_tokens
+        and {"ethics", "governance"} & query_tokens
+        and sector.strip().lower() == "infocomm technology"
+    ):
+        score += 8.0
+    broad_ai_ethics_query = {"artificial", "intelligence"} <= query_tokens and {"ethics", "ethical", "governance", "responsible"} & query_tokens
+    if "financial" in candidate_tokens and not (query_tokens & {"financial", "finance", "banking", "payment", "insurance"}):
+        score -= 14.0 if broad_ai_ethics_query else 5.0
+    if {"accountancy", "audit", "auditor", "accounting"} & candidate_tokens and not (
+        query_tokens & {"accountancy", "audit", "auditor", "accounting", "finance", "financial"}
+    ):
+        score -= 8.0 if broad_ai_ethics_query else 4.0
+    if "security" in candidate_tokens and not (query_tokens & {"security", "secure", "cybersecurity", "privacy", "safety", "risk"}):
+        score -= 2.0
+    return score
+
+
+def get_mapping_competency_candidate_rows(query_text: str, limit: int = 700) -> list[dict[str, object]]:
+    tokens = build_mapping_search_tokens(query_text)
+    if not tokens:
+        return []
+
+    query_tokens = set(tokenize_search_text(expand_mapping_query_text(query_text)))
+    preferred_skill_filters: list[str] = []
+    if {"artificial", "intelligence"} <= query_tokens and {"ethics", "governance"} & query_tokens:
+        preferred_skill_filters.extend([
+            "%Artificial Intelligence Ethics and Governance%",
+            "%Responsible AI and Generative AI Practices%",
+        ])
+    elif {"artificial", "intelligence"} <= query_tokens and {"responsible", "ethical", "ethics"} & query_tokens:
+        preferred_skill_filters.append("%Responsible AI and Generative AI Practices%")
+
+    preferred_rows: list[dict[str, object]] = []
+    if preferred_skill_filters:
+        preferred_where = " OR ".join(["m.source_skill_title LIKE %s" for _ in preferred_skill_filters])
+        preferred_sql = f"""
+        SELECT
+          m.sector_name_raw AS sector,
+          m.source_skill_title AS skill,
+          m.proficiency_level AS proficiency_level,
+          COALESCE(sl.proficiency_description, '') AS proficiency_description,
+          sci.item_type AS item_type,
+          sci.item_text AS item_text
+        FROM map_sf_to_cat_skill m
+        JOIN sf_competency_item sci
+          ON sci.sf_skill_id = m.sf_skill_id
+         AND sci.proficiency_level = m.proficiency_level
+        LEFT JOIN sf_skill_level sl
+          ON sl.sf_skill_id = m.sf_skill_id
+         AND sl.proficiency_level = m.proficiency_level
+        WHERE ({preferred_where})
+        LIMIT 240;
+        """
+        conn = get_mysql_connection()
+        cur = conn.cursor(dictionary=True)
+        try:
+            cur.execute(preferred_sql, preferred_skill_filters)
+            preferred_rows = cur.fetchall()
+        finally:
+            cur.close()
+            conn.close()
+
+    rows: list[dict[str, object]] = []
+    if not preferred_rows:
+        where_clauses = []
+        params: list[object] = []
+        for token in tokens:
+            like_value = f"%{token}%"
+            where_clauses.append(
+                "("
+                "m.sector_name_raw LIKE %s OR "
+                "m.source_skill_title LIKE %s OR "
+                "sci.item_text LIKE %s OR "
+                "sl.proficiency_description LIKE %s"
+                ")"
+            )
+            params.extend([like_value, like_value, like_value, like_value])
+
+        sql = f"""
+        SELECT
+          m.sector_name_raw AS sector,
+          m.source_skill_title AS skill,
+          m.proficiency_level AS proficiency_level,
+          COALESCE(sl.proficiency_description, '') AS proficiency_description,
+          sci.item_type AS item_type,
+          sci.item_text AS item_text
+        FROM map_sf_to_cat_skill m
+        JOIN sf_competency_item sci
+          ON sci.sf_skill_id = m.sf_skill_id
+         AND sci.proficiency_level = m.proficiency_level
+        LEFT JOIN sf_skill_level sl
+          ON sl.sf_skill_id = m.sf_skill_id
+         AND sl.proficiency_level = m.proficiency_level
+        WHERE m.source_skill_title IS NOT NULL
+          AND m.source_skill_title <> ''
+          AND m.sector_name_raw IS NOT NULL
+          AND m.sector_name_raw <> ''
+          AND sci.item_text IS NOT NULL
+          AND sci.item_text <> ''
+          AND ({' OR '.join(where_clauses)})
+        ORDER BY
+          CASE
+            WHEN m.source_skill_title LIKE '%Artificial Intelligence Ethics%' THEN 0
+            WHEN m.source_skill_title LIKE '%Responsible AI%' THEN 1
+            WHEN m.source_skill_title LIKE '%Generative AI%' THEN 2
+            ELSE 3
+          END,
+          m.sector_name_raw,
+          m.source_skill_title,
+          m.proficiency_level
+        LIMIT %s;
+        """
+        params.append(limit)
+
+        conn = get_mysql_connection()
+        cur = conn.cursor(dictionary=True)
+        try:
+            cur.execute(sql, params)
+            rows = cur.fetchall()
+        finally:
+            cur.close()
+            conn.close()
+
+    scored_rows: list[tuple[float, dict[str, object]]] = []
+    for row in [*preferred_rows, *rows]:
+        normalized = {
+            "sector": str(row.get("sector") or "").strip(),
+            "skill": str(row.get("skill") or "").strip(),
+            "proficiency_level": str(row.get("proficiency_level") or "").strip(),
+            "proficiency_description": str(row.get("proficiency_description") or "").strip(),
+            "item_type": str(row.get("item_type") or "").strip().lower(),
+            "item_text": str(row.get("item_text") or "").strip(),
+        }
+        score = score_mapping_candidate_row(query_text, normalized)
+        if score <= 0:
+            continue
+        scored_rows.append((score, normalized))
+
+    scored_rows.sort(
+        key=lambda item: (
+            -item[0],
+            str(item[1].get("sector") or "").lower(),
+            str(item[1].get("skill") or "").lower(),
+            str(item[1].get("proficiency_level") or "").lower(),
+        )
+    )
+    return [{**row, "row_score": round(score, 4)} for score, row in scored_rows]
+
+
 def get_mapping_candidate_headers(query_text: str, limit: int = 80) -> list[dict[str, object]]:
-    tokens = [
-        token
-        for token in tokenize_search_text(query_text)
-        if len(token) >= 3
-    ][:6]
+    tokens = build_mapping_search_tokens(query_text, limit=8)
     if not tokens:
         return []
 
@@ -601,21 +861,53 @@ def get_mapping_candidates_for_video(
     ).strip()
     base_search_text = search_query.strip() or query_text
     scored_entries: list[tuple[float, dict[str, object]]] = []
+    competency_rows = get_mapping_competency_candidate_rows(query_text)
     header_entries = get_mapping_candidate_headers(base_search_text)
+    for row in competency_rows:
+        entry = {
+            "sector": row["sector"],
+            "skill": row["skill"],
+            "mapped_skill_count": 1,
+            "competency_rows": [row],
+        }
+        scored_entries.append((float(row.get("row_score") or 0), entry))
 
     for entry in header_entries:
         skill = str(entry.get("skill") or "")
-        skill_score = score_label_match(base_search_text, skill)
+        skill_score = score_label_match(expand_mapping_query_text(base_search_text), skill)
         sector = str(entry.get("sector") or "")
-        sector_score = score_label_match(base_search_text, sector)
+        sector_score = score_label_match(expand_mapping_query_text(base_search_text), sector)
         mapped_count = parse_int(entry.get("mapped_skill_count"))
         score = sector_score * 2.4 + skill_score * 2.8 + min(1.0, mapped_count / 8) * 0.25
         if score < MAPPING_SUGGESTION_MIN_SCORE:
             continue
         scored_entries.append((score, entry))
 
+    grouped_entries: dict[tuple[str, str], tuple[float, dict[str, object]]] = {}
+    for score, entry in scored_entries:
+        key = (
+            str(entry.get("sector") or "").strip().lower(),
+            str(entry.get("skill") or "").strip().lower(),
+        )
+        if not key[0] or not key[1]:
+            continue
+        existing = grouped_entries.get(key)
+        if existing:
+            existing_score, existing_entry = existing
+            existing_rows = list(existing_entry.get("competency_rows") or [])
+            existing_rows.extend(entry.get("competency_rows") or [])
+            existing_entry["competency_rows"] = existing_rows
+            existing_entry["mapped_skill_count"] = max(
+                parse_int(existing_entry.get("mapped_skill_count")),
+                parse_int(entry.get("mapped_skill_count")),
+            )
+            grouped_entries[key] = (max(existing_score, score), existing_entry)
+        else:
+            grouped_entries[key] = (score, dict(entry))
+
     candidates = []
-    scored_entries.sort(
+    sorted_entries = list(grouped_entries.values())
+    sorted_entries.sort(
         key=lambda item: (
             -item[0],
             -parse_int(item[1].get("mapped_skill_count")),
@@ -624,7 +916,7 @@ def get_mapping_candidates_for_video(
         )
     )
 
-    for score, entry in scored_entries[:limit]:
+    for score, entry in sorted_entries[:limit]:
         try:
             skill_map = get_skill_map(
                 sector=str(entry.get("sector") or ""),
@@ -633,14 +925,63 @@ def get_mapping_candidates_for_video(
         except HTTPException:
             continue
 
+        rows_by_level: dict[str, list[dict[str, object]]] = {}
+        for row in entry.get("competency_rows") or []:
+            rows_by_level.setdefault(str(row.get("proficiency_level") or ""), []).append(row)
+
         mappings = []
-        for mapping in skill_map.mappings[:3]:
+        for mapping in skill_map.mappings:
+            ranked_competencies: list[tuple[float, dict[str, str]]] = []
+            for row in rows_by_level.get(mapping.proficiency_level, []):
+                ranked_competencies.append(
+                    (
+                        float(row.get("row_score") or 0),
+                        {
+                            "item_type": str(row.get("item_type") or ""),
+                            "item_text": str(row.get("item_text") or ""),
+                        },
+                    )
+                )
+            if not ranked_competencies:
+                ranked_competencies = [
+                    (
+                        score_mapping_candidate_row(
+                            query_text,
+                            {
+                                "sector": entry.get("sector"),
+                                "skill": entry.get("skill"),
+                                "proficiency_level": mapping.proficiency_level,
+                                "proficiency_description": mapping.proficiency_description,
+                                "item_type": "knowledge",
+                                "item_text": item,
+                            },
+                        ),
+                        {"item_type": "knowledge", "item_text": item},
+                    )
+                    for item in mapping.knowledge_items
+                ] + [
+                    (
+                        score_mapping_candidate_row(
+                            query_text,
+                            {
+                                "sector": entry.get("sector"),
+                                "skill": entry.get("skill"),
+                                "proficiency_level": mapping.proficiency_level,
+                                "proficiency_description": mapping.proficiency_description,
+                                "item_type": "ability",
+                                "item_text": item,
+                            },
+                        ),
+                        {"item_type": "ability", "item_text": item},
+                    )
+                    for item in mapping.ability_items
+                ]
+
+            ranked_competencies.sort(key=lambda item: -item[0])
             competencies = [
-                {"item_type": "knowledge", "item_text": item}
-                for item in mapping.knowledge_items[:4]
-            ] + [
-                {"item_type": "ability", "item_text": item}
-                for item in mapping.ability_items[:4]
+                competency
+                for competency_score, competency in ranked_competencies[:6]
+                if competency_score > 0 or rows_by_level.get(mapping.proficiency_level)
             ]
             if not competencies:
                 continue
@@ -649,6 +990,8 @@ def get_mapping_candidates_for_video(
                 "proficiency_description": mapping.proficiency_description,
                 "competencies": competencies,
             })
+            if len(mappings) >= 4:
+                break
         if not mappings:
             continue
 
@@ -759,6 +1102,229 @@ def get_video_votes_collection():
     client = get_mongo_client()
     database_name = env("MONGO_DATABASE", env("DB_NAME", "yta"))
     return client, client[database_name]["video_votes"]
+
+
+def utc_now() -> datetime:
+    return datetime.utcnow()
+
+
+def to_iso(value: object) -> str:
+    if isinstance(value, datetime):
+        return value.isoformat() + "Z"
+    return str(value or "")
+
+
+def normalize_video_id(value: str) -> str:
+    video_id = str(value or "").strip()
+    if not video_id:
+        raise HTTPException(status_code=400, detail="Video ID is required.")
+    return video_id
+
+
+def normalize_mapping_dict(mapping: VideoCompetencyMapping | dict[str, Any]) -> dict[str, Any]:
+    raw = mapping.model_dump() if isinstance(mapping, VideoCompetencyMapping) else dict(mapping)
+    item_type = str(raw.get("item_type") or "").strip().lower()
+    competency = str(raw.get("competency") or "").strip()
+    source = str(raw.get("source") or "admin").strip()
+    if source not in {"ai", "admin", "fallback"}:
+        source = "admin"
+    if competency and ":" in competency:
+        prefix, text = competency.split(":", 1)
+        if not item_type:
+            item_type = prefix.strip().lower()
+        competency = f"{item_type or prefix.strip().lower()}: {text.strip()}"
+    return {
+        "sector": str(raw.get("sector") or "").strip(),
+        "skill": str(raw.get("skill") or raw.get("skill_name") or "").strip(),
+        "proficiency_level": str(raw.get("proficiency_level") or raw.get("proficiency") or "").strip(),
+        "competency": competency,
+        "item_type": item_type,
+        "proficiency_description": str(raw.get("proficiency_description") or "").strip(),
+        "confidence": max(0.0, min(1.0, float(raw.get("confidence") or 0.0))),
+        "reason": str(raw.get("reason") or "").strip(),
+        "source": source,
+    }
+
+
+def mapping_key(mapping: dict[str, Any]) -> tuple[str, str, str, str, str]:
+    return (
+        str(mapping.get("sector") or "").lower(),
+        str(mapping.get("skill") or "").lower(),
+        str(mapping.get("proficiency_level") or "").lower(),
+        str(mapping.get("item_type") or "").lower(),
+        str(mapping.get("competency") or "").lower(),
+    )
+
+
+def dedupe_mappings(mappings: list[VideoCompetencyMapping | dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str, str, str]] = set()
+    for mapping in mappings:
+        normalized = normalize_mapping_dict(mapping)
+        if not all(
+            normalized.get(field)
+            for field in ("sector", "skill", "proficiency_level", "competency", "item_type")
+        ):
+            continue
+        key = mapping_key(normalized)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(normalized)
+    return deduped
+
+
+def validate_seeded_mappings(mappings: list[VideoCompetencyMapping | dict[str, Any]]) -> list[dict[str, Any]]:
+    normalized_mappings = dedupe_mappings(mappings)
+    for mapping in normalized_mappings:
+        skill_map = get_skill_map(sector=mapping["sector"], skill=mapping["skill"])
+        selected_level = next(
+            (
+                entry
+                for entry in skill_map.mappings
+                if entry.proficiency_level == mapping["proficiency_level"]
+            ),
+            None,
+        )
+        if not selected_level:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Mapping does not match a seeded proficiency level: "
+                    f"{mapping['sector']} / {mapping['skill']} / {mapping['proficiency_level']}"
+                ),
+            )
+
+        item_text = mapping["competency"].split(":", 1)[1].strip() if ":" in mapping["competency"] else mapping["competency"]
+        allowed_items = (
+            selected_level.knowledge_items
+            if mapping["item_type"] == "knowledge"
+            else selected_level.ability_items
+            if mapping["item_type"] == "ability"
+            else []
+        )
+        if item_text not in allowed_items:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Mapping competency is not seeded for this skill/level: {mapping['competency']}",
+            )
+        if not mapping["proficiency_description"]:
+            mapping["proficiency_description"] = selected_level.proficiency_description
+    return normalized_mappings
+
+
+def make_mapping_review_response(doc: dict[str, Any]) -> VideoMappingReviewRequest:
+    review = doc.get("mapping_review") or {}
+    return VideoMappingReviewRequest(
+        video_id=str(doc.get("videoId") or ""),
+        review_status=str(doc.get("review_status") or review.get("status") or "pending"),
+        title=str(doc.get("title") or ""),
+        channel_title=str(doc.get("channelTitle") or ""),
+        thumbnail_url=str(doc.get("thumbnailUrl") or ""),
+        search_query=str(review.get("search_query") or ""),
+        suggested_mappings=[
+            VideoCompetencyMapping(**normalize_mapping_dict(item))
+            for item in (review.get("suggested_mappings") or [])
+        ],
+        approved_mappings=[
+            VideoCompetencyMapping(**normalize_mapping_dict(item))
+            for item in (review.get("approved_mappings") or [])
+        ],
+        created_at=to_iso(review.get("created_at") or doc.get("ingested_timing")),
+        updated_at=to_iso(review.get("updated_at")),
+        reviewed_at=to_iso(review.get("reviewed_at")),
+    )
+
+
+def build_mapping_suggestions_for_video(
+    video: dict[str, Any],
+    *,
+    search_query: str = "",
+    use_ai: bool = True,
+) -> list[dict[str, Any]]:
+    request = PublicVideoMappingSuggestRequest(
+        video=PublicMappingVideo(
+            video_id=str(video.get("videoId") or video.get("video_id") or ""),
+            title=str(video.get("title") or ""),
+            description=str(video.get("description") or ""),
+            channel_title=str(video.get("channelTitle") or video.get("channel_title") or ""),
+            tags=[str(tag) for tag in (video.get("tags") or [])],
+        ),
+        search_query=search_query,
+        use_ai=use_ai,
+    )
+    try:
+        response = public_suggest_video_mapping(request)
+    except HTTPException:
+        return []
+    suggestion = response.suggestion.model_dump()
+    suggestion["source"] = "ai" if use_ai and suggestion.get("confidence", 0) > 0 else "fallback"
+    return dedupe_mappings([suggestion])
+
+
+def prepare_review_doc(video: dict[str, Any], suggested_mappings: list[dict[str, Any]], search_query: str) -> dict[str, Any]:
+    now = utc_now()
+    review = {
+        "status": "pending",
+        "is_request": True,
+        "search_query": search_query,
+        "suggested_mappings": suggested_mappings,
+        "approved_mappings": [],
+        "created_at": now,
+        "updated_at": now,
+        "reviewed_at": None,
+        "reviewer": "",
+        "rejection_reason": "",
+    }
+    return {
+        "sector": "",
+        "skill_name": "",
+        "competency": "",
+        "item_type": "",
+        "proficiency_level": "",
+        "proficiency_description": "",
+        "videoId": str(video.get("videoId") or "").strip(),
+        "publishedAt": str(video.get("publishedAt") or ""),
+        "title": str(video.get("title") or ""),
+        "description": str(video.get("description") or ""),
+        "viewCount": parse_int(video.get("viewCount")),
+        "likeCount": parse_int(video.get("likeCount")),
+        "commentCount": parse_int(video.get("commentCount")),
+        "tags": [str(tag) for tag in (video.get("tags") or [])],
+        "duration": str(video.get("duration") or ""),
+        "channelTitle": str(video.get("channelTitle") or ""),
+        "thumbnailUrl": str(video.get("thumbnailUrl") or ""),
+        "ingested_timing": now,
+        "review_status": "pending",
+        "suggested_mappings": suggested_mappings,
+        "approved_mappings": [],
+        "mapping_review": review,
+    }
+
+
+def mapping_to_video_doc(base_video: dict[str, Any], mapping: dict[str, Any]) -> dict[str, Any]:
+    doc = dict(base_video)
+    doc.update(
+        {
+            "sector": mapping["sector"],
+            "skill_name": mapping["skill"],
+            "competency": mapping["competency"],
+            "item_type": mapping["item_type"],
+            "proficiency_level": mapping["proficiency_level"],
+            "proficiency_description": mapping.get("proficiency_description", ""),
+            "review_status": "approved",
+            "approved_mappings": [mapping],
+            "suggested_mappings": base_video.get("suggested_mappings") or [],
+            "mapping_review": {
+                **(base_video.get("mapping_review") or {}),
+                "status": "approved",
+                "is_request": False,
+                "approved_mappings": [mapping],
+            },
+            "approved_at": utc_now(),
+        }
+    )
+    return doc
 
 
 def annotate_existing_ingestion(
@@ -1779,6 +2345,10 @@ You suggest SkillsFuture mappings for YouTube learning videos.
 Rules:
 - Choose only from the provided candidates.
 - Do not invent sectors, skills, levels, or competencies.
+- Prefer the competency item_text and proficiency_description that best match the video topic.
+- Do not choose a sector-specific mapping such as Financial Services, Accountancy, Aerospace, or Healthcare unless the video title, channel, description, tags, or search query clearly mention that domain.
+- For broad topics such as AI ethics, responsible AI, safety, bias, governance, or risk, prefer broad governance/data/technology/responsible-use mappings over narrow security or finance mappings unless those narrow terms are explicit.
+- If no candidate is a strong conceptual fit, return the closest candidate but keep confidence below 0.45.
 - Return JSON only.
 - Use this schema:
 {{
@@ -1878,24 +2448,81 @@ def public_ingest_videos(payload: PublicVideoIngestRequest):
         "errors": [],
     }
     touched_docs: list[dict] = []
+    pending_count = 0
+    approved_ingested_count = 0
 
     try:
         requested_docs = [video.model_dump() for video in payload.videos]
         client, videos_collection = get_portal_videos_collection()
-        summary = upsert_selected_videos(
-            videos_collection,
-            requested_docs,
-            touched_docs=touched_docs,
-        )
-        docs_for_embedding = touched_docs or [
+        mapped_docs = [
             doc
             for doc in requested_docs
+            if str(doc.get("skill_name") or "").strip()
+            and str(doc.get("sector") or "").strip()
+            and str(doc.get("competency") or "").strip()
+        ]
+        pending_docs = [
+            doc
+            for doc in requested_docs
+            if doc not in mapped_docs
+        ]
+
+        if mapped_docs:
+            summary = upsert_selected_videos(
+                videos_collection,
+                mapped_docs,
+                touched_docs=touched_docs,
+            )
+            approved_ingested_count = len(mapped_docs)
+
+        for video in pending_docs:
+            video_id = str(video.get("videoId") or "").strip()
+            if not video_id:
+                summary["errors"].append("Missing videoId in pending review video document")
+                continue
+            suggested_mappings = build_mapping_suggestions_for_video(
+                video,
+                search_query=str(video.get("search_query") or video.get("title") or ""),
+                use_ai=True,
+            )
+            review_doc = prepare_review_doc(
+                video,
+                suggested_mappings,
+                str(video.get("search_query") or video.get("title") or ""),
+            )
+            result = videos_collection.update_one(
+                {"videoId": video_id, "mapping_review.is_request": True},
+                {"$set": review_doc},
+                upsert=True,
+            )
+            pending_count += 1
+            if result.upserted_id is not None:
+                summary["inserted"] += 1
+            elif result.modified_count > 0:
+                summary["updated"] += 1
+            else:
+                summary["unchanged"] += 1
+
+        summary["error_count"] = len(summary.get("errors", []))
+        docs_for_embedding = touched_docs or [
+            doc
+            for doc in mapped_docs
             if str(doc.get("videoId") or "").strip() and str(doc.get("skill_name") or "").strip()
         ]
-        embed_portal_videos(summary, docs_for_embedding)
-        get_bm25_index.cache_clear()
-        get_cached_portal_retrieval.cache_clear()
-        get_cached_reranker_scores.cache_clear()
+        if docs_for_embedding:
+            embed_portal_videos(summary, docs_for_embedding)
+            get_bm25_index.cache_clear()
+            get_cached_portal_retrieval.cache_clear()
+            get_cached_reranker_scores.cache_clear()
+        else:
+            summary.update(
+                {
+                    "embedding_status": "skipped",
+                    "embedding_requested": 0,
+                    "embedding_indexed": 0,
+                    "embedding_skipped_invalid": 0,
+                }
+            )
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
@@ -1908,13 +2535,17 @@ def public_ingest_videos(payload: PublicVideoIngestRequest):
             client.close()
 
     message = "Selected videos ingested successfully."
+    if pending_count and not approved_ingested_count:
+        message = "Selected videos saved for admin mapping review."
+    elif pending_count:
+        message = "Selected videos ingested; unmapped videos were saved for admin review."
     if summary.get("embedding_status") == "failed":
         message = "Selected videos ingested, but embedding failed."
     elif summary.get("embedding_status") == "completed" and summary.get("embedding_indexed", 0) > 0:
         message = "Selected videos ingested and indexed successfully."
     elif summary.get("error_count", 0) > 0:
         message = "Selected videos ingested with warnings."
-    elif summary.get("embedding_status") == "skipped":
+    elif summary.get("embedding_status") == "skipped" and not pending_count:
         message = "Selected videos ingested. No valid videos required indexing."
 
     return PublicVideoIngestResponse(
@@ -1928,6 +2559,232 @@ def public_ingest_videos(payload: PublicVideoIngestRequest):
         embedding_requested=parse_int(summary.get("embedding_requested")),
         embedding_indexed=parse_int(summary.get("embedding_indexed")),
         embedding_skipped_invalid=parse_int(summary.get("embedding_skipped_invalid")),
+        pending_review_count=pending_count,
+        approved_ingested_count=approved_ingested_count,
+    )
+
+
+@api_router.get("/admin/video-mapping-requests", response_model=VideoMappingReviewListResponse)
+def list_video_mapping_requests(
+    status: Literal["pending", "approved", "rejected", "all"] = "pending",
+    limit: int = Query(50, ge=1, le=200),
+):
+    client = None
+    try:
+        client, videos_collection = get_portal_videos_collection()
+        query: dict[str, Any] = {"mapping_review.is_request": True}
+        if status != "all":
+            query["review_status"] = status
+        cursor = videos_collection.find(query).sort("mapping_review.updated_at", -1)
+        requests = []
+        seen_video_ids: set[str] = set()
+        for doc in cursor:
+            video_id = str(doc.get("videoId") or "").strip()
+            if not video_id or video_id in seen_video_ids:
+                continue
+            seen_video_ids.add(video_id)
+            requests.append(make_mapping_review_response(doc))
+            if len(requests) >= limit:
+                break
+        return VideoMappingReviewListResponse(count=len(requests), requests=requests)
+    finally:
+        if client:
+            client.close()
+
+
+@api_router.get("/admin/video-mapping-requests/{video_id}", response_model=VideoMappingReviewRequest)
+def get_video_mapping_request(video_id: str):
+    normalized_video_id = normalize_video_id(video_id)
+    client = None
+    try:
+        client, videos_collection = get_portal_videos_collection()
+        doc = videos_collection.find_one(
+            {
+                "videoId": normalized_video_id,
+                "mapping_review.is_request": True,
+            },
+            sort=[("mapping_review.updated_at", -1)],
+        )
+        if not doc:
+            raise HTTPException(status_code=404, detail="Video mapping review request not found.")
+        return make_mapping_review_response(doc)
+    finally:
+        if client:
+            client.close()
+
+
+@api_router.put("/admin/video-mapping-requests/{video_id}", response_model=VideoMappingReviewRequest)
+def update_video_mapping_request(video_id: str, payload: AdminMappingUpdateRequest):
+    normalized_video_id = normalize_video_id(video_id)
+    mappings = validate_seeded_mappings(payload.mappings)
+    for mapping in mappings:
+        mapping["source"] = "admin"
+
+    client = None
+    try:
+        client, videos_collection = get_portal_videos_collection()
+        existing = videos_collection.find_one(
+            {
+                "videoId": normalized_video_id,
+                "mapping_review.is_request": True,
+            }
+        )
+        if not existing:
+            raise HTTPException(status_code=404, detail="Video mapping review request not found.")
+
+        now = utc_now()
+        videos_collection.update_one(
+            {"_id": existing["_id"]},
+            {
+                "$set": {
+                    "review_status": "pending",
+                    "suggested_mappings": mappings,
+                    "mapping_review.status": "pending",
+                    "mapping_review.suggested_mappings": mappings,
+                    "mapping_review.updated_at": now,
+                    "mapping_review.reviewer": payload.reviewer,
+                }
+            },
+        )
+        updated = videos_collection.find_one({"_id": existing["_id"]})
+        return make_mapping_review_response(updated or existing)
+    finally:
+        if client:
+            client.close()
+
+
+@api_router.post("/admin/video-mapping-requests/{video_id}/approve", response_model=AdminMappingActionResponse)
+def approve_video_mapping_request(video_id: str, payload: AdminMappingUpdateRequest):
+    normalized_video_id = normalize_video_id(video_id)
+    approved_mappings = validate_seeded_mappings(payload.mappings)
+    for mapping in approved_mappings:
+        mapping["source"] = "admin"
+
+    client = None
+    summary: dict[str, Any] = {
+        "errors": [],
+        "embedding_status": "skipped",
+        "embedding_indexed": 0,
+    }
+    approved_docs: list[dict[str, Any]] = []
+    try:
+        client, videos_collection = get_portal_videos_collection()
+        base_video = videos_collection.find_one(
+            {
+                "videoId": normalized_video_id,
+                "mapping_review.is_request": True,
+            }
+        ) or videos_collection.find_one({"videoId": normalized_video_id})
+        if not base_video:
+            raise HTTPException(status_code=404, detail="Video mapping review request not found.")
+
+        videos_collection.delete_many(
+            {
+                "videoId": normalized_video_id,
+                "review_status": "approved",
+                "mapping_review.is_request": {"$ne": True},
+            }
+        )
+
+        now = utc_now()
+        for mapping in approved_mappings:
+            doc = mapping_to_video_doc(base_video, mapping)
+            doc["mapping_review"]["reviewed_at"] = now
+            doc["mapping_review"]["reviewer"] = payload.reviewer
+            doc["mapping_review"]["updated_at"] = now
+            approved_docs.append(doc)
+            videos_collection.update_one(
+                {
+                    "videoId": normalized_video_id,
+                    "skill_name": mapping["skill"],
+                    "proficiency_level": mapping["proficiency_level"],
+                    "competency": mapping["competency"],
+                    "review_status": "approved",
+                },
+                {"$set": doc},
+                upsert=True,
+            )
+
+        videos_collection.update_many(
+            {
+                "videoId": normalized_video_id,
+                "mapping_review.is_request": True,
+                "review_status": {"$ne": "approved"},
+            },
+            {
+                "$set": {
+                    "review_status": "approved",
+                    "approved_mappings": approved_mappings,
+                    "mapping_review.status": "approved",
+                    "mapping_review.approved_mappings": approved_mappings,
+                    "mapping_review.reviewed_at": now,
+                    "mapping_review.updated_at": now,
+                    "mapping_review.reviewer": payload.reviewer,
+                }
+            },
+        )
+
+        embed_portal_videos(summary, approved_docs)
+        get_bm25_index.cache_clear()
+        get_cached_portal_retrieval.cache_clear()
+        get_cached_reranker_scores.cache_clear()
+    finally:
+        if client:
+            client.close()
+
+    return AdminMappingActionResponse(
+        message="Video mapping approved and indexed.",
+        video_id=normalized_video_id,
+        review_status="approved",
+        approved_mappings=[VideoCompetencyMapping(**mapping) for mapping in approved_mappings],
+        embedding_status=str(summary.get("embedding_status") or "skipped"),
+        embedding_indexed=parse_int(summary.get("embedding_indexed")),
+    )
+
+
+@api_router.post("/admin/video-mapping-requests/{video_id}/reject", response_model=AdminMappingActionResponse)
+def reject_video_mapping_request(video_id: str, payload: AdminRejectMappingRequest):
+    normalized_video_id = normalize_video_id(video_id)
+    client = None
+    try:
+        client, videos_collection = get_portal_videos_collection()
+        existing = videos_collection.find_one(
+            {
+                "videoId": normalized_video_id,
+                "mapping_review.is_request": True,
+            }
+        )
+        if not existing:
+            raise HTTPException(status_code=404, detail="Video mapping review request not found.")
+
+        now = utc_now()
+        videos_collection.update_many(
+            {
+                "videoId": normalized_video_id,
+                "mapping_review.is_request": True,
+            },
+            {
+                "$set": {
+                    "review_status": "rejected",
+                    "mapping_review.status": "rejected",
+                    "mapping_review.reviewed_at": now,
+                    "mapping_review.updated_at": now,
+                    "mapping_review.reviewer": payload.reviewer,
+                    "mapping_review.rejection_reason": payload.reason,
+                }
+            },
+        )
+    finally:
+        if client:
+            client.close()
+
+    return AdminMappingActionResponse(
+        message="Video mapping rejected.",
+        video_id=normalized_video_id,
+        review_status="rejected",
+        approved_mappings=[],
+        embedding_status="skipped",
+        embedding_indexed=0,
     )
 
 

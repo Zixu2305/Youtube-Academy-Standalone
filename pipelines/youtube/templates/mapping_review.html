@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Video Mapping Review</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+    <h1>Video Mapping Review</h1>
+    <div class="nav">
+        <a class="link-button" href="/">Fetch And Upsert</a>
+        <a class="link-button" href="/quiz_gen">Quiz Generation</a>
+        <a class="link-button" href="/mongo_browser">MongoDB Browser</a>
+        <a class="link-button" href="/multi_label">Multi-Labelling</a>
+        <a class="link-button danger" href="/delete">Delete Question and Video</a>
+    </div>
+
+    <div class="layout review-layout">
+        <section class="card">
+            <div class="review-head">
+                <div>
+                    <h2 class="title">Pending From Learner Portal</h2>
+                    <p class="hint">Learner-ingested videos wait here until an admin approves, edits, or rejects the mapping.</p>
+                </div>
+                <div class="actions">
+                    <select id="review_status_filter">
+                        <option value="pending">Pending</option>
+                        <option value="approved">Approved</option>
+                        <option value="rejected">Rejected</option>
+                        <option value="all">All</option>
+                    </select>
+                    <button type="button" id="refresh_review_btn">Refresh</button>
+                </div>
+            </div>
+            <div id="review_state" class="status">Loading review queue...</div>
+            <div id="review_requests" class="review-request-list"></div>
+        </section>
+
+        <section class="card">
+            <h2 class="title">Review Details</h2>
+            <div id="review_detail_empty" class="empty-panel">Select a video request to review.</div>
+            <div id="review_detail" class="review-detail" hidden>
+                <div class="review-video">
+                    <img id="review_thumb" class="review-thumb" alt="Video thumbnail">
+                    <div>
+                        <div id="review_status_chip" class="review-chip">pending</div>
+                        <h3 id="review_title"></h3>
+                        <p id="review_channel" class="hint"></p>
+                        <p id="review_query" class="hint"></p>
+                    </div>
+                </div>
+
+                <h3 class="subheader">AI Suggested Mapping</h3>
+                <div id="suggested_mappings" class="suggested-mapping-list"></div>
+                <button type="button" id="copy_suggestions_btn">Use AI Suggestions</button>
+
+                <h3 class="subheader">Admin Approved Mapping</h3>
+                <p class="hint">One video can be linked to multiple competencies. Add one row per competency.</p>
+                <div id="mapping_rows" class="mapping-rows"></div>
+                <button type="button" id="add_mapping_btn">Add Mapping</button>
+
+                <div class="field">
+                    <label for="reviewer_name">Reviewer</label>
+                    <input id="reviewer_name" type="text" value="admin-console">
+                </div>
+                <div class="field">
+                    <label for="reject_reason">Reject/Delete Reason</label>
+                    <input id="reject_reason" type="text" value="Rejected in admin console.">
+                </div>
+
+                <div class="actions review-actions">
+                    <button type="button" id="save_mapping_btn">Save Edits</button>
+                    <button type="button" id="approve_mapping_btn" class="primary">Approve & Index</button>
+                    <button type="button" id="reject_mapping_btn" class="danger-button">Reject / Delete Request</button>
+                </div>
+            </div>
+        </section>
+    </div>
+
+    <script>
+        window.YTA_SECTORS = {{ sectors_list|tojson }};
+    </script>
+    <script src="{{ url_for('static', filename='mapping_review.js') }}"></script>
+</body>
+</html>

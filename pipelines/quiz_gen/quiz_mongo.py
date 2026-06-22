@@ -37,11 +37,12 @@ def get_mongo_client() -> MongoClient:
     mongo_pass = _env("MONGO_ROOT_PASSWORD", "")
     mongo_db = _env("MONGO_DATABASE", "yta")
     mongo_auth_source = _env("MONGO_AUTH_SOURCE", "admin")
+    mongo_auth_mechanism = _env("MONGO_AUTH_MECHANISM", "SCRAM-SHA-256")
 
     if mongo_user and mongo_pass:
         uri = (
             f"mongodb://{mongo_user}:{mongo_pass}@{mongo_host}:{mongo_port}/"
-            f"{mongo_db}?authSource={mongo_auth_source}"
+            f"{mongo_db}?authSource={mongo_auth_source}&authMechanism={mongo_auth_mechanism}"
         )
     else:
         uri = f"mongodb://{mongo_host}:{mongo_port}/{mongo_db}"

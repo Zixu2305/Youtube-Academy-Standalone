@@ -85,6 +85,119 @@ def _current_mappings_from_doc(doc: dict) -> list[dict]:
     return normalize_video_mappings(doc)
 
 
+def _normalize_video_id(video_id: str) -> str:
+    return str(video_id or "").strip()
+
+
+def _normalize_review_mapping(mapping: dict) -> dict:
+    item_type = str(mapping.get("item_type") or "").strip().lower()
+    competency = str(mapping.get("competency") or "").strip()
+    if ":" in competency:
+        prefix, text = competency.split(":", 1)
+        item_type = item_type or prefix.strip().lower()
+        competency = f"{prefix.strip().lower()}: {text.strip()}"
+
+    return {
+        "sector": str(mapping.get("sector") or "").strip(),
+        "skill": str(mapping.get("skill") or mapping.get("skill_name") or "").strip(),
+        "proficiency_level": str(mapping.get("proficiency_level") or "").strip(),
+        "proficiency_description": str(mapping.get("proficiency_description") or "").strip(),
+        "competency": competency,
+        "item_type": item_type,
+        "confidence": float(mapping.get("confidence") or 0),
+        "source": str(mapping.get("source") or "admin").strip() or "admin",
+    }
+
+
+def _validate_review_mappings(mappings: list[dict]) -> tuple[list[dict], str]:
+    normalized = [_normalize_review_mapping(item) for item in mappings if isinstance(item, dict)]
+    complete = [
+        item for item in normalized
+        if item["sector"] and item["skill"] and item["proficiency_level"] and item["competency"] and item["item_type"]
+    ]
+    if not complete:
+        return [], "Add at least one complete mapping."
+
+    errors = []
+    for item in complete:
+        if item["item_type"] not in {"knowledge", "ability"}:
+            errors.append(f"{item['skill']}: item type must be knowledge or ability.")
+            continue
+
+        levels = search_proficiency_levels(item["sector"], item["skill"])
+        level_match = next(
+            (
+                level for level in levels
+                if str(level.get("proficiency_level") or "") == item["proficiency_level"]
+            ),
+            None,
+        )
+        if not level_match:
+            errors.append(
+                f"{item['sector']} / {item['skill']} / level {item['proficiency_level']} is not in the seeded mapping."
+            )
+            continue
+
+        allowed_competencies = search_competencies(item["sector"], item["skill"], item["proficiency_level"])
+        if item["competency"] not in allowed_competencies:
+            errors.append(f"{item['competency']} is not a seeded competency for {item['skill']}.")
+            continue
+
+        if not item["proficiency_description"]:
+            item["proficiency_description"] = str(level_match.get("proficiency_description") or "")
+
+    if errors:
+        return [], " ".join(errors)
+    return complete, ""
+
+
+def _make_mapping_review_response(doc: dict) -> dict:
+    review = doc.get("mapping_review") or {}
+    return {
+        "video_id": str(doc.get("videoId") or ""),
+        "review_status": str(doc.get("review_status") or review.get("status") or "pending"),
+        "title": str(doc.get("title") or ""),
+        "description": str(doc.get("description") or ""),
+        "channel_title": str(doc.get("channelTitle") or ""),
+        "thumbnail_url": str(doc.get("thumbnailUrl") or ""),
+        "search_query": str(review.get("search_query") or ""),
+        "suggested_mappings": [_normalize_review_mapping(item) for item in (review.get("suggested_mappings") or [])],
+        "approved_mappings": [_normalize_review_mapping(item) for item in (review.get("approved_mappings") or [])],
+        "created_at": _serialize(review.get("created_at") or doc.get("ingested_timing")),
+        "updated_at": _serialize(review.get("updated_at")),
+        "reviewed_at": _serialize(review.get("reviewed_at")),
+        "rejection_reason": str(review.get("rejection_reason") or ""),
+    }
+
+
+def _mapping_to_video_doc(base_video: dict, mapping: dict, reviewer: str, reviewed_at: datetime) -> dict:
+    doc = {key: value for key, value in base_video.items() if key != "_id"}
+    doc.update(
+        {
+            "sector": mapping["sector"],
+            "skill_name": mapping["skill"],
+            "competency": mapping["competency"],
+            "item_type": mapping["item_type"],
+            "proficiency_level": mapping["proficiency_level"],
+            "proficiency_description": mapping.get("proficiency_description", ""),
+            "review_status": "approved",
+            "approved_mappings": [mapping],
+            "suggested_mappings": base_video.get("suggested_mappings") or [],
+            "mapping_review": {
+                **(base_video.get("mapping_review") or {}),
+                "status": "approved",
+                "is_request": False,
+                "approved_mappings": [mapping],
+                "reviewed_at": reviewed_at,
+                "updated_at": reviewed_at,
+                "reviewer": reviewer,
+            },
+            "approved_at": reviewed_at,
+        }
+    )
+    return doc
+
+
 def _embed_touched_videos(summary: dict, docs: list[dict]) -> None:
     summary.setdefault("errors", [])
     try:
@@ -385,6 +498,249 @@ def create_app():
     def multi_label():
         """Render the multi-labelling page."""
         return render_template("multi_label.html")
+
+    @app.route("/mapping_review")
+    def mapping_review():
+        """Render pending learner video mapping review page."""
+        try:
+            sectors = fetch_sectors_and_skills()
+            sectors_list = list(sectors.keys())
+        except Exception:
+            sectors_list = []
+        return render_template("mapping_review.html", sectors_list=sectors_list)
+
+    @app.route("/api/admin/video-mapping-requests", methods=["GET"])
+    def list_video_mapping_requests():
+        status = request.args.get("status", "pending").strip().lower()
+        if status not in {"pending", "approved", "rejected", "all"}:
+            status = "pending"
+        limit = max(1, min(to_int(request.args.get("limit", "100"), 100), 200))
+        client = None
+        try:
+            client, videos_collection = _get_videos_collection()
+            query = {"mapping_review.is_request": True}
+            if status != "all":
+                query["review_status"] = status
+            cursor = videos_collection.find(query).sort("mapping_review.updated_at", -1)
+            rows = []
+            seen_video_ids = set()
+            for doc in cursor:
+                video_id = str(doc.get("videoId") or "").strip()
+                if not video_id or video_id in seen_video_ids:
+                    continue
+                seen_video_ids.add(video_id)
+                rows.append(_make_mapping_review_response(doc))
+                if len(rows) >= limit:
+                    break
+            return jsonify({"ok": True, "count": len(rows), "requests": rows})
+        except Exception as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 500
+        finally:
+            if client:
+                client.close()
+
+    @app.route("/api/admin/video-mapping-requests/<video_id>", methods=["GET"])
+    def get_video_mapping_request(video_id):
+        normalized_video_id = _normalize_video_id(video_id)
+        client = None
+        try:
+            client, videos_collection = _get_videos_collection()
+            doc = videos_collection.find_one(
+                {
+                    "videoId": normalized_video_id,
+                    "mapping_review.is_request": True,
+                },
+                sort=[("mapping_review.updated_at", -1)],
+            )
+            if not doc:
+                return jsonify({"ok": False, "error": "Video mapping review request not found."}), 404
+            return jsonify({"ok": True, **_make_mapping_review_response(doc)})
+        except Exception as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 500
+        finally:
+            if client:
+                client.close()
+
+    @app.route("/api/admin/video-mapping-requests/<video_id>", methods=["PUT"])
+    def update_video_mapping_request(video_id):
+        normalized_video_id = _normalize_video_id(video_id)
+        data = request.get_json(silent=True) or {}
+        mappings, error = _validate_review_mappings(data.get("mappings") or [])
+        if error:
+            return jsonify({"ok": False, "error": error}), 400
+        for mapping in mappings:
+            mapping["source"] = "admin"
+
+        client = None
+        try:
+            client, videos_collection = _get_videos_collection()
+            existing = videos_collection.find_one(
+                {
+                    "videoId": normalized_video_id,
+                    "mapping_review.is_request": True,
+                }
+            )
+            if not existing:
+                return jsonify({"ok": False, "error": "Video mapping review request not found."}), 404
+
+            now = datetime.utcnow()
+            videos_collection.update_one(
+                {"_id": existing["_id"]},
+                {
+                    "$set": {
+                        "review_status": "pending",
+                        "suggested_mappings": mappings,
+                        "mapping_review.status": "pending",
+                        "mapping_review.suggested_mappings": mappings,
+                        "mapping_review.updated_at": now,
+                        "mapping_review.reviewer": str(data.get("reviewer") or "admin-console"),
+                    }
+                },
+            )
+            updated = videos_collection.find_one({"_id": existing["_id"]})
+            return jsonify({"ok": True, **_make_mapping_review_response(updated or existing)})
+        except Exception as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 500
+        finally:
+            if client:
+                client.close()
+
+    @app.route("/api/admin/video-mapping-requests/<video_id>/approve", methods=["POST"])
+    def approve_video_mapping_request(video_id):
+        normalized_video_id = _normalize_video_id(video_id)
+        data = request.get_json(silent=True) or {}
+        mappings, error = _validate_review_mappings(data.get("mappings") or [])
+        if error:
+            return jsonify({"ok": False, "error": error}), 400
+        for mapping in mappings:
+            mapping["source"] = "admin"
+
+        reviewer = str(data.get("reviewer") or "admin-console")
+        client = None
+        summary = {"errors": [], "embedding_status": "skipped", "embedding_indexed": 0}
+        approved_docs = []
+        try:
+            client, videos_collection = _get_videos_collection()
+            base_video = videos_collection.find_one(
+                {
+                    "videoId": normalized_video_id,
+                    "mapping_review.is_request": True,
+                }
+            ) or videos_collection.find_one({"videoId": normalized_video_id})
+            if not base_video:
+                return jsonify({"ok": False, "error": "Video mapping review request not found."}), 404
+
+            videos_collection.delete_many(
+                {
+                    "videoId": normalized_video_id,
+                    "review_status": "approved",
+                    "mapping_review.is_request": {"$ne": True},
+                }
+            )
+
+            now = datetime.utcnow()
+            for mapping in mappings:
+                doc = _mapping_to_video_doc(base_video, mapping, reviewer, now)
+                approved_docs.append(doc)
+                videos_collection.update_one(
+                    {
+                        "videoId": normalized_video_id,
+                        "skill_name": mapping["skill"],
+                        "proficiency_level": mapping["proficiency_level"],
+                        "competency": mapping["competency"],
+                        "review_status": "approved",
+                    },
+                    {"$set": doc},
+                    upsert=True,
+                )
+
+            videos_collection.update_many(
+                {
+                    "videoId": normalized_video_id,
+                    "mapping_review.is_request": True,
+                    "review_status": {"$ne": "approved"},
+                },
+                {
+                    "$set": {
+                        "review_status": "approved",
+                        "approved_mappings": mappings,
+                        "mapping_review.status": "approved",
+                        "mapping_review.approved_mappings": mappings,
+                        "mapping_review.reviewed_at": now,
+                        "mapping_review.updated_at": now,
+                        "mapping_review.reviewer": reviewer,
+                    }
+                },
+            )
+
+            _embed_touched_videos(summary, approved_docs)
+            return jsonify(
+                {
+                    "ok": True,
+                    "message": "Video mapping approved and indexed.",
+                    "video_id": normalized_video_id,
+                    "review_status": "approved",
+                    "approved_mappings": mappings,
+                    "embedding_status": summary.get("embedding_status", "skipped"),
+                    "embedding_indexed": int(summary.get("embedding_indexed") or 0),
+                    "errors": summary.get("errors", []),
+                }
+            )
+        except Exception as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 500
+        finally:
+            if client:
+                client.close()
+
+    @app.route("/api/admin/video-mapping-requests/<video_id>/reject", methods=["POST"])
+    def reject_video_mapping_request(video_id):
+        normalized_video_id = _normalize_video_id(video_id)
+        data = request.get_json(silent=True) or {}
+        client = None
+        try:
+            client, videos_collection = _get_videos_collection()
+            existing = videos_collection.find_one(
+                {
+                    "videoId": normalized_video_id,
+                    "mapping_review.is_request": True,
+                }
+            )
+            if not existing:
+                return jsonify({"ok": False, "error": "Video mapping review request not found."}), 404
+
+            now = datetime.utcnow()
+            videos_collection.update_many(
+                {
+                    "videoId": normalized_video_id,
+                    "mapping_review.is_request": True,
+                },
+                {
+                    "$set": {
+                        "review_status": "rejected",
+                        "mapping_review.status": "rejected",
+                        "mapping_review.reviewed_at": now,
+                        "mapping_review.updated_at": now,
+                        "mapping_review.reviewer": str(data.get("reviewer") or "admin-console"),
+                        "mapping_review.rejection_reason": str(data.get("reason") or "Rejected in admin console."),
+                    }
+                },
+            )
+            return jsonify(
+                {
+                    "ok": True,
+                    "message": "Video mapping rejected.",
+                    "video_id": normalized_video_id,
+                    "review_status": "rejected",
+                    "approved_mappings": [],
+                    "embedding_status": "skipped",
+                    "embedding_indexed": 0,
+                }
+            )
+        except Exception as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 500
+        finally:
+            if client:
+                client.close()
 
     @app.route("/search_skills", methods=["POST"])
     def search_skills_route():

@@ -1290,6 +1290,235 @@ textarea {
   max-height: none;
 }
 
+.admin-tools-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 86;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  background: rgba(12, 22, 35, 0.66);
+  backdrop-filter: blur(4px);
+}
+
+.admin-tools-panel {
+  width: min(1180px, 100%);
+  max-height: min(94vh, 980px);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  box-shadow: var(--shadow-panel);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  animation: overlayIn 0.18s ease;
+}
+
+.admin-tools-head {
+  border-bottom: 1px solid var(--line);
+  background: linear-gradient(130deg, #f6fbfd, #fdf7f2);
+  padding: 0.9rem 1rem;
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.admin-tools-head h2 {
+  margin: 0.15rem 0 0;
+  font-family: "Fraunces", "Georgia", serif;
+  font-size: 1.25rem;
+}
+
+.admin-tabs {
+  display: flex;
+  gap: 0.45rem;
+  padding: 0.75rem 0.9rem 0;
+}
+
+.admin-tab {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #f7fbfd;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.76rem;
+  font-weight: 800;
+  padding: 0.42rem 0.85rem;
+}
+
+.admin-tab.active {
+  background: var(--brand);
+  border-color: var(--brand);
+  color: #ffffff;
+}
+
+.admin-tools-panel > .panel-status {
+  margin: 0.7rem 0.9rem 0;
+}
+
+.admin-review-grid {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.9fr) minmax(0, 2fr);
+  gap: 0.75rem;
+  min-height: 0;
+  padding: 0.9rem;
+  overflow: hidden;
+}
+
+.admin-request-list,
+.admin-review-detail,
+.admin-direct-panel {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #ffffff;
+  min-height: 0;
+}
+
+.admin-request-list {
+  padding: 0.7rem;
+  overflow: auto;
+}
+
+.admin-review-detail {
+  padding: 0.8rem;
+  overflow: auto;
+}
+
+.admin-list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  margin-bottom: 0.55rem;
+}
+
+.admin-request-item {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #f8fbfd;
+  color: var(--ink);
+  cursor: pointer;
+  display: grid;
+  gap: 0.22rem;
+  margin-bottom: 0.5rem;
+  padding: 0.62rem;
+  text-align: left;
+}
+
+.admin-request-item.active {
+  border-color: var(--brand);
+  box-shadow: 0 0 0 2px rgba(14, 101, 119, 0.12);
+}
+
+.admin-request-title {
+  font-weight: 800;
+  line-height: 1.32;
+}
+
+.admin-request-meta,
+.admin-request-status,
+.admin-query {
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.admin-video-summary {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr);
+  gap: 0.75rem;
+  align-items: start;
+  margin-bottom: 0.75rem;
+}
+
+.admin-video-summary img,
+.admin-video-thumb-placeholder {
+  width: 120px;
+  aspect-ratio: 16 / 9;
+  border-radius: 10px;
+  background: #e7eff4;
+  object-fit: cover;
+}
+
+.admin-video-summary h3 {
+  margin: 0.12rem 0;
+}
+
+.admin-suggestion-box,
+.admin-mapping-editor {
+  border-top: 1px solid var(--line);
+  padding-top: 0.75rem;
+  margin-top: 0.75rem;
+}
+
+.admin-suggestion-row {
+  border: 1px solid rgba(14, 101, 119, 0.18);
+  border-radius: 10px;
+  background: #eef7f9;
+  display: grid;
+  gap: 0.25rem;
+  margin-bottom: 0.45rem;
+  padding: 0.55rem;
+}
+
+.admin-suggestion-row small {
+  color: var(--muted);
+}
+
+.admin-mapping-row {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fbfdff;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.55rem;
+  margin-bottom: 0.65rem;
+  padding: 0.65rem;
+}
+
+.admin-competency-field,
+.admin-description-field {
+  grid-column: span 2;
+}
+
+.admin-mapping-row .utility-btn {
+  align-self: end;
+}
+
+.admin-action-row {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.55rem;
+  margin-top: 0.75rem;
+}
+
+.admin-direct-panel {
+  margin: 0.9rem;
+  padding: 0.8rem;
+  overflow: auto;
+}
+
+.admin-direct-results {
+  display: grid;
+  gap: 0.55rem;
+  margin-top: 0.75rem;
+}
+
+@media (max-width: 820px) {
+  .admin-review-grid,
+  .admin-video-summary,
+  .admin-mapping-row {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-competency-field,
+  .admin-description-field {
+    grid-column: auto;
+  }
+}
+
 .selected-skill,
 .selected-competency {
   margin: 0;

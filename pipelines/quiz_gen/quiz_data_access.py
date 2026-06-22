@@ -173,11 +173,12 @@ def fetch_video_descriptions(sector: str, skill: str, limit: int = 10) -> list[s
         password = _env("MONGO_ROOT_PASSWORD", "")
         db_name = _env("MONGO_DATABASE", "yta")
         auth_source = _env("MONGO_AUTH_SOURCE", "admin")
+        auth_mechanism = _env("MONGO_AUTH_MECHANISM", "SCRAM-SHA-256")
 
         if user and password:
             uri = (
                 f"mongodb://{user}:{password}@{host}:{port}/"
-                f"{db_name}?authSource={auth_source}"
+                f"{db_name}?authSource={auth_source}&authMechanism={auth_mechanism}"
             )
         else:
             uri = f"mongodb://{host}:{port}/{db_name}"

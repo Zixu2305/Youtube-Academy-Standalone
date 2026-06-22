@@ -86,6 +86,7 @@ def get_mongo_client() -> MongoClient:
     username = env("MONGO_ROOT_USERNAME")
     password = env("MONGO_ROOT_PASSWORD")
     auth_source = env("MONGO_AUTH_SOURCE", "admin")
+    auth_mechanism = env("MONGO_AUTH_MECHANISM", "SCRAM-SHA-256")
     if username and password:
         return MongoClient(
             host=host,
@@ -93,6 +94,7 @@ def get_mongo_client() -> MongoClient:
             username=username,
             password=password,
             authSource=auth_source,
+            authMechanism=auth_mechanism,
         )
     return MongoClient(host=host, port=port)
 
@@ -307,7 +309,9 @@ def build_payload(doc: dict) -> dict:
 def make_point_id(doc: dict) -> str:
     video_id = doc.get("videoId", "") or doc.get("video_id", "")
     skill_name = doc.get("skill_name", "")
-    return str(uuid5(NAMESPACE_URL, f"yt_video::{video_id}::{skill_name}"))
+    proficiency_level = doc.get("proficiency_level", "")
+    competency = doc.get("competency", "")
+    return str(uuid5(NAMESPACE_URL, f"yt_video::{video_id}::{skill_name}::{proficiency_level}::{competency}"))
 
 
 def sync_video_mapping_payload(doc: dict, *, wait: bool = True) -> dict[str, object]:

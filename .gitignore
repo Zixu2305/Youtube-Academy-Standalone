@@ -4,6 +4,7 @@
 /out
 __pycache__
 .DS_Store
+.dockerignore
 
 # Quiz generation cache (auto-generated at runtime)
 pipelines/quiz_gen/data/quiz_cache.json

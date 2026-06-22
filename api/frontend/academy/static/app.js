@@ -210,14 +210,17 @@ function createEmptyRecommendMeta() {
   };
 }
 
-function createEmptyDirectMapping() {
+function createEmptyAdminMapping() {
   return {
     sector: "",
     skill: "",
-    proficiency: "",
+    proficiency_level: "",
     competency: "",
-    itemType: "",
-    proficiencyDescription: "",
+    item_type: "knowledge",
+    proficiency_description: "",
+    confidence: 1,
+    reason: "Admin reviewed",
+    source: "admin",
   };
 }
 
@@ -235,12 +238,6 @@ function App() {
   const [directSearchSource, setDirectSearchSource] = useState("library");
   const [directSearchQuery, setDirectSearchQuery] = useState("");
   const [directResultsPage, setDirectResultsPage] = useState(1);
-  const [directMapping, setDirectMapping] = useState(createEmptyDirectMapping());
-  const [directSkills, setDirectSkills] = useState([]);
-  const [directMapData, setDirectMapData] = useState(null);
-  const [directMapStatus, setDirectMapStatus] = useState({ text: "", tone: "" });
-  const [directSuggestBusy, setDirectSuggestBusy] = useState(false);
-  const [directSuggestion, setDirectSuggestion] = useState(null);
   const [skillSearch, setSkillSearch] = useState("");
   const [skills, setSkills] = useState([]);
   const [selectedSkill, setSelectedSkill] = useState("");
@@ -290,6 +287,17 @@ function App() {
 
   const [votes, setVotes] = useState({});
   const [userVotes, setUserVotes] = useState({});
+
+  const [adminOpen, setAdminOpen] = useState(false);
+  const [adminTab, setAdminTab] = useState("pending");
+  const [adminRequests, setAdminRequests] = useState([]);
+  const [adminSelectedRequest, setAdminSelectedRequest] = useState(null);
+  const [adminMappings, setAdminMappings] = useState([]);
+  const [adminStatus, setAdminStatus] = useState({ text: "", tone: "" });
+  const [adminBusy, setAdminBusy] = useState(false);
+  const [adminDirectQuery, setAdminDirectQuery] = useState("");
+  const [adminDirectVideos, setAdminDirectVideos] = useState([]);
+  const [adminDirectSelection, setAdminDirectSelection] = useState({});
 
   useEffect(() => {
     const loadSectors = async () => {
@@ -438,94 +446,6 @@ function App() {
     loadMapping();
   }, [overlayOpen, selectedSector, selectedSkill]);
 
-  useEffect(() => {
-    if (!videoFinderOpen || videoFinderMode !== "direct" || !directMapping.sector) {
-      setDirectSkills([]);
-      return;
-    }
-
-    let cancelled = false;
-    const loadDirectSkills = async () => {
-      setDirectMapStatus({ text: "Loading seeded skills...", tone: "" });
-      try {
-        const params = new URLSearchParams({
-          sector: directMapping.sector,
-          limit: "700",
-        });
-        const skillRows = await fetchJson(`/api/public/skills?${params.toString()}`);
-        if (cancelled) {
-          return;
-        }
-        setDirectSkills(skillRows);
-        setDirectMapStatus({ text: `${skillRows.length} seeded skill(s) available.`, tone: "success" });
-      } catch (error) {
-        if (cancelled) {
-          return;
-        }
-        setDirectSkills([]);
-        setDirectMapStatus({ text: `Unable to load seeded skills: ${error.message}`, tone: "error" });
-      }
-    };
-
-    loadDirectSkills();
-    return () => {
-      cancelled = true;
-    };
-  }, [videoFinderOpen, videoFinderMode, directMapping.sector]);
-
-  useEffect(() => {
-    if (!videoFinderOpen || videoFinderMode !== "direct" || !directMapping.sector || !directMapping.skill) {
-      setDirectMapData(null);
-      return;
-    }
-
-    let cancelled = false;
-    const loadDirectMapping = async () => {
-      setDirectMapStatus({ text: "Loading seeded competencies...", tone: "" });
-      try {
-        const params = new URLSearchParams({
-          sector: directMapping.sector,
-          skill: directMapping.skill,
-        });
-        const mapResponse = await fetchJson(`/api/public/skill-map?${params.toString()}`);
-        if (cancelled) {
-          return;
-        }
-        setDirectMapData(mapResponse);
-        const levels = Array.isArray(mapResponse.mappings) ? mapResponse.mappings : [];
-        setDirectMapping((current) => {
-          const existingLevel = levels.find((entry) => entry.proficiency_level === current.proficiency);
-          const nextLevel = existingLevel || levels[0] || null;
-          const validCompetency = nextLevel && current.competency
-            ? [
-                ...(Array.isArray(nextLevel.knowledge_items) ? nextLevel.knowledge_items.map((item) => `knowledge: ${item}`) : []),
-                ...(Array.isArray(nextLevel.ability_items) ? nextLevel.ability_items.map((item) => `ability: ${item}`) : []),
-              ].includes(current.competency)
-            : false;
-          return {
-            ...current,
-            proficiency: nextLevel?.proficiency_level || "",
-            proficiencyDescription: nextLevel?.proficiency_description || "",
-            competency: validCompetency ? current.competency : "",
-            itemType: validCompetency ? current.itemType : "",
-          };
-        });
-        setDirectMapStatus({ text: `${mapResponse.count} level(s) mapped. Select one competency.`, tone: "success" });
-      } catch (error) {
-        if (cancelled) {
-          return;
-        }
-        setDirectMapData(null);
-        setDirectMapStatus({ text: `Unable to load seeded competencies: ${error.message}`, tone: "error" });
-      }
-    };
-
-    loadDirectMapping();
-    return () => {
-      cancelled = true;
-    };
-  }, [videoFinderOpen, videoFinderMode, directMapping.sector, directMapping.skill]);
-
   const loadQuiz = async (mode) => {
     if (!selectedSector || !selectedSkill) {
       setQuizStatus({ text: "Choose an industry and skill first.", tone: "error" });
@@ -661,20 +581,10 @@ function App() {
     setIngestionStatus({ text: "", tone: "" });
   };
 
-  const resetDirectMappingState = () => {
-    setDirectMapping(createEmptyDirectMapping());
-    setDirectSkills([]);
-    setDirectMapData(null);
-    setDirectMapStatus({ text: "", tone: "" });
-    setDirectSuggestBusy(false);
-    setDirectSuggestion(null);
-  };
-
   const clearDirectSearchFlow = () => {
     setDirectSearchQuery("");
     setDirectSearchSource("library");
     setDirectResultsPage(1);
-    resetDirectMappingState();
   };
 
   const resetDirectVideoSearchFlow = () => {
@@ -754,6 +664,263 @@ function App() {
   };
 
   const closeVideoFinder = () => setVideoFinderOpen(false);
+
+  const loadAdminRequests = async (status = "pending") => {
+    setAdminBusy(true);
+    setAdminStatus({ text: "Loading admin review queue...", tone: "" });
+    try {
+      const params = new URLSearchParams({ status, limit: "100" });
+      const response = await fetchJson(`/api/admin/video-mapping-requests?${params.toString()}`, {
+        cache: "no-store",
+      });
+      const rows = Array.isArray(response.requests) ? response.requests : [];
+      setAdminRequests(rows);
+      setAdminStatus({
+        text: rows.length ? `${rows.length} mapping request(s) loaded.` : "No mapping requests found.",
+        tone: rows.length ? "success" : "",
+      });
+    } catch (error) {
+      setAdminRequests([]);
+      setAdminStatus({ text: `Unable to load admin review queue: ${error.message}`, tone: "error" });
+    } finally {
+      setAdminBusy(false);
+    }
+  };
+
+  const openAdminTools = () => {
+    setAdminOpen(true);
+    setAdminTab("pending");
+    setAdminSelectedRequest(null);
+    setAdminMappings([]);
+    loadAdminRequests("pending");
+  };
+
+  const closeAdminTools = () => {
+    setAdminOpen(false);
+    setAdminSelectedRequest(null);
+    setAdminMappings([]);
+    setAdminDirectVideos([]);
+    setAdminDirectSelection({});
+  };
+
+  const openAdminRequest = async (videoId) => {
+    if (!videoId) {
+      return;
+    }
+    setAdminBusy(true);
+    setAdminStatus({ text: "Loading video mapping request...", tone: "" });
+    try {
+      const response = await fetchJson(`/api/admin/video-mapping-requests/${encodeURIComponent(videoId)}`, {
+        cache: "no-store",
+      });
+      const initialMappings = response.approved_mappings?.length
+        ? response.approved_mappings
+        : response.suggested_mappings?.length
+          ? response.suggested_mappings
+          : [createEmptyAdminMapping()];
+      setAdminSelectedRequest(response);
+      setAdminMappings(initialMappings.map((mapping) => ({ ...createEmptyAdminMapping(), ...mapping })));
+      setAdminStatus({ text: "Review loaded. Edit mappings, then approve or reject.", tone: "success" });
+    } catch (error) {
+      setAdminStatus({ text: `Unable to load mapping request: ${error.message}`, tone: "error" });
+    } finally {
+      setAdminBusy(false);
+    }
+  };
+
+  const updateAdminMapping = (index, field, value) => {
+    setAdminMappings((current) =>
+      current.map((mapping, mappingIndex) => (
+        mappingIndex === index
+          ? { ...mapping, [field]: value }
+          : mapping
+      )),
+    );
+  };
+
+  const addAdminMapping = () => {
+    setAdminMappings((current) => [...current, createEmptyAdminMapping()]);
+  };
+
+  const removeAdminMapping = (index) => {
+    setAdminMappings((current) => current.filter((_, mappingIndex) => mappingIndex !== index));
+  };
+
+  const copySuggestedMappingsToEditor = () => {
+    if (!adminSelectedRequest?.suggested_mappings?.length) {
+      return;
+    }
+    setAdminMappings(adminSelectedRequest.suggested_mappings.map((mapping) => ({ ...createEmptyAdminMapping(), ...mapping })));
+    setAdminStatus({ text: "Suggested mappings copied into the editor.", tone: "success" });
+  };
+
+  const approveAdminRequest = async () => {
+    if (!adminSelectedRequest?.video_id) {
+      setAdminStatus({ text: "Select a video request first.", tone: "error" });
+      return;
+    }
+    const mappings = adminMappings.filter((mapping) =>
+      mapping.sector && mapping.skill && mapping.proficiency_level && mapping.competency && mapping.item_type
+    );
+    if (!mappings.length) {
+      setAdminStatus({ text: "Add at least one complete mapping before approval.", tone: "error" });
+      return;
+    }
+
+    setAdminBusy(true);
+    setAdminStatus({ text: "Approving and indexing video mappings...", tone: "" });
+    try {
+      const response = await fetchJson(
+        `/api/admin/video-mapping-requests/${encodeURIComponent(adminSelectedRequest.video_id)}/approve`,
+        {
+          method: "POST",
+          cache: "no-store",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ reviewer: "admin-portal-prototype", mappings }),
+        },
+      );
+      setAdminStatus({
+        text: `${response.message} Indexed ${Number(response.embedding_indexed || 0)} mapping(s).`,
+        tone: "success",
+      });
+      await loadAdminRequests("pending");
+      setAdminSelectedRequest(null);
+      setAdminMappings([]);
+    } catch (error) {
+      setAdminStatus({ text: `Unable to approve mappings: ${error.message}`, tone: "error" });
+    } finally {
+      setAdminBusy(false);
+    }
+  };
+
+  const rejectAdminRequest = async () => {
+    if (!adminSelectedRequest?.video_id) {
+      setAdminStatus({ text: "Select a video request first.", tone: "error" });
+      return;
+    }
+    setAdminBusy(true);
+    setAdminStatus({ text: "Rejecting mapping request...", tone: "" });
+    try {
+      const response = await fetchJson(
+        `/api/admin/video-mapping-requests/${encodeURIComponent(adminSelectedRequest.video_id)}/reject`,
+        {
+          method: "POST",
+          cache: "no-store",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ reviewer: "admin-portal-prototype", reason: "Rejected in temporary admin tools." }),
+        },
+      );
+      setAdminStatus({ text: response.message || "Mapping request rejected.", tone: "success" });
+      await loadAdminRequests("pending");
+      setAdminSelectedRequest(null);
+      setAdminMappings([]);
+    } catch (error) {
+      setAdminStatus({ text: `Unable to reject mapping request: ${error.message}`, tone: "error" });
+    } finally {
+      setAdminBusy(false);
+    }
+  };
+
+  const searchAdminDirectVideos = async () => {
+    const query = adminDirectQuery.trim();
+    if (query.length < 2) {
+      setAdminStatus({ text: "Enter an admin search prompt first.", tone: "error" });
+      return;
+    }
+    setAdminBusy(true);
+    setAdminStatus({ text: "Searching YouTube for admin curation...", tone: "" });
+    try {
+      const response = await fetchJson("/api/public/videos/search", {
+        method: "POST",
+        cache: "no-store",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          query,
+          max_results: 8,
+          order: "relevance",
+          source: "youtube",
+        }),
+      });
+      const rows = Array.isArray(response.results) ? response.results : [];
+      const nextSelection = {};
+      rows.forEach((video) => {
+        if (video.video_id && !video.already_ingested) {
+          nextSelection[video.video_id] = true;
+        }
+      });
+      setAdminDirectVideos(rows);
+      setAdminDirectSelection(nextSelection);
+      setAdminStatus({
+        text: rows.length
+          ? `${rows.length} video(s) found. Ingest selected videos to create admin-review requests.`
+          : "No YouTube videos matched this admin search.",
+        tone: rows.length ? "success" : "error",
+      });
+    } catch (error) {
+      setAdminDirectVideos([]);
+      setAdminDirectSelection({});
+      setAdminStatus({ text: `Unable to search YouTube: ${error.message}`, tone: "error" });
+    } finally {
+      setAdminBusy(false);
+    }
+  };
+
+  const toggleAdminDirectSelection = (videoId) => {
+    setAdminDirectSelection((current) => ({
+      ...current,
+      [videoId]: !current[videoId],
+    }));
+  };
+
+  const ingestAdminDirectVideos = async () => {
+    const selectedVideos = adminDirectVideos.filter((video) => adminDirectSelection[video.video_id]);
+    if (!selectedVideos.length) {
+      setAdminStatus({ text: "Select at least one admin search result first.", tone: "error" });
+      return;
+    }
+    setAdminBusy(true);
+    setAdminStatus({ text: "Ingesting admin-selected videos for mapping review...", tone: "" });
+    try {
+      const response = await fetchJson("/api/public/videos/ingest", {
+        method: "POST",
+        cache: "no-store",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          videos: selectedVideos.map((video) => ({
+            sector: "",
+            skill_name: "",
+            competency: "",
+            item_type: "",
+            proficiency_level: "",
+            proficiency_description: "",
+            videoId: video.video_id,
+            publishedAt: video.published_at,
+            title: video.title,
+            description: video.description,
+            viewCount: Number(video.view_count || 0),
+            likeCount: Number(video.like_count || 0),
+            commentCount: Number(video.comment_count || 0),
+            tags: Array.isArray(video.tags) ? video.tags : [],
+            duration: video.duration || "",
+            channelTitle: video.channel_title || "",
+            thumbnailUrl: video.thumbnail_url || "",
+            search_query: adminDirectQuery.trim(),
+          })),
+        }),
+      });
+      setAdminStatus({
+        text: `${response.message} ${Number(response.pending_review_count || selectedVideos.length)} video(s) are ready in Pending Review.`,
+        tone: "success",
+      });
+      setAdminDirectSelection({});
+      await loadAdminRequests("pending");
+      setAdminTab("pending");
+    } catch (error) {
+      setAdminStatus({ text: `Unable to ingest admin-selected videos: ${error.message}`, tone: "error" });
+    } finally {
+      setAdminBusy(false);
+    }
+  };
 
   const closeOverlay = () => {
     setOverlayOpen(false);
@@ -1017,12 +1184,11 @@ function App() {
       return;
     }
 
-    const searchSource = sourceOverride;
+    const searchSource = sourceOverride === "youtube" ? "youtube" : "library";
     setDirectSearchSource(searchSource);
     setDirectResultsPage(1);
     setPreviewBusy(true);
     setHasPreviewedVideos(true);
-    resetDirectMappingState();
     setIngestionStatus({
       text: searchSource === "library" ? "Searching saved indexed videos..." : "Searching YouTube directly...",
       tone: "",
@@ -1075,7 +1241,7 @@ function App() {
         setIngestionStatus({
           text: searchSource === "library"
             ? `${previewRows.length} saved video result(s) ready.`
-            : `${previewRows.length} YouTube result(s) ready. Map selected videos before ingesting.`,
+            : `${previewRows.length} YouTube result(s) ready. Ingest to send AI-suggested mappings for admin review.`,
           tone: response.quota_exceeded ? "error" : "success",
         });
       }
@@ -1127,140 +1293,28 @@ function App() {
     setPreviewSelection({});
   };
 
-  const onDirectSectorChange = (sectorName) => {
-    setDirectSuggestion(null);
-    setDirectMapping({
-      sector: sectorName,
-      skill: "",
-      proficiency: "",
-      competency: "",
-      itemType: "",
-      proficiencyDescription: "",
-    });
-    setDirectMapData(null);
-    setDirectSkills([]);
-  };
-
-  const onDirectSkillChange = (skillName) => {
-    setDirectSuggestion(null);
-    setDirectMapping((current) => ({
-      ...current,
-      skill: skillName,
-      proficiency: "",
-      competency: "",
-      itemType: "",
-      proficiencyDescription: "",
-    }));
-    setDirectMapData(null);
-  };
-
-  const onDirectProficiencyChange = (proficiencyLevel) => {
-    setDirectSuggestion(null);
-    const levels = Array.isArray(directMapData?.mappings) ? directMapData.mappings : [];
-    const entry = levels.find((item) => item.proficiency_level === proficiencyLevel) || null;
-    setDirectMapping((current) => ({
-      ...current,
-      proficiency: proficiencyLevel,
-      proficiencyDescription: entry?.proficiency_description || "",
-      competency: "",
-      itemType: "",
-    }));
-  };
-
-  const onDirectCompetencyChange = (itemType, itemText) => {
-    setDirectSuggestion(null);
-    setDirectMapping((current) => ({
-      ...current,
-      itemType,
-      competency: `${itemType}: ${itemText}`,
-    }));
-  };
-
-  const suggestDirectMapping = async () => {
-    const selectedVideos = previewVideos.filter((video) => previewSelection[video.video_id]);
-    const video = selectedVideos[0] || previewVideos[0];
-    if (!video) {
-      setDirectMapStatus({ text: "Search YouTube and select at least one video first.", tone: "error" });
-      return;
-    }
-
-    setDirectSuggestBusy(true);
-    setDirectMapStatus({ text: "Suggesting a seeded mapping...", tone: "" });
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 15000);
-    try {
-      const response = await fetchJson("/api/public/videos/suggest-mapping", {
-        method: "POST",
-        cache: "no-store",
-        headers: { "Content-Type": "application/json" },
-        signal: controller.signal,
-        body: JSON.stringify({
-          search_query: directSearchQuery.trim() || previewMeta.query || "",
-          video: {
-            video_id: video.video_id || "",
-            title: video.title || "",
-            description: video.description || "",
-            channel_title: video.channel_title || "",
-            tags: Array.isArray(video.tags) ? video.tags : [],
-          },
-          use_ai: false,
-        }),
-      });
-      const suggestion = response.suggestion || null;
-      if (!suggestion) {
-        setDirectMapStatus({ text: "No mapping suggestion was returned.", tone: "error" });
-        return;
-      }
-      setDirectSuggestion(suggestion);
-      setDirectMapping({
-        sector: suggestion.sector || "",
-        skill: suggestion.skill || "",
-        proficiency: suggestion.proficiency_level || "",
-        competency: suggestion.competency || "",
-        itemType: suggestion.item_type || "",
-        proficiencyDescription: suggestion.proficiency_description || "",
-      });
-      setDirectMapStatus({
-        text: "Mapping suggestion filled. Review it before ingesting.",
-        tone: "success",
-      });
-    } catch (error) {
-      setDirectSuggestion(null);
-      const message = error.name === "AbortError"
-        ? "Mapping suggestion took longer than expected. Please try again or map manually."
-        : `Unable to suggest mapping: ${String(error.message || "").replace(/[.。]+$/, "")}. You can still map manually.`;
-      setDirectMapStatus({ text: message, tone: "error" });
-    } finally {
-      clearTimeout(timeoutId);
-      setDirectSuggestBusy(false);
-    }
-  };
-
   const ingestSelectedPreviewVideos = async () => {
     const selectedVideos = previewVideos.filter((video) => previewSelection[video.video_id]);
     if (!selectedVideos.length) {
       setIngestionStatus({ text: "Select at least one new preview video first.", tone: "error" });
       return;
     }
-    if (
-      videoFinderMode === "direct" &&
-      (!directMapping.sector || !directMapping.skill || !directMapping.proficiency || !directMapping.competency)
-    ) {
-      setIngestionStatus({ text: "Map selected videos to a seeded skill and competency before ingesting.", tone: "error" });
-      return;
-    }
-
     setIngestBusy(true);
-    setIngestionStatus({ text: "Ingesting selected videos...", tone: "" });
+    setIngestionStatus({
+      text: videoFinderMode === "direct"
+        ? "Ingesting selected videos and preparing AI-suggested mappings for admin review..."
+        : "Ingesting selected videos...",
+      tone: "",
+    });
 
     const payload = {
       videos: selectedVideos.map((video) => ({
-        sector: videoFinderMode === "direct" ? directMapping.sector : video.sector,
-        skill_name: videoFinderMode === "direct" ? directMapping.skill : video.skill_name,
-        competency: videoFinderMode === "direct" ? directMapping.competency : video.competency,
-        item_type: videoFinderMode === "direct" ? directMapping.itemType : video.item_type,
-        proficiency_level: videoFinderMode === "direct" ? directMapping.proficiency : video.proficiency_level,
-        proficiency_description: videoFinderMode === "direct" ? directMapping.proficiencyDescription : video.proficiency_description,
+        sector: videoFinderMode === "direct" ? "" : video.sector,
+        skill_name: videoFinderMode === "direct" ? "" : video.skill_name,
+        competency: videoFinderMode === "direct" ? "" : video.competency,
+        item_type: videoFinderMode === "direct" ? "" : video.item_type,
+        proficiency_level: videoFinderMode === "direct" ? "" : video.proficiency_level,
+        proficiency_description: videoFinderMode === "direct" ? "" : video.proficiency_description,
         videoId: video.video_id,
         publishedAt: video.published_at,
         title: video.title,
@@ -1272,6 +1326,7 @@ function App() {
         duration: video.duration || "",
         channelTitle: video.channel_title || "",
         thumbnailUrl: video.thumbnail_url || "",
+        search_query: videoFinderMode === "direct" ? (directSearchQuery.trim() || previewMeta.query || "") : "",
       })),
     };
 
@@ -1298,8 +1353,11 @@ function App() {
       }));
       const embeddingStatus = response.embedding_status || "skipped";
       const ingestErrorCount = Number(response.error_count || 0);
+      const pendingReviewCount = Number(response.pending_review_count || 0);
       setIngestionStatus({
-        text: `${response.message} Indexed ${Number(response.embedding_indexed || 0)} video(s).`,
+        text: pendingReviewCount
+          ? `${response.message} ${pendingReviewCount} video(s) sent for admin review.`
+          : `${response.message} Indexed ${Number(response.embedding_indexed || 0)} video(s).`,
         tone: embeddingStatus === "failed" ? "error" : ingestErrorCount > 0 ? "warning" : "success",
       });
     } catch (error) {
@@ -1378,24 +1436,6 @@ function App() {
     proficiencyMappings.find((entry) => entry.proficiency_level === selectedProficiency) ||
     proficiencyMappings[0] ||
     null;
-  const directProficiencyMappings = directMapData && Array.isArray(directMapData.mappings) ? directMapData.mappings : [];
-  const selectedDirectMapEntry =
-    directProficiencyMappings.find((entry) => entry.proficiency_level === directMapping.proficiency) ||
-    directProficiencyMappings[0] ||
-    null;
-  const directKnowledgeItems = Array.isArray(selectedDirectMapEntry?.knowledge_items)
-    ? selectedDirectMapEntry.knowledge_items
-    : [];
-  const directAbilityItems = Array.isArray(selectedDirectMapEntry?.ability_items)
-    ? selectedDirectMapEntry.ability_items
-    : [];
-  const directMappingComplete = Boolean(
-    directMapping.sector &&
-    directMapping.skill &&
-    directMapping.proficiency &&
-    directMapping.competency,
-  );
-
   const sectorMetrics = useMemo(
     () => ({
       totalSectors: sectors.length,
@@ -1495,8 +1535,6 @@ function App() {
   const directVisibleVideos = videoFinderMode === "direct"
     ? previewVideos.slice(directPageStart, directPageStart + directPageSize)
     : previewVideos;
-  const directIngestBlocked = videoFinderMode === "direct" && directSearchSource === "youtube" && !directMappingComplete;
-
   const previewQuotaFeedback = useMemo(() => {
     if (videoFinderMode === "direct" && directSearchSource === "library") {
       return {
@@ -1808,7 +1846,6 @@ function App() {
               <span>Open job role lookup</span>
             </a>
             <p>Browse roles, work functions, and linked competencies.</p>
-          
             <button
               type="button"
               className="utility-btn utility-btn-brand hero-link"
@@ -1949,6 +1986,273 @@ function App() {
               `}
         </div>
       </section>
+
+      ${adminOpen
+        ? html`
+            <div className="admin-tools-backdrop" onClick=${closeAdminTools}>
+              <section
+                className="admin-tools-panel"
+                role="dialog"
+                aria-modal="true"
+                aria-label="Temporary admin tools"
+                onClick=${(event) => event.stopPropagation()}
+              >
+                <div className="admin-tools-head">
+                  <div>
+                    <p className="quiz-kicker">Temporary Admin Tools</p>
+                    <h2>Video Mapping Review</h2>
+                    <p className="selection-sub">Prototype panel for pending user ingests and admin-curated video search.</p>
+                  </div>
+                  <button type="button" className="close-btn" onClick=${closeAdminTools}>Close</button>
+                </div>
+
+                <div className="admin-tabs" role="tablist" aria-label="Admin tools tabs">
+                  <button
+                    type="button"
+                    className=${`admin-tab ${adminTab === "pending" ? "active" : ""}`}
+                    onClick=${() => {
+                      setAdminTab("pending");
+                      loadAdminRequests("pending");
+                    }}
+                  >
+                    Pending Review
+                  </button>
+                  <button
+                    type="button"
+                    className=${`admin-tab ${adminTab === "direct" ? "active" : ""}`}
+                    onClick=${() => setAdminTab("direct")}
+                  >
+                    Direct Search
+                  </button>
+                </div>
+
+                <p className="panel-status" data-tone=${adminStatus.tone || undefined}>${adminStatus.text}</p>
+
+                ${adminTab === "pending"
+                  ? html`
+                      <div className="admin-review-grid">
+                        <aside className="admin-request-list">
+                          <div className="admin-list-head">
+                            <p className="selection-label">Requests</p>
+                            <button
+                              type="button"
+                              className="utility-btn"
+                              onClick=${() => loadAdminRequests("pending")}
+                              disabled=${adminBusy}
+                            >
+                              Refresh
+                            </button>
+                          </div>
+                          ${adminRequests.length
+                            ? adminRequests.map((request) => html`
+                                <button
+                                  key=${request.video_id}
+                                  type="button"
+                                  className=${`admin-request-item ${adminSelectedRequest?.video_id === request.video_id ? "active" : ""}`}
+                                  onClick=${() => openAdminRequest(request.video_id)}
+                                  disabled=${adminBusy}
+                                >
+                                  <span className="admin-request-title">${request.title || request.video_id}</span>
+                                  <span className="admin-request-meta">${request.channel_title || "Unknown channel"}</span>
+                                  <span className="admin-request-status">${request.review_status}</span>
+                                </button>
+                              `)
+                            : html`<p className="empty-note">No pending mapping requests yet.</p>`}
+                        </aside>
+
+                        <section className="admin-review-detail">
+                          ${adminSelectedRequest
+                            ? html`
+                                <div className="admin-video-summary">
+                                  ${adminSelectedRequest.thumbnail_url
+                                    ? html`<img src=${adminSelectedRequest.thumbnail_url} alt=${adminSelectedRequest.title || "Video thumbnail"} />`
+                                    : html`<div className="admin-video-thumb-placeholder"></div>`}
+                                  <div>
+                                    <p className="selection-label">${adminSelectedRequest.review_status}</p>
+                                    <h3>${adminSelectedRequest.title || "Untitled video"}</h3>
+                                    <p className="selection-sub">${adminSelectedRequest.channel_title || "Unknown channel"}</p>
+                                    ${adminSelectedRequest.search_query
+                                      ? html`<p className="admin-query">Search query: ${adminSelectedRequest.search_query}</p>`
+                                      : null}
+                                  </div>
+                                </div>
+
+                                <div className="admin-suggestion-box">
+                                  <div className="admin-list-head">
+                                    <p className="selection-label">AI Suggested Mapping</p>
+                                    <button
+                                      type="button"
+                                      className="utility-btn"
+                                      onClick=${copySuggestedMappingsToEditor}
+                                      disabled=${!adminSelectedRequest.suggested_mappings?.length || adminBusy}
+                                    >
+                                      Use Suggestion
+                                    </button>
+                                  </div>
+                                  ${adminSelectedRequest.suggested_mappings?.length
+                                    ? adminSelectedRequest.suggested_mappings.map((mapping, index) => html`
+                                        <div key=${`suggestion-${index}`} className="admin-suggestion-row">
+                                          <strong>${mapping.sector} / ${mapping.skill} / Level ${mapping.proficiency_level}</strong>
+                                          <span>${mapping.competency}</span>
+                                          ${mapping.reason ? html`<small>${mapping.reason}</small>` : null}
+                                        </div>
+                                      `)
+                                    : html`<p className="empty-note">No AI suggestion was found. Add mappings manually below.</p>`}
+                                </div>
+
+                                <div className="admin-mapping-editor">
+                                  <div className="admin-list-head">
+                                    <p className="selection-label">Approved Mappings</p>
+                                    <button type="button" className="utility-btn" onClick=${addAdminMapping} disabled=${adminBusy}>
+                                      Add Mapping
+                                    </button>
+                                  </div>
+                                  ${adminMappings.map((mapping, index) => html`
+                                    <div key=${`admin-map-${index}`} className="admin-mapping-row">
+                                      <label className="field-label">
+                                        Sector
+                                        <input
+                                          value=${mapping.sector}
+                                          onInput=${(event) => updateAdminMapping(index, "sector", event.target.value)}
+                                          placeholder="Exact seeded sector"
+                                        />
+                                      </label>
+                                      <label className="field-label">
+                                        Skill
+                                        <input
+                                          value=${mapping.skill}
+                                          onInput=${(event) => updateAdminMapping(index, "skill", event.target.value)}
+                                          placeholder="Exact seeded skill"
+                                        />
+                                      </label>
+                                      <label className="field-label">
+                                        Level
+                                        <input
+                                          value=${mapping.proficiency_level}
+                                          onInput=${(event) => updateAdminMapping(index, "proficiency_level", event.target.value)}
+                                          placeholder="3"
+                                        />
+                                      </label>
+                                      <label className="field-label">
+                                        Type
+                                        <select
+                                          value=${mapping.item_type}
+                                          onChange=${(event) => updateAdminMapping(index, "item_type", event.target.value)}
+                                        >
+                                          <option value="knowledge">knowledge</option>
+                                          <option value="ability">ability</option>
+                                        </select>
+                                      </label>
+                                      <label className="field-label admin-competency-field">
+                                        Competency
+                                        <input
+                                          value=${mapping.competency}
+                                          onInput=${(event) => updateAdminMapping(index, "competency", event.target.value)}
+                                          placeholder="knowledge: ..."
+                                        />
+                                      </label>
+                                      <label className="field-label admin-description-field">
+                                        Proficiency Description
+                                        <textarea
+                                          value=${mapping.proficiency_description}
+                                          onInput=${(event) => updateAdminMapping(index, "proficiency_description", event.target.value)}
+                                          rows="2"
+                                        ></textarea>
+                                      </label>
+                                      <button
+                                        type="button"
+                                        className="utility-btn"
+                                        onClick=${() => removeAdminMapping(index)}
+                                        disabled=${adminBusy || adminMappings.length <= 1}
+                                      >
+                                        Remove
+                                      </button>
+                                    </div>
+                                  `)}
+                                </div>
+
+                                <div className="admin-action-row">
+                                  <button type="button" className="primary-btn" onClick=${approveAdminRequest} disabled=${adminBusy}>
+                                    Approve & Index
+                                  </button>
+                                  <button type="button" className="utility-btn danger" onClick=${rejectAdminRequest} disabled=${adminBusy}>
+                                    Reject
+                                  </button>
+                                </div>
+                              `
+                            : html`<p className="empty-note">Select a pending request to review AI suggested mappings.</p>`}
+                        </section>
+                      </div>
+                    `
+                  : html`
+                      <section className="admin-direct-panel">
+                        <div className="direct-search-row">
+                          <input
+                            type="search"
+                            placeholder="Search YouTube as admin, e.g. AI ethics tutorial"
+                            value=${adminDirectQuery}
+                            onInput=${(event) => setAdminDirectQuery(event.target.value)}
+                            onKeyDown=${(event) => {
+                              if (event.key === "Enter") {
+                                searchAdminDirectVideos();
+                              }
+                            }}
+                          />
+                          <button
+                            type="button"
+                            className="utility-btn utility-btn-brand"
+                            onClick=${searchAdminDirectVideos}
+                            disabled=${adminBusy}
+                          >
+                            ${adminBusy ? "Working..." : "Search YouTube"}
+                          </button>
+                        </div>
+                        <div className="admin-direct-results">
+                          ${adminDirectVideos.length
+                            ? adminDirectVideos.map((video) => {
+                                const selected = Boolean(adminDirectSelection[video.video_id]);
+                                return html`
+                                  <article key=${`admin-direct-${video.video_id}`} className=${`preview-card ${selected ? "active" : ""}`}>
+                                    <div className="preview-select">
+                                      <input
+                                        type="checkbox"
+                                        checked=${selected}
+                                        onChange=${() => toggleAdminDirectSelection(video.video_id)}
+                                        disabled=${adminBusy || video.already_ingested}
+                                      />
+                                    </div>
+                                    ${video.thumbnail_url
+                                      ? html`<img className="preview-thumb" src=${video.thumbnail_url} alt=${video.title || "Video thumbnail"} />`
+                                      : html`<div className="preview-thumb"></div>`}
+                                    <div className="preview-body">
+                                      <div className="preview-card-top">
+                                        <p className="video-title">${video.title || "Untitled video"}</p>
+                                        <span className="preview-state-chip">${video.already_ingested ? "Already ingested" : selected ? "Selected" : "New"}</span>
+                                      </div>
+                                      <p className="video-meta">${video.channel_title || "Unknown channel"}</p>
+                                      <p className="preview-desc">${video.description || "No description provided."}</p>
+                                    </div>
+                                  </article>
+                                `;
+                              })
+                            : html`<p className="empty-note">Search YouTube to curate new videos for mapping review.</p>`}
+                        </div>
+                        <div className="admin-action-row">
+                          <button
+                            type="button"
+                            className="primary-btn"
+                            onClick=${ingestAdminDirectVideos}
+                            disabled=${adminBusy || !adminDirectVideos.some((video) => adminDirectSelection[video.video_id])}
+                          >
+                            Ingest Selected To Pending Review
+                          </button>
+                        </div>
+                      </section>
+                    `}
+              </section>
+            </div>
+          `
+        : null}
 
       ${overlayOpen
         ? html`
@@ -2253,7 +2557,7 @@ function App() {
                             <button
                               type="button"
                               className="utility-btn utility-btn-brand"
-                              onClick=${searchDirectYoutubeVideos}
+                              onClick=${() => searchDirectYoutubeVideos("library")}
                               disabled=${previewBusy || ingestBusy}
                             >
                               ${previewBusy
@@ -2266,19 +2570,23 @@ function App() {
                         </div>
                       `
                     : null}
-                  <div className="video-finder-topbar">
-                    <p className="selection-sub">
-                      Search for fresh YouTube candidates using the current path, then ingest the ones worth keeping.
-                    </p>
-                    <button
-                      type="button"
-                      className="utility-btn utility-btn-brand"
-                      onClick=${previewVideosForIngestion}
-                      disabled=${previewBusy || ingestBusy}
-                    >
-                      ${previewBusy ? "Finding videos..." : hasPreviewedVideos ? "Refresh Preview" : "Find Videos"}
-                    </button>
-                  </div>
+                  ${videoFinderMode === "direct"
+                    ? null
+                    : html`
+                        <div className="video-finder-topbar">
+                          <p className="selection-sub">
+                            Search for fresh YouTube candidates using the current path, then ingest the ones worth keeping.
+                          </p>
+                          <button
+                            type="button"
+                            className="utility-btn utility-btn-brand"
+                            onClick=${previewVideosForIngestion}
+                            disabled=${previewBusy || ingestBusy}
+                          >
+                            ${previewBusy ? "Finding videos..." : hasPreviewedVideos ? "Refresh Preview" : "Find Videos"}
+                          </button>
+                        </div>
+                      `}
 
                   <p className="panel-status" data-tone=${previewQuotaFeedback.tone || undefined}>
                     ${previewQuotaFeedback.text}
@@ -2290,123 +2598,6 @@ function App() {
                         <p className="preview-query">
                           Search query: <span>${previewMeta.query}</span>
                         </p>
-                      `
-                    : null}
-
-                  ${videoFinderMode === "direct" && directSearchSource === "youtube" && previewVideos.length
-                    ? html`
-                        <section className="direct-map-panel">
-                          <div className="direct-map-head">
-                            <div>
-                              <p className="selection-label">Map selected videos</p>
-                              <p className="selection-sub">Required before ingestion so these videos can appear in recommendations.</p>
-                            </div>
-                            <button
-                              type="button"
-                              className="utility-btn utility-btn-brand"
-                              onClick=${suggestDirectMapping}
-                              disabled=${directSuggestBusy || previewBusy || ingestBusy || !previewVideos.length}
-                            >
-                              ${directSuggestBusy ? "Suggesting..." : "Suggest Mapping"}
-                            </button>
-                          </div>
-                          ${directSuggestion
-                            ? html`
-                                <div className="direct-suggestion-card">
-                                  <p className="selection-label">Suggested mapping</p>
-                                  <p className="selection-value">
-                                    ${directSuggestion.sector} · ${directSuggestion.skill} · Level ${directSuggestion.proficiency_level}
-                                  </p>
-                                  <p className="selection-sub">${formatCompetencyLabel(directSuggestion.competency)}</p>
-                                  ${directSuggestion.reason
-                                    ? html`<p className="direct-suggestion-reason">${directSuggestion.reason}</p>`
-                                    : null}
-                                </div>
-                              `
-                            : null}
-                          <div className="direct-map-grid">
-                            <label className="field-label" htmlFor="direct-map-sector">
-                              Sector
-                              <select
-                                id="direct-map-sector"
-                                value=${directMapping.sector}
-                                onChange=${(event) => onDirectSectorChange(event.target.value)}
-                              >
-                                <option value="">Choose sector</option>
-                                ${sectors.map((sector) => html`<option key=${sector.sector} value=${sector.sector}>${sector.sector}</option>`)}
-                              </select>
-                            </label>
-                            <label className="field-label" htmlFor="direct-map-skill">
-                              Skill
-                              <select
-                                id="direct-map-skill"
-                                value=${directMapping.skill}
-                                onChange=${(event) => onDirectSkillChange(event.target.value)}
-                                disabled=${!directMapping.sector}
-                              >
-                                <option value="">Choose skill</option>
-                                ${directSkills.map((skill) => html`<option key=${skill.skill} value=${skill.skill}>${skill.skill}</option>`)}
-                              </select>
-                            </label>
-                            <label className="field-label" htmlFor="direct-map-level">
-                              Level
-                              <select
-                                id="direct-map-level"
-                                value=${directMapping.proficiency}
-                                onChange=${(event) => onDirectProficiencyChange(event.target.value)}
-                                disabled=${!directProficiencyMappings.length}
-                              >
-                                <option value="">Choose level</option>
-                                ${directProficiencyMappings.map((entry) => html`
-                                  <option key=${entry.proficiency_level} value=${entry.proficiency_level}>${entry.proficiency_level}</option>
-                                `)}
-                              </select>
-                            </label>
-                          </div>
-                          <p className="panel-status" data-tone=${directMapStatus.tone || undefined}>${directMapStatus.text}</p>
-                          ${selectedDirectMapEntry
-                            ? html`
-                                <div className="direct-competency-picker">
-                                  <div>
-                                    <p className="selection-label">Knowledge Competencies</p>
-                                    <div className="direct-competency-list">
-                                      ${directKnowledgeItems.length
-                                        ? directKnowledgeItems.map((item) => html`
-                                            <button
-                                              type="button"
-                                              key=${`direct-knowledge-${item}`}
-                                              className=${`chip competency-chip ${directMapping.competency === `knowledge: ${item}` ? "active" : ""}`}
-                                              onClick=${() => onDirectCompetencyChange("knowledge", item)}
-                                            >
-                                              ${directMapping.competency === `knowledge: ${item}` ? html`<span className="chip-check" aria-hidden="true"></span>` : null}
-                                              ${item}
-                                            </button>
-                                          `)
-                                        : html`<p className="empty-note">No knowledge competencies mapped for this level.</p>`}
-                                    </div>
-                                  </div>
-                                  <div>
-                                    <p className="selection-label">Ability Competencies</p>
-                                    <div className="direct-competency-list">
-                                      ${directAbilityItems.length
-                                        ? directAbilityItems.map((item) => html`
-                                            <button
-                                              type="button"
-                                              key=${`direct-ability-${item}`}
-                                              className=${`chip competency-chip ${directMapping.competency === `ability: ${item}` ? "active" : ""}`}
-                                              onClick=${() => onDirectCompetencyChange("ability", item)}
-                                            >
-                                              ${directMapping.competency === `ability: ${item}` ? html`<span className="chip-check" aria-hidden="true"></span>` : null}
-                                              ${item}
-                                            </button>
-                                          `)
-                                        : html`<p className="empty-note">No ability competencies mapped for this level.</p>`}
-                                    </div>
-                                  </div>
-                                </div>
-                              `
-                            : null}
-                        </section>
                       `
                     : null}
 
@@ -2485,7 +2676,7 @@ function App() {
                           type="button"
                           className="primary-btn video-finder-ingest-btn"
                           onClick=${ingestSelectedPreviewVideos}
-                          disabled=${!selectedPreviewCount || directIngestBlocked || previewBusy || ingestBusy}
+                          disabled=${!selectedPreviewCount || previewBusy || ingestBusy}
                         >
                           ${ingestBusy
                             ? "Ingesting selected videos..."
