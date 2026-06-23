@@ -2133,6 +2133,10 @@ function App() {
                                           ${mapping.reason ? html`<small>${mapping.reason}</small>` : null}
                                         </div>
                                       `)
+                                    : ["queued", "running"].includes(adminSelectedRequest.suggestion_status || "")
+                                      ? html`<p className="empty-note">AI suggestion is being prepared. Refresh shortly or add mappings manually below.</p>`
+                                      : (adminSelectedRequest.suggestion_status || "") === "failed"
+                                        ? html`<p className="empty-note">AI suggestion failed${adminSelectedRequest.suggestion_error ? `: ${adminSelectedRequest.suggestion_error}` : "."} Add mappings manually below.</p>`
                                     : html`<p className="empty-note">No AI suggestion was found. Add mappings manually below.</p>`}
                                 </div>
 

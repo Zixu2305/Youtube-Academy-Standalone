@@ -6,11 +6,12 @@ from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
+from uuid import uuid4
 
 import numpy as np
 import mysql.connector
 from dotenv import load_dotenv
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 from qdrant_client import QdrantClient
@@ -480,6 +481,8 @@ class VideoMappingReviewRequest(BaseModel):
     channel_title: str = ""
     thumbnail_url: str = ""
     search_query: str = ""
+    suggestion_status: str = ""
+    suggestion_error: str = ""
     suggested_mappings: list[VideoCompetencyMapping] = Field(default_factory=list)
     approved_mappings: list[VideoCompetencyMapping] = Field(default_factory=list)
     created_at: str = ""
@@ -509,6 +512,8 @@ class AdminMappingActionResponse(BaseModel):
     approved_mappings: list[VideoCompetencyMapping] = Field(default_factory=list)
     embedding_status: str = "skipped"
     embedding_indexed: int = 0
+    approved_deleted_count: int = 0
+    qdrant_delete_status: str = "skipped"
 
 
 @lru_cache(maxsize=1)
@@ -1215,6 +1220,10 @@ def validate_seeded_mappings(mappings: list[VideoCompetencyMapping | dict[str, A
 
 def make_mapping_review_response(doc: dict[str, Any]) -> VideoMappingReviewRequest:
     review = doc.get("mapping_review") or {}
+    suggested_mappings = review.get("suggested_mappings") or []
+    suggestion_status = str(review.get("suggestion_status") or "").strip()
+    if not suggestion_status:
+        suggestion_status = "ready" if suggested_mappings else "none"
     return VideoMappingReviewRequest(
         video_id=str(doc.get("videoId") or ""),
         review_status=str(doc.get("review_status") or review.get("status") or "pending"),
@@ -1222,9 +1231,11 @@ def make_mapping_review_response(doc: dict[str, Any]) -> VideoMappingReviewReque
         channel_title=str(doc.get("channelTitle") or ""),
         thumbnail_url=str(doc.get("thumbnailUrl") or ""),
         search_query=str(review.get("search_query") or ""),
+        suggestion_status=suggestion_status,
+        suggestion_error=str(review.get("suggestion_error") or ""),
         suggested_mappings=[
             VideoCompetencyMapping(**normalize_mapping_dict(item))
-            for item in (review.get("suggested_mappings") or [])
+            for item in suggested_mappings
         ],
         approved_mappings=[
             VideoCompetencyMapping(**normalize_mapping_dict(item))
@@ -1262,7 +1273,14 @@ def build_mapping_suggestions_for_video(
     return dedupe_mappings([suggestion])
 
 
-def prepare_review_doc(video: dict[str, Any], suggested_mappings: list[dict[str, Any]], search_query: str) -> dict[str, Any]:
+def prepare_review_doc(
+    video: dict[str, Any],
+    suggested_mappings: list[dict[str, Any]],
+    search_query: str,
+    *,
+    suggestion_status: str = "ready",
+    suggestion_job_id: str = "",
+) -> dict[str, Any]:
     now = utc_now()
     review = {
         "status": "pending",
@@ -1270,6 +1288,9 @@ def prepare_review_doc(video: dict[str, Any], suggested_mappings: list[dict[str,
         "search_query": search_query,
         "suggested_mappings": suggested_mappings,
         "approved_mappings": [],
+        "suggestion_status": suggestion_status,
+        "suggestion_error": "",
+        "suggestion_job_id": suggestion_job_id,
         "created_at": now,
         "updated_at": now,
         "reviewed_at": None,
@@ -1302,6 +1323,79 @@ def prepare_review_doc(video: dict[str, Any], suggested_mappings: list[dict[str,
     }
 
 
+def populate_pending_review_suggestions(
+    video_id: str,
+    video: dict[str, Any],
+    search_query: str,
+    suggestion_job_id: str,
+) -> None:
+    client = None
+    try:
+        client, videos_collection = get_portal_videos_collection()
+        running_filter = {
+            "videoId": video_id,
+            "review_status": "pending",
+            "mapping_review.is_request": True,
+            "mapping_review.suggestion_job_id": suggestion_job_id,
+            "mapping_review.suggestion_status": {"$in": ["queued", "running"]},
+        }
+        result = videos_collection.update_one(
+            running_filter,
+            {
+                "$set": {
+                    "mapping_review.suggestion_status": "running",
+                    "mapping_review.suggestion_error": "",
+                    "mapping_review.updated_at": utc_now(),
+                }
+            },
+        )
+        if result.matched_count == 0:
+            return
+
+        suggested_mappings = build_mapping_suggestions_for_video(
+            video,
+            search_query=search_query,
+            use_ai=True,
+        )
+        videos_collection.update_one(
+            running_filter,
+            {
+                "$set": {
+                    "suggested_mappings": suggested_mappings,
+                    "mapping_review.suggested_mappings": suggested_mappings,
+                    "mapping_review.suggestion_status": "ready",
+                    "mapping_review.suggestion_error": "",
+                    "mapping_review.updated_at": utc_now(),
+                }
+            },
+        )
+    except Exception as exc:
+        try:
+            if client is None:
+                client, videos_collection = get_portal_videos_collection()
+            videos_collection.update_one(
+                {
+                    "videoId": video_id,
+                    "review_status": "pending",
+                    "mapping_review.is_request": True,
+                    "mapping_review.suggestion_job_id": suggestion_job_id,
+                    "mapping_review.suggestion_status": {"$in": ["queued", "running"]},
+                },
+                {
+                    "$set": {
+                        "mapping_review.suggestion_status": "failed",
+                        "mapping_review.suggestion_error": str(exc),
+                        "mapping_review.updated_at": utc_now(),
+                    }
+                },
+            )
+        except Exception:
+            pass
+    finally:
+        if client:
+            client.close()
+
+
 def mapping_to_video_doc(base_video: dict[str, Any], mapping: dict[str, Any]) -> dict[str, Any]:
     doc = dict(base_video)
     doc.update(
@@ -1325,6 +1419,26 @@ def mapping_to_video_doc(base_video: dict[str, Any], mapping: dict[str, Any]) ->
         }
     )
     return doc
+
+
+def unpublish_approved_video(videos_collection, video_id: str) -> dict[str, Any]:
+    from pipelines.youtube.youtube_vector_index import delete_video_points
+
+    qdrant_summary = delete_video_points(video_id)
+    delete_result = videos_collection.delete_many(
+        {
+            "videoId": video_id,
+            "review_status": "approved",
+            "mapping_review.is_request": {"$ne": True},
+        }
+    )
+    get_bm25_index.cache_clear()
+    get_cached_portal_retrieval.cache_clear()
+    get_cached_reranker_scores.cache_clear()
+    return {
+        "approved_deleted_count": delete_result.deleted_count,
+        **qdrant_summary,
+    }
 
 
 def annotate_existing_ingestion(
@@ -2490,7 +2604,7 @@ Seeded candidates:
 
 
 @api_router.post("/public/videos/ingest", response_model=PublicVideoIngestResponse)
-def public_ingest_videos(payload: PublicVideoIngestRequest):
+def public_ingest_videos(payload: PublicVideoIngestRequest, background_tasks: BackgroundTasks):
     from pipelines.youtube.youtube_ingestion_service import upsert_selected_videos
 
     client = None
@@ -2534,20 +2648,26 @@ def public_ingest_videos(payload: PublicVideoIngestRequest):
             if not video_id:
                 summary["errors"].append("Missing videoId in pending review video document")
                 continue
-            suggested_mappings = build_mapping_suggestions_for_video(
-                video,
-                search_query=str(video.get("search_query") or video.get("title") or ""),
-                use_ai=True,
-            )
+            search_query = str(video.get("search_query") or video.get("title") or "")
+            suggestion_job_id = uuid4().hex
             review_doc = prepare_review_doc(
                 video,
-                suggested_mappings,
-                str(video.get("search_query") or video.get("title") or ""),
+                [],
+                search_query,
+                suggestion_status="queued",
+                suggestion_job_id=suggestion_job_id,
             )
             result = videos_collection.update_one(
                 {"videoId": video_id, "mapping_review.is_request": True},
                 {"$set": review_doc},
                 upsert=True,
+            )
+            background_tasks.add_task(
+                populate_pending_review_suggestions,
+                video_id,
+                video,
+                search_query,
+                suggestion_job_id,
             )
             pending_count += 1
             if result.upserted_id is not None:
@@ -2590,9 +2710,9 @@ def public_ingest_videos(payload: PublicVideoIngestRequest):
 
     message = "Selected videos ingested successfully."
     if pending_count and not approved_ingested_count:
-        message = "Selected videos saved for admin mapping review."
+        message = "Selected videos saved for admin mapping review. AI suggestions are being prepared."
     elif pending_count:
-        message = "Selected videos ingested; unmapped videos were saved for admin review."
+        message = "Selected videos ingested; unmapped videos were saved for admin review and AI suggestions are being prepared."
     if summary.get("embedding_status") == "failed":
         message = "Selected videos ingested, but embedding failed."
     elif summary.get("embedding_status") == "completed" and summary.get("embedding_indexed", 0) > 0:
@@ -2695,6 +2815,8 @@ def update_video_mapping_request(video_id: str, payload: AdminMappingUpdateReque
                     "suggested_mappings": mappings,
                     "mapping_review.status": "pending",
                     "mapping_review.suggested_mappings": mappings,
+                    "mapping_review.suggestion_status": "manual",
+                    "mapping_review.suggestion_error": "",
                     "mapping_review.updated_at": now,
                     "mapping_review.reviewer": payload.reviewer,
                 }
@@ -2810,6 +2932,11 @@ def reject_video_mapping_request(video_id: str, payload: AdminRejectMappingReque
         )
         if not existing:
             raise HTTPException(status_code=404, detail="Video mapping review request not found.")
+        if str(existing.get("review_status") or existing.get("mapping_review", {}).get("status") or "") == "approved":
+            raise HTTPException(
+                status_code=409,
+                detail="Approved videos must be unpublished so approved docs and Qdrant points are removed.",
+            )
 
         now = utc_now()
         videos_collection.update_many(
@@ -2825,6 +2952,7 @@ def reject_video_mapping_request(video_id: str, payload: AdminRejectMappingReque
                     "mapping_review.updated_at": now,
                     "mapping_review.reviewer": payload.reviewer,
                     "mapping_review.rejection_reason": payload.reason,
+                    "mapping_review.suggestion_status": "cancelled",
                 }
             },
         )
@@ -2840,6 +2968,100 @@ def reject_video_mapping_request(video_id: str, payload: AdminRejectMappingReque
         embedding_status="skipped",
         embedding_indexed=0,
     )
+
+
+@api_router.post("/admin/video-mapping-requests/{video_id}/unpublish", response_model=AdminMappingActionResponse)
+def unpublish_video_mapping_request(video_id: str, payload: AdminRejectMappingRequest):
+    normalized_video_id = normalize_video_id(video_id)
+    client = None
+    try:
+        client, videos_collection = get_portal_videos_collection()
+        existing = videos_collection.find_one(
+            {
+                "videoId": normalized_video_id,
+                "mapping_review.is_request": True,
+            }
+        )
+        if not existing:
+            raise HTTPException(status_code=404, detail="Video mapping review request not found.")
+
+        cleanup_summary = unpublish_approved_video(videos_collection, normalized_video_id)
+        now = utc_now()
+        videos_collection.update_many(
+            {
+                "videoId": normalized_video_id,
+                "mapping_review.is_request": True,
+            },
+            {
+                "$set": {
+                    "review_status": "rejected",
+                    "mapping_review.status": "rejected",
+                    "mapping_review.reviewed_at": now,
+                    "mapping_review.updated_at": now,
+                    "mapping_review.reviewer": payload.reviewer,
+                    "mapping_review.rejection_reason": payload.reason or "Unpublished by admin.",
+                    "mapping_review.unpublished_at": now,
+                }
+            },
+        )
+    finally:
+        if client:
+            client.close()
+
+    return AdminMappingActionResponse(
+        message="Video unpublished and review request rejected.",
+        video_id=normalized_video_id,
+        review_status="rejected",
+        approved_mappings=[],
+        embedding_status="skipped",
+        embedding_indexed=0,
+        approved_deleted_count=parse_int(cleanup_summary.get("approved_deleted_count")),
+        qdrant_delete_status=str(cleanup_summary.get("qdrant_delete_status") or "skipped"),
+    )
+
+
+@api_router.post("/admin/video-mapping-requests/{video_id}/reopen", response_model=VideoMappingReviewRequest)
+def reopen_video_mapping_request(video_id: str, payload: AdminRejectMappingRequest):
+    normalized_video_id = normalize_video_id(video_id)
+    client = None
+    try:
+        client, videos_collection = get_portal_videos_collection()
+        existing = videos_collection.find_one(
+            {
+                "videoId": normalized_video_id,
+                "mapping_review.is_request": True,
+            }
+        )
+        if not existing:
+            raise HTTPException(status_code=404, detail="Video mapping review request not found.")
+        if str(existing.get("review_status") or existing.get("mapping_review", {}).get("status") or "") == "approved":
+            raise HTTPException(
+                status_code=409,
+                detail="Approved videos are already live. Unpublish them before reopening.",
+            )
+
+        now = utc_now()
+        videos_collection.update_one(
+            {"_id": existing["_id"]},
+            {
+                "$set": {
+                    "review_status": "pending",
+                    "mapping_review.status": "pending",
+                    "mapping_review.updated_at": now,
+                    "mapping_review.reviewer": payload.reviewer,
+                    "mapping_review.rejection_reason": "",
+                },
+                "$unset": {
+                    "mapping_review.reviewed_at": "",
+                    "mapping_review.unpublished_at": "",
+                },
+            },
+        )
+        updated = videos_collection.find_one({"_id": existing["_id"]})
+        return make_mapping_review_response(updated or existing)
+    finally:
+        if client:
+            client.close()
 
 
 @api_router.post("/public/recommend/videos", response_model=PublicRecommendResponse)

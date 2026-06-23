@@ -339,6 +339,38 @@ def sync_video_mapping_payload(doc: dict, *, wait: bool = True) -> dict[str, obj
     }
 
 
+def delete_video_points(video_id: str, *, wait: bool = True) -> dict[str, object]:
+    normalized_video_id = str(video_id or "").strip()
+    if not normalized_video_id:
+        return {
+            "qdrant_delete_status": "skipped",
+            "qdrant_delete_requested": False,
+            "qdrant_delete_error": "Missing video_id.",
+        }
+
+    collection_name = env("QDRANT_YT_COLLECTION", DEFAULT_COLLECTION_NAME)
+    client = get_qdrant_client()
+    result = client.delete(
+        collection_name=collection_name,
+        points_selector=models.FilterSelector(
+            filter=models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key="video_id",
+                        match=models.MatchValue(value=normalized_video_id),
+                    )
+                ]
+            )
+        ),
+        wait=wait,
+    )
+    return {
+        "qdrant_delete_status": getattr(result, "status", "completed"),
+        "qdrant_delete_requested": True,
+        "qdrant_delete_collection": collection_name,
+    }
+
+
 def ensure_collection_compatibility(
     client: QdrantClient,
     collection_name: str,

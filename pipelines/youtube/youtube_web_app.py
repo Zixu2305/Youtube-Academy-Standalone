@@ -36,6 +36,7 @@ from youtube_data_access import (
 from youtube_ingestion_service import build_quota_estimate, run_ingestion
 from youtube_vector_index import (
     DEFAULT_COLLECTION_NAME,
+    delete_video_points,
     embed_and_upsert_videos,
     normalize_video_mappings,
     sync_video_mapping_payload,
@@ -153,6 +154,10 @@ def _validate_review_mappings(mappings: list[dict]) -> tuple[list[dict], str]:
 
 def _make_mapping_review_response(doc: dict) -> dict:
     review = doc.get("mapping_review") or {}
+    suggested_mappings = review.get("suggested_mappings") or []
+    suggestion_status = str(review.get("suggestion_status") or "").strip()
+    if not suggestion_status:
+        suggestion_status = "ready" if suggested_mappings else "none"
     return {
         "video_id": str(doc.get("videoId") or ""),
         "review_status": str(doc.get("review_status") or review.get("status") or "pending"),
@@ -161,7 +166,9 @@ def _make_mapping_review_response(doc: dict) -> dict:
         "channel_title": str(doc.get("channelTitle") or ""),
         "thumbnail_url": str(doc.get("thumbnailUrl") or ""),
         "search_query": str(review.get("search_query") or ""),
-        "suggested_mappings": [_normalize_review_mapping(item) for item in (review.get("suggested_mappings") or [])],
+        "suggestion_status": suggestion_status,
+        "suggestion_error": str(review.get("suggestion_error") or ""),
+        "suggested_mappings": [_normalize_review_mapping(item) for item in suggested_mappings],
         "approved_mappings": [_normalize_review_mapping(item) for item in (review.get("approved_mappings") or [])],
         "created_at": _serialize(review.get("created_at") or doc.get("ingested_timing")),
         "updated_at": _serialize(review.get("updated_at")),
@@ -196,6 +203,21 @@ def _mapping_to_video_doc(base_video: dict, mapping: dict, reviewer: str, review
         }
     )
     return doc
+
+
+def _unpublish_approved_video(videos_collection, video_id: str) -> dict:
+    qdrant_summary = delete_video_points(video_id)
+    delete_result = videos_collection.delete_many(
+        {
+            "videoId": video_id,
+            "review_status": "approved",
+            "mapping_review.is_request": {"$ne": True},
+        }
+    )
+    return {
+        "approved_deleted_count": delete_result.deleted_count,
+        **qdrant_summary,
+    }
 
 
 def _embed_touched_videos(summary: dict, docs: list[dict]) -> None:
@@ -592,6 +614,8 @@ def create_app():
                         "suggested_mappings": mappings,
                         "mapping_review.status": "pending",
                         "mapping_review.suggested_mappings": mappings,
+                        "mapping_review.suggestion_status": "manual",
+                        "mapping_review.suggestion_error": "",
                         "mapping_review.updated_at": now,
                         "mapping_review.reviewer": str(data.get("reviewer") or "admin-console"),
                     }
@@ -707,6 +731,11 @@ def create_app():
             )
             if not existing:
                 return jsonify({"ok": False, "error": "Video mapping review request not found."}), 404
+            if str(existing.get("review_status") or (existing.get("mapping_review") or {}).get("status") or "") == "approved":
+                return jsonify({
+                    "ok": False,
+                    "error": "Approved videos must be unpublished so approved docs and Qdrant points are removed.",
+                }), 409
 
             now = datetime.utcnow()
             videos_collection.update_many(
@@ -722,6 +751,7 @@ def create_app():
                         "mapping_review.updated_at": now,
                         "mapping_review.reviewer": str(data.get("reviewer") or "admin-console"),
                         "mapping_review.rejection_reason": str(data.get("reason") or "Rejected in admin console."),
+                        "mapping_review.suggestion_status": "cancelled",
                     }
                 },
             )
@@ -736,6 +766,106 @@ def create_app():
                     "embedding_indexed": 0,
                 }
             )
+        except Exception as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 500
+        finally:
+            if client:
+                client.close()
+
+    @app.route("/api/admin/video-mapping-requests/<video_id>/unpublish", methods=["POST"])
+    def unpublish_video_mapping_request(video_id):
+        normalized_video_id = _normalize_video_id(video_id)
+        data = request.get_json(silent=True) or {}
+        client = None
+        try:
+            client, videos_collection = _get_videos_collection()
+            existing = videos_collection.find_one(
+                {
+                    "videoId": normalized_video_id,
+                    "mapping_review.is_request": True,
+                }
+            )
+            if not existing:
+                return jsonify({"ok": False, "error": "Video mapping review request not found."}), 404
+
+            cleanup_summary = _unpublish_approved_video(videos_collection, normalized_video_id)
+            now = datetime.utcnow()
+            videos_collection.update_many(
+                {
+                    "videoId": normalized_video_id,
+                    "mapping_review.is_request": True,
+                },
+                {
+                    "$set": {
+                        "review_status": "rejected",
+                        "mapping_review.status": "rejected",
+                        "mapping_review.reviewed_at": now,
+                        "mapping_review.updated_at": now,
+                        "mapping_review.reviewer": str(data.get("reviewer") or "admin-console"),
+                        "mapping_review.rejection_reason": str(data.get("reason") or "Unpublished by admin."),
+                        "mapping_review.unpublished_at": now,
+                    }
+                },
+            )
+            return jsonify(
+                {
+                    "ok": True,
+                    "message": "Video unpublished and review request rejected.",
+                    "video_id": normalized_video_id,
+                    "review_status": "rejected",
+                    "approved_mappings": [],
+                    "embedding_status": "skipped",
+                    "embedding_indexed": 0,
+                    "approved_deleted_count": int(cleanup_summary.get("approved_deleted_count") or 0),
+                    "qdrant_delete_status": str(cleanup_summary.get("qdrant_delete_status") or "skipped"),
+                }
+            )
+        except Exception as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 500
+        finally:
+            if client:
+                client.close()
+
+    @app.route("/api/admin/video-mapping-requests/<video_id>/reopen", methods=["POST"])
+    def reopen_video_mapping_request(video_id):
+        normalized_video_id = _normalize_video_id(video_id)
+        data = request.get_json(silent=True) or {}
+        client = None
+        try:
+            client, videos_collection = _get_videos_collection()
+            existing = videos_collection.find_one(
+                {
+                    "videoId": normalized_video_id,
+                    "mapping_review.is_request": True,
+                }
+            )
+            if not existing:
+                return jsonify({"ok": False, "error": "Video mapping review request not found."}), 404
+            if str(existing.get("review_status") or (existing.get("mapping_review") or {}).get("status") or "") == "approved":
+                return jsonify({
+                    "ok": False,
+                    "error": "Approved videos are already live. Unpublish them before reopening.",
+                }), 409
+
+            now = datetime.utcnow()
+            videos_collection.update_one(
+                {"_id": existing["_id"]},
+                {
+                    "$set": {
+                        "review_status": "pending",
+                        "mapping_review.status": "pending",
+                        "mapping_review.updated_at": now,
+                        "mapping_review.reviewer": str(data.get("reviewer") or "admin-console"),
+                        "mapping_review.rejection_reason": "",
+                    },
+                    "$unset": {
+                        "mapping_review.reviewed_at": "",
+                        "mapping_review.unpublished_at": "",
+                    },
+                },
+            )
+            updated = videos_collection.find_one({"_id": existing["_id"]})
+            return jsonify({"ok": True, **_make_mapping_review_response(updated or existing)})
         except Exception as exc:
             return jsonify({"ok": False, "error": str(exc)}), 500
         finally:

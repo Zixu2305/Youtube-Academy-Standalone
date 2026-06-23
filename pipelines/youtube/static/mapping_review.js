@@ -54,14 +54,39 @@
         reviewState.textContent = message;
     }
 
+    function selectedStatus() {
+        return String(selectedRequest?.review_status || "pending").toLowerCase();
+    }
+
+    function updateActionState() {
+        const status = selectedStatus();
+        const isApproved = status === "approved";
+        const isRejected = status === "rejected";
+        const hasSelection = Boolean(selectedRequest);
+
+        saveMappingBtn.hidden = isApproved || isRejected;
+        approveMappingBtn.hidden = isApproved || isRejected;
+        addMappingBtn.hidden = isApproved || isRejected;
+        rejectReason.closest(".field").hidden = isRejected;
+
+        rejectMappingBtn.textContent = isApproved
+            ? "Unpublish"
+            : isRejected
+                ? "Reopen"
+                : "Reject";
+        rejectMappingBtn.classList.toggle("danger-button", !isRejected);
+
+        copySuggestionsBtn.disabled = busy || !selectedRequest?.suggested_mappings?.length || isApproved || isRejected;
+        addMappingBtn.disabled = busy || !hasSelection || isApproved || isRejected;
+        saveMappingBtn.disabled = busy || !hasSelection || isApproved || isRejected;
+        approveMappingBtn.disabled = busy || !hasSelection || isApproved || isRejected;
+        rejectMappingBtn.disabled = busy || !hasSelection;
+    }
+
     function setBusy(nextBusy) {
         busy = nextBusy;
         refreshBtn.disabled = busy;
-        copySuggestionsBtn.disabled = busy || !selectedRequest?.suggested_mappings?.length;
-        addMappingBtn.disabled = busy;
-        saveMappingBtn.disabled = busy || !selectedRequest;
-        approveMappingBtn.disabled = busy || !selectedRequest;
-        rejectMappingBtn.disabled = busy || !selectedRequest;
+        updateActionState();
     }
 
     function emptyMapping() {
@@ -122,6 +147,16 @@
     function renderSuggestions() {
         const rows = selectedRequest?.suggested_mappings || [];
         if (!rows.length) {
+            const status = selectedRequest?.suggestion_status || "";
+            if (status === "queued" || status === "running") {
+                suggestedMappings.innerHTML = `<div class="empty-panel">AI suggestion is being prepared. Refresh shortly or add mappings manually below.</div>`;
+                return;
+            }
+            if (status === "failed") {
+                const detail = selectedRequest?.suggestion_error ? `: ${selectedRequest.suggestion_error}` : ".";
+                suggestedMappings.innerHTML = `<div class="empty-panel">AI suggestion failed${esc(detail)} Add mappings manually below.</div>`;
+                return;
+            }
             suggestedMappings.innerHTML = `<div class="empty-panel">No AI suggestions were generated.</div>`;
             return;
         }
@@ -392,6 +427,10 @@
 
     async function saveMappings() {
         if (!selectedRequest) return;
+        if (selectedStatus() !== "pending") {
+            setState("Only pending requests can be edited. Reopen rejected requests first.", "error");
+            return;
+        }
         setBusy(true);
         setState("Saving mapping edits...");
         try {
@@ -412,6 +451,10 @@
 
     async function approveMappings() {
         if (!selectedRequest) return;
+        if (selectedStatus() !== "pending") {
+            setState("Only pending requests can be approved. Reopen rejected requests first.", "error");
+            return;
+        }
         setBusy(true);
         setState("Approving and indexing video mappings...");
         try {
@@ -438,19 +481,38 @@
 
     async function rejectMapping() {
         if (!selectedRequest) return;
+        const status = selectedStatus();
+        const action = status === "approved"
+            ? "unpublish"
+            : status === "rejected"
+                ? "reopen"
+                : "reject";
+        const actionLabel = action === "unpublish"
+            ? "Unpublishing video..."
+            : action === "reopen"
+                ? "Reopening mapping request..."
+                : "Rejecting mapping request...";
         setBusy(true);
-        setState("Rejecting mapping request...");
+        setState(actionLabel);
         try {
-            const payload = await fetchJson(`/api/admin/video-mapping-requests/${encodeURIComponent(selectedRequest.video_id)}/reject`, {
+            const payload = await fetchJson(`/api/admin/video-mapping-requests/${encodeURIComponent(selectedRequest.video_id)}/${action}`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     reviewer: reviewerName.value.trim() || "admin-console",
-                    reason: rejectReason.value.trim() || "Rejected in admin console.",
+                    reason: rejectReason.value.trim() || (action === "unpublish" ? "Unpublished in admin console." : "Rejected in admin console."),
                 }),
             });
             selectedRequest = null;
-            setState(payload.message || "Mapping request rejected.", "success");
+            const fallbackMessage = action === "unpublish"
+                ? "Video unpublished."
+                : action === "reopen"
+                    ? "Mapping request reopened."
+                    : "Mapping request rejected.";
+            const detail = action === "unpublish"
+                ? ` Removed ${Number(payload.approved_deleted_count || 0)} approved mapping doc(s).`
+                : "";
+            setState(`${payload.message || fallbackMessage}${detail}`, "success");
             const nextRequests = await loadQueue();
             if (nextRequests.length) {
                 await loadRequest(nextRequests[0].video_id);
