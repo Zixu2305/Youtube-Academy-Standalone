@@ -242,6 +242,7 @@ function App() {
   const [skills, setSkills] = useState([]);
   const [selectedSkill, setSelectedSkill] = useState("");
   const [mapData, setMapData] = useState(null);
+  const [mapReloadKey, setMapReloadKey] = useState(0);
   const [selectedProficiency, setSelectedProficiency] = useState("");
   const [selectedCompetency, setSelectedCompetency] = useState("");
   const [competencySectionsOpen, setCompetencySectionsOpen] = useState({
@@ -444,7 +445,7 @@ function App() {
     };
 
     loadMapping();
-  }, [overlayOpen, selectedSector, selectedSkill]);
+  }, [overlayOpen, selectedSector, selectedSkill, mapReloadKey]);
 
   const loadQuiz = async (mode) => {
     if (!selectedSector || !selectedSkill) {
@@ -619,7 +620,9 @@ function App() {
 
     const suggestedSkill = String(options.skill || "").trim();
     const isNewSector = sectorName !== selectedSector;
-    const shouldResetToSuggestedSkill = Boolean(suggestedSkill) && suggestedSkill !== selectedSkill;
+    const isReopeningOverlay = !overlayOpen;
+    const shouldResetToSuggestedSkill =
+      Boolean(suggestedSkill) && (suggestedSkill !== selectedSkill || isReopeningOverlay);
 
     setSelectedSector(sectorName);
     setOverlayOpen(true);
@@ -636,6 +639,7 @@ function App() {
     if (suggestedSkill) {
       if (isNewSector || shouldResetToSuggestedSkill) {
         setSelectedSkill(suggestedSkill);
+        setMapReloadKey((current) => current + 1);
         resetSelectionPath();
       }
     } else if (isNewSector) {
@@ -933,6 +937,7 @@ function App() {
 
   const onSelectSkill = (skillName) => {
     setSelectedSkill(skillName);
+    setMapReloadKey((current) => current + 1);
     setOverlayStep("competency");
     setMapData(null);
     setSelectedProficiency("");
