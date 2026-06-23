@@ -1370,6 +1370,32 @@ def annotate_existing_ingestion(
     return annotated, already_ingested_count
 
 
+def find_existing_video_ids(video_ids: list[str]) -> set[str]:
+    normalized_ids = {
+        str(video_id or "").strip()
+        for video_id in video_ids
+        if str(video_id or "").strip()
+    }
+    if not normalized_ids:
+        return set()
+
+    client = None
+    try:
+        client, videos_collection = get_portal_videos_collection()
+        existing_rows = videos_collection.find(
+            {"videoId": {"$in": list(normalized_ids)}},
+            {"videoId": 1},
+        )
+        return {
+            str(row.get("videoId") or "").strip()
+            for row in existing_rows
+            if row.get("videoId")
+        }
+    finally:
+        if client:
+            client.close()
+
+
 def embed_portal_videos(summary: dict, docs: list[dict]) -> None:
     from pipelines.youtube.youtube_vector_index import (
         DEFAULT_COLLECTION_NAME,
@@ -2159,6 +2185,34 @@ def public_search_videos(payload: PublicDirectVideoSearchRequest):
         for item in videos
         if str(item.get("videoId") or "").strip()
     ]
+    result_video_ids = [str(item.video_id or "").strip() for item in results if str(item.video_id or "").strip()]
+    existing_video_ids: set[str] = set()
+    if result_video_ids:
+        client = None
+        try:
+            client, videos_collection = get_portal_videos_collection()
+            existing_video_ids = {
+                str(row.get("videoId") or "").strip()
+                for row in videos_collection.find(
+                    {"videoId": {"$in": result_video_ids}},
+                    {"videoId": 1},
+                )
+                if row.get("videoId")
+            }
+        finally:
+            if client:
+                client.close()
+    try:
+        library_matches = search_saved_library_videos(query=query, max_results=200, min_score=0.0)
+        existing_video_ids.update(
+            str(item.video_id or "").strip()
+            for item in library_matches.results
+            if str(item.video_id or "").strip()
+        )
+    except Exception:
+        pass
+    if existing_video_ids:
+        results = [item for item in results if item.video_id not in existing_video_ids]
 
     quota_message = None
     if summary.get("quota_exceeded"):
@@ -2185,7 +2239,7 @@ def public_search_videos(payload: PublicDirectVideoSearchRequest):
     return PublicVideoPreviewResponse(
         query=query,
         count=len(results),
-        already_ingested_count=0,
+        already_ingested_count=len(existing_video_ids),
         quota_exceeded=bool(summary.get("quota_exceeded")),
         quota_message=quota_message,
         quota=quota_context,

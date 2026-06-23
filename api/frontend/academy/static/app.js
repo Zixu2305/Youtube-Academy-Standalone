@@ -856,7 +856,7 @@ function App() {
       setAdminDirectSelection(nextSelection);
       setAdminStatus({
         text: rows.length
-          ? `${rows.length} video(s) found. Ingest selected videos to create admin-review requests.`
+          ? `${rows.length} video(s) found. Submit selected videos to create admin-review requests.`
           : "No YouTube videos matched this admin search.",
         tone: rows.length ? "success" : "error",
       });
@@ -883,7 +883,7 @@ function App() {
       return;
     }
     setAdminBusy(true);
-    setAdminStatus({ text: "Ingesting admin-selected videos for mapping review...", tone: "" });
+    setAdminStatus({ text: "Submitting admin-selected videos for mapping review...", tone: "" });
     try {
       const response = await fetchJson("/api/public/videos/ingest", {
         method: "POST",
@@ -920,7 +920,7 @@ function App() {
       await loadAdminRequests("pending");
       setAdminTab("pending");
     } catch (error) {
-      setAdminStatus({ text: `Unable to ingest admin-selected videos: ${error.message}`, tone: "error" });
+      setAdminStatus({ text: `Unable to submit admin-selected videos: ${error.message}`, tone: "error" });
     } finally {
       setAdminBusy(false);
     }
@@ -1024,7 +1024,7 @@ function App() {
         });
       } else {
         setRecommendStatus({
-          text: "No videos matched this path. Try adding context or ingesting more videos.",
+          text: "No videos matched this path. Try adding context or submitting more videos for review.",
           tone: "warning",
         });
       }
@@ -1103,7 +1103,7 @@ function App() {
 
     setPreviewBusy(true);
     setHasPreviewedVideos(true);
-    setIngestionStatus({ text: "Finding candidate videos to ingest...", tone: "" });
+    setIngestionStatus({ text: "Finding candidate videos to submit for review...", tone: "" });
 
     const payload = {
       sector: selectedSector,
@@ -1149,7 +1149,7 @@ function App() {
         setIngestionStatus({
           text: response.quota_exceeded
             ? `${previewRows.length} candidate video(s) found before the YouTube credit limit was reached.`
-            : `${previewRows.length} candidate video(s) ready. ${Object.keys(nextSelection).length} new video(s) preselected for ingest.`,
+            : `${previewRows.length} candidate video(s) ready. ${Object.keys(nextSelection).length} new video(s) preselected for review.`,
           tone: response.quota_exceeded ? "error" : "success",
         });
       } else {
@@ -1212,7 +1212,31 @@ function App() {
         }),
       });
 
-      const previewRows = Array.isArray(response.results) ? response.results : [];
+      let previewRows = Array.isArray(response.results) ? response.results : [];
+      let filteredSavedCount = Number(response.already_ingested_count || 0);
+      if (searchSource === "youtube" && previewRows.length) {
+        const libraryResponse = await fetchJson("/api/public/videos/search", {
+          method: "POST",
+          cache: "no-store",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            query,
+            max_results: 80,
+            order: "relevance",
+            source: "library",
+          }),
+        });
+        const savedVideoIds = new Set(
+          (Array.isArray(libraryResponse.results) ? libraryResponse.results : [])
+            .map((video) => String(video.video_id || "").trim())
+            .filter(Boolean),
+        );
+        if (savedVideoIds.size) {
+          const originalCount = previewRows.length;
+          previewRows = previewRows.filter((video) => !savedVideoIds.has(String(video.video_id || "").trim()));
+          filteredSavedCount += originalCount - previewRows.length;
+        }
+      }
       const nextSelection = {};
       previewRows.forEach((video) => {
         if (video.video_id && searchSource === "youtube" && !video.already_ingested) {
@@ -1224,7 +1248,7 @@ function App() {
       setPreviewSelection(nextSelection);
       setPreviewMeta({
         query: response.query || query,
-        alreadyIngestedCount: 0,
+        alreadyIngestedCount: filteredSavedCount,
         quotaExceeded: Boolean(response.quota_exceeded),
         quotaMessage: response.quota_message || "",
         quota: response.quota || null,
@@ -1238,7 +1262,9 @@ function App() {
           text: response.quota_message || (
             searchSource === "library"
               ? "No saved indexed videos matched this prompt."
-              : "No YouTube videos matched this prompt."
+              : filteredSavedCount
+                ? "All matching YouTube videos are already in the saved library."
+                : "No YouTube videos matched this prompt."
           ),
           tone: "error",
         });
@@ -1246,7 +1272,7 @@ function App() {
         setIngestionStatus({
           text: searchSource === "library"
             ? `${previewRows.length} saved video result(s) ready.`
-            : `${previewRows.length} YouTube result(s) ready. Ingest to send AI-suggested mappings for admin review.`,
+            : `${previewRows.length} new YouTube result(s) ready. Submit to send AI-suggested mappings for admin review.`,
           tone: response.quota_exceeded ? "error" : "success",
         });
       }
@@ -1307,8 +1333,8 @@ function App() {
     setIngestBusy(true);
     setIngestionStatus({
       text: videoFinderMode === "direct"
-        ? "Ingesting selected videos and preparing AI-suggested mappings for admin review..."
-        : "Ingesting selected videos...",
+        ? "Submitting selected videos and preparing AI-suggested mappings for admin review..."
+        : "Submitting selected videos...",
       tone: "",
     });
 
@@ -1359,14 +1385,19 @@ function App() {
       const embeddingStatus = response.embedding_status || "skipped";
       const ingestErrorCount = Number(response.error_count || 0);
       const pendingReviewCount = Number(response.pending_review_count || 0);
+      const submissionMessage = String(response.message || "Selected videos submitted successfully.")
+        .replace(/ingested and indexed/gi, "submitted and indexed")
+        .replace(/ingested with warnings/gi, "submitted with warnings")
+        .replace(/ingested/gi, "submitted")
+        .replace(/ingesting/gi, "submitting");
       setIngestionStatus({
         text: pendingReviewCount
-          ? `${response.message} ${pendingReviewCount} video(s) sent for admin review.`
-          : `${response.message} Indexed ${Number(response.embedding_indexed || 0)} video(s).`,
+          ? `${submissionMessage} ${pendingReviewCount} video(s) sent for admin review.`
+          : `${submissionMessage} Indexed ${Number(response.embedding_indexed || 0)} video(s).`,
         tone: embeddingStatus === "failed" ? "error" : ingestErrorCount > 0 ? "warning" : "success",
       });
     } catch (error) {
-      setIngestionStatus({ text: `Unable to ingest selected videos: ${error.message}`, tone: "error" });
+      setIngestionStatus({ text: `Unable to submit selected videos: ${error.message}`, tone: "error" });
     } finally {
       setIngestBusy(false);
     }
@@ -1692,7 +1723,7 @@ function App() {
               </p>
               <p className="recommendation-empty-copy">
                 The portal stayed inside the current skill. Retry without the strict filter to widen results across
-                ${selectedSector ? ` ${selectedSector}` : " the selected sector"}, or use Find Another Video to ingest fresh options.
+                ${selectedSector ? ` ${selectedSector}` : " the selected sector"}, or use Find Another Video to submit fresh options for review.
               </p>
               <div className="recommendation-empty-actions">
                 <button
@@ -1709,7 +1740,7 @@ function App() {
             <div className="empty-note recommendation-empty">
               <p className="recommendation-empty-title">No recommendations matched the current filters.</p>
               <p className="recommendation-empty-copy">
-                Try adding more context, adjusting the selected competency, or open Find Another Video to ingest more candidates.
+                Try adding more context, adjusting the selected competency, or open Find Another Video to submit more candidates for review.
               </p>
             </div>
           `;
@@ -1765,7 +1796,7 @@ function App() {
                         checked=${isSelected}
                         disabled=${isDisabled}
                         onChange=${() => togglePreviewSelection(video.video_id)}
-                        aria-label=${`Select ${video.title || "preview video"} for ingest`}
+                        aria-label=${`Select ${video.title || "preview video"} for review`}
                       />
                     </div>
                   `}
@@ -1783,7 +1814,7 @@ function App() {
                 <div className="preview-card-top">
                   <p className="video-title">${video.title || "Untitled video"}</p>
                   <span className=${`preview-state-chip ${video.already_ingested ? "ingested" : isSelected ? "selected" : "fresh"}`}>
-                    ${isLibraryResult ? "Saved library" : video.already_ingested ? "Already ingested" : isSelected ? "Selected" : "New candidate"}
+                    ${isLibraryResult ? "Saved library" : video.already_ingested ? "Already in library" : isSelected ? "Selected" : "New candidate"}
                   </span>
                 </div>
                 <p className="video-meta">${metrics.join(" · ")}</p>
@@ -2232,7 +2263,7 @@ function App() {
                                     <div className="preview-body">
                                       <div className="preview-card-top">
                                         <p className="video-title">${video.title || "Untitled video"}</p>
-                                        <span className="preview-state-chip">${video.already_ingested ? "Already ingested" : selected ? "Selected" : "New"}</span>
+                                        <span className="preview-state-chip">${video.already_ingested ? "Already in library" : selected ? "Selected" : "New"}</span>
                                       </div>
                                       <p className="video-meta">${video.channel_title || "Unknown channel"}</p>
                                       <p className="preview-desc">${video.description || "No description provided."}</p>
@@ -2249,7 +2280,7 @@ function App() {
                             onClick=${ingestAdminDirectVideos}
                             disabled=${adminBusy || !adminDirectVideos.some((video) => adminDirectSelection[video.video_id])}
                           >
-                            Ingest Selected To Pending Review
+                            Submit Selected To Pending Review
                           </button>
                         </div>
                       </section>
@@ -2477,7 +2508,7 @@ function App() {
                                 <div className="procurement-head">
                                   <div>
                                     <p className="selection-label">Need More Videos?</p>
-                                    <p className="selection-sub">Preview fresh candidates and ingest them into the library.</p>
+                                    <p className="selection-sub">Preview fresh candidates and submit them for admin review.</p>
                                   </div>
                                   <button
                                     type="button"
@@ -2580,7 +2611,7 @@ function App() {
                     : html`
                         <div className="video-finder-topbar">
                           <p className="selection-sub">
-                            Search for fresh YouTube candidates using the current path, then ingest the ones worth keeping.
+                            Search for fresh YouTube candidates using the current path, then submit the ones worth keeping for review.
                           </p>
                           <button
                             type="button"
@@ -2684,8 +2715,8 @@ function App() {
                           disabled=${!selectedPreviewCount || previewBusy || ingestBusy}
                         >
                           ${ingestBusy
-                            ? "Ingesting selected videos..."
-                            : `Ingest ${selectedPreviewCount} selected video${selectedPreviewCount === 1 ? "" : "s"}`}
+                            ? "Submitting selected videos..."
+                            : `Submit ${selectedPreviewCount} selected video${selectedPreviewCount === 1 ? "" : "s"} for review`}
                         </button>
                       </div>
                     `
