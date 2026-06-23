@@ -157,6 +157,7 @@
                 <div class="video-item-title">${esc(video.title)}</div>
                 <div class="video-item-meta">
                     <span><strong>Skill:</strong> ${esc(video.skill_name)}</span>
+                    <span><strong>Level:</strong> ${esc(video.proficiency_level || "-")}</span>
                     <span><strong>Sector:</strong> ${esc(video.sector)}</span>
                 </div>
                 <div class="video-item-footer">
@@ -485,6 +486,8 @@
                     video_id: state.selectedVideo.video_id,
                     skill_name: state.selectedVideo.skill_name,
                     sector: state.selectedVideo.sector,
+                    competency: state.selectedVideo.competency,
+                    proficiency_level: state.selectedVideo.proficiency_level,
                     mappings_to_add: mappingsToAdd,
                     mappings_to_remove: mappingsToRemove,
                 }),

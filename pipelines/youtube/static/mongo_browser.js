@@ -18,6 +18,8 @@
             { value: "proficiency_level", label: "proficiency_level" },
             { value: "title", label: "title" },
             { value: "video_id", label: "videoId" },
+            { value: "review_status", label: "review_status" },
+            { value: "doc_type", label: "doc_type (review/live)" },
         ],
         Quiz_Generation: [
             { value: "sector", label: "sector" },
@@ -89,6 +91,17 @@
             proficiency_description: doc.proficiency_description,
         });
         return hasMappingValue(mapping) ? mapping : null;
+    }
+
+    function getVideoTitle(doc) {
+        return (
+            doc.title ||
+            doc.video_title ||
+            doc.videoTitle ||
+            doc.snippet?.title ||
+            doc.metadata?.title ||
+            "-"
+        );
     }
 
     function getAdditionalMappings(doc, mainMapping) {
@@ -213,7 +226,7 @@
                 .map((doc) => {
                     const docId = doc._id || "-";
                     const videoId = doc.videoId || "";
-                    const title = doc.title || "-";
+                    const title = getVideoTitle(doc);
                     const sector = doc.sector || "-";
                     const skillName = doc.skill_name || "-";
                     const mainMapping = getMainMapping(doc);
@@ -226,6 +239,10 @@
                         additionalMappings.map((mapping) => mapping.proficiency_level)
                     );
                     const additionalCount = String(additionalMappings.length);
+                    const reviewStatus = doc.review_status || "-";
+                    const isReviewRequest = Boolean(doc.mapping_review?.is_request);
+                    const docType = isReviewRequest ? "review request" : "live mapping";
+                    const approvedAt = doc.approved_at || "-";
                     const ingested = doc.ingested_timing || "-";
                     const publishedAt = doc.publishedAt || "-";
                     const actions = videoId
@@ -242,6 +259,8 @@
                             <div class="doc-meta">
                                 <div><strong>ID</strong><div class="mono">${esc(docId)}</div></div>
                                 <div><strong>Video ID</strong><div class="mono">${esc(videoId || "-")}</div></div>
+                                <div><strong>Doc Type</strong><div>${esc(docType)}</div></div>
+                                <div><strong>Review Status</strong><div>${esc(reviewStatus)}</div></div>
                                 <div><strong>Main Competency</strong><div>${esc(competency)}</div></div>
                                 <div><strong>Main Proficiency Level</strong><div>${esc(proficiencyLevel)}</div></div>
                                 <div><strong>Main Proficiency Description</strong><div>${esc(proficiencyDescription)}</div></div>
@@ -250,6 +269,7 @@
                                 <div><strong>Additional Count</strong><div>${esc(additionalCount)}</div></div>
                                 <div><strong>Skill</strong><div>${esc(skillName)}</div></div>
                                 <div><strong>Sector</strong><div>${esc(sector)}</div></div>
+                                <div><strong>Approved</strong><div>${esc(approvedAt)}</div></div>
                                 <div><strong>Published</strong><div>${esc(publishedAt)}</div></div>
                                 <div><strong>Ingested</strong><div>${esc(ingested)}</div></div>
                             </div>

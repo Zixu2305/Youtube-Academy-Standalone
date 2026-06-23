@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -68,6 +69,63 @@ def get_portal_videos_collection():
     return client, client[database_name]["videos"]
 
 
+TITLE_SEARCH_FIELDS = ("title", "video_title", "videoTitle", "snippet.title", "metadata.title")
+TITLE_TOKEN_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "are",
+    "as",
+    "at",
+    "be",
+    "by",
+    "for",
+    "from",
+    "how",
+    "in",
+    "is",
+    "of",
+    "on",
+    "or",
+    "the",
+    "to",
+    "with",
+}
+
+
+def field_regex_filter(field: str, value: str) -> dict:
+    return {field: {"$regex": re.escape(value), "$options": "i"}}
+
+
+def build_flexible_text_filter(fields: tuple[str, ...], value: str) -> dict:
+    filter_value = (value or "").strip()
+    literal_filters = [field_regex_filter(field, filter_value) for field in fields]
+    seen_tokens: set[str] = set()
+    tokens: list[str] = []
+    for token in re.findall(r"[A-Za-z0-9]+", filter_value):
+        normalized = token.lower()
+        if len(normalized) < 3 or normalized in TITLE_TOKEN_STOPWORDS or normalized in seen_tokens:
+            continue
+        seen_tokens.add(normalized)
+        tokens.append(token)
+
+    token_filter = {}
+    if tokens:
+        important_tokens = sorted(tokens, key=len, reverse=True)[:5]
+        token_filter = {
+            "$and": [
+                {"$or": [field_regex_filter(field, token) for field in fields]}
+                for token in important_tokens
+            ]
+        }
+
+    if token_filter:
+        return {"$or": literal_filters + [token_filter]}
+    if len(literal_filters) == 1:
+        return literal_filters[0]
+    return {"$or": literal_filters}
+
+
 class CompetencyMapping(BaseModel):
     """Single competency mapping for a video."""
 
@@ -92,6 +150,8 @@ class VideoMappingInfo(BaseModel):
     title: str
     sector: str
     skill_name: str
+    competency: str = ""
+    proficiency_level: str = ""
     current_mappings: list[CompetencyMapping] = Field(default_factory=list)
     description: str = ""
     channel_title: str = ""
@@ -110,6 +170,8 @@ class MultiLabelUpdateRequest(BaseModel):
     video_id: str
     skill_name: str
     sector: str
+    competency: str = ""
+    proficiency_level: str = ""
     mappings_to_add: list[CompetencyMapping] = Field(default_factory=list)
     mappings_to_remove: list[CompetencyMapping | str] = Field(default_factory=list)
 
@@ -184,18 +246,27 @@ def clear_recommendation_caches() -> None:
 def multi_label_search_videos(payload: MultiLabelVideoSearchRequest):
     """Search for videos to apply multi-labelling."""
 
-    query = payload.query.strip().lower()
+    query = payload.query.strip()
     search_type = payload.search_type
     limit = payload.limit
 
     client, videos_collection = get_portal_videos_collection()
     try:
+        live_doc_filter = {
+            "deleted": {"$ne": True},
+            "mapping_review.is_request": {"$ne": True},
+            "skill_name": {"$nin": ["", None]},
+            "competency": {"$nin": ["", None]},
+        }
         if search_type == "video_id":
-            filter_query = {"videoId": {"$regex": query, "$options": "i"}}
+            watch_match = re.search(r"(?:v=|youtu\.be/|shorts/)([A-Za-z0-9_-]{6,})", query)
+            video_query = watch_match.group(1) if watch_match else query
+            search_filter = field_regex_filter("videoId", video_query)
         elif search_type == "skill":
-            filter_query = {"skill_name": {"$regex": query, "$options": "i"}}
+            search_filter = field_regex_filter("skill_name", query)
         else:
-            filter_query = {"title": {"$regex": query, "$options": "i"}}
+            search_filter = build_flexible_text_filter(TITLE_SEARCH_FIELDS, query)
+        filter_query = {"$and": [live_doc_filter, search_filter]}
 
         docs = list(
             videos_collection.find(
@@ -212,6 +283,8 @@ def multi_label_search_videos(payload: MultiLabelVideoSearchRequest):
                     "item_type": 1,
                     "proficiency_level": 1,
                     "proficiency_description": 1,
+                    "review_status": 1,
+                    "mapping_review": 1,
                     "additional_mappings": 1,
                     "mappings": 1,
                 },
@@ -231,6 +304,8 @@ def multi_label_search_videos(payload: MultiLabelVideoSearchRequest):
                     title=doc.get("title", ""),
                     sector=doc.get("sector", ""),
                     skill_name=doc.get("skill_name", ""),
+                    competency=doc.get("competency", ""),
+                    proficiency_level=doc.get("proficiency_level", ""),
                     current_mappings=current_mappings,
                     description=doc.get("description", ""),
                     channel_title=doc.get("channelTitle", ""),
@@ -318,6 +393,8 @@ def multi_label_update_video(payload: MultiLabelUpdateRequest):
     video_id = payload.video_id.strip()
     skill_name = payload.skill_name.strip()
     sector = payload.sector.strip()
+    competency = payload.competency.strip()
+    proficiency_level = payload.proficiency_level.strip()
     mappings_to_add = payload.mappings_to_add
     mappings_to_remove = payload.mappings_to_remove
 
@@ -329,7 +406,18 @@ def multi_label_update_video(payload: MultiLabelUpdateRequest):
 
     client, videos_collection = get_portal_videos_collection()
     try:
-        doc = videos_collection.find_one({"videoId": video_id, "skill_name": skill_name})
+        target_query = {
+            "videoId": video_id,
+            "skill_name": skill_name,
+            "deleted": {"$ne": True},
+            "mapping_review.is_request": {"$ne": True},
+        }
+        if competency:
+            target_query["competency"] = competency
+        if proficiency_level:
+            target_query["proficiency_level"] = proficiency_level
+
+        doc = videos_collection.find_one(target_query)
         if not doc:
             raise HTTPException(
                 status_code=404,
@@ -382,7 +470,7 @@ def multi_label_update_video(payload: MultiLabelUpdateRequest):
                 added_count += 1
 
         result = videos_collection.update_one(
-            {"videoId": video_id, "skill_name": skill_name},
+            target_query,
             {
                 "$set": {
                     "additional_mappings": current_mappings,

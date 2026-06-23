@@ -1397,7 +1397,7 @@ def populate_pending_review_suggestions(
 
 
 def mapping_to_video_doc(base_video: dict[str, Any], mapping: dict[str, Any]) -> dict[str, Any]:
-    doc = dict(base_video)
+    doc = {key: value for key, value in base_video.items() if key != "_id"}
     doc.update(
         {
             "sector": mapping["sector"],

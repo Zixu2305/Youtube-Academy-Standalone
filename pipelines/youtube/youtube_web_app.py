@@ -251,6 +251,63 @@ def _serialize(value):
     return value
 
 
+TITLE_SEARCH_FIELDS = ("title", "video_title", "videoTitle", "snippet.title", "metadata.title")
+TITLE_TOKEN_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "are",
+    "as",
+    "at",
+    "be",
+    "by",
+    "for",
+    "from",
+    "how",
+    "in",
+    "is",
+    "of",
+    "on",
+    "or",
+    "the",
+    "to",
+    "with",
+}
+
+
+def _field_regex_filter(field: str, value: str) -> dict:
+    return {field: {"$regex": re.escape(value), "$options": "i"}}
+
+
+def _build_flexible_text_filter(fields: tuple[str, ...], value: str) -> dict:
+    filter_value = (value or "").strip()
+    literal_filters = [_field_regex_filter(field, filter_value) for field in fields]
+    seen_tokens: set[str] = set()
+    tokens: list[str] = []
+    for token in re.findall(r"[A-Za-z0-9]+", filter_value):
+        normalized = token.lower()
+        if len(normalized) < 3 or normalized in TITLE_TOKEN_STOPWORDS or normalized in seen_tokens:
+            continue
+        seen_tokens.add(normalized)
+        tokens.append(token)
+
+    token_filter = {}
+    if tokens:
+        important_tokens = sorted(tokens, key=len, reverse=True)[:5]
+        token_filter = {
+            "$and": [
+                {"$or": [_field_regex_filter(field, token) for field in fields]}
+                for token in important_tokens
+            ]
+        }
+
+    if token_filter:
+        return {"$or": literal_filters + [token_filter]}
+    if len(literal_filters) == 1:
+        return literal_filters[0]
+    return {"$or": literal_filters}
+
+
 def _build_mongo_filter(field: str, value: str, collection_name: str = "") -> dict:
     filter_field = (field or "").strip()
     filter_value = (value or "").strip()
@@ -264,6 +321,18 @@ def _build_mongo_filter(field: str, value: str, collection_name: str = "") -> di
         filter_field = "skill_name" if selected_collection == "videos" else "skill"
     elif filter_field == "video_id":
         filter_field = "videoId"
+        watch_match = re.search(r"(?:v=|youtu\.be/|shorts/)([A-Za-z0-9_-]{6,})", filter_value)
+        if watch_match:
+            filter_value = watch_match.group(1)
+    elif selected_collection == "videos" and filter_field == "title":
+        return _build_flexible_text_filter(TITLE_SEARCH_FIELDS, filter_value)
+    elif selected_collection == "videos" and filter_field == "doc_type":
+        normalized_value = filter_value.lower()
+        if normalized_value in {"review", "request", "review request", "pending request"}:
+            return {"mapping_review.is_request": True}
+        if normalized_value in {"live", "approved", "approved mapping", "mapping"}:
+            return {"mapping_review.is_request": {"$ne": True}}
+        return {}
 
     allowed_fields_by_collection = {
         "videos": {
@@ -273,6 +342,8 @@ def _build_mongo_filter(field: str, value: str, collection_name: str = "") -> di
             "title",
             "competency",
             "proficiency_level",
+            "review_status",
+            "doc_type",
         },
         "Quiz_Generation": {
             "sector",
@@ -303,7 +374,7 @@ def _build_mongo_filter(field: str, value: str, collection_name: str = "") -> di
     if filter_field not in allowed_fields:
         return {}
 
-    return {filter_field: {"$regex": re.escape(filter_value), "$options": "i"}}
+    return _field_regex_filter(filter_field, filter_value)
 
 
 def _to_bool(value, default: bool = False) -> bool:
@@ -915,13 +986,23 @@ def create_app():
 
             client, videos_collection = _get_videos_collection()
             try:
-                # Build filter based on search type
+                # Build filter based on search type. Multi-label should operate on
+                # live mapped docs, not retained admin-review request/audit docs.
+                live_doc_filter = {
+                    "deleted": {"$ne": True},
+                    "mapping_review.is_request": {"$ne": True},
+                    "skill_name": {"$nin": ["", None]},
+                    "competency": {"$nin": ["", None]},
+                }
                 if search_type == "video_id":
-                    filter_query = {"videoId": {"$regex": query, "$options": "i"}}
+                    watch_match = re.search(r"(?:v=|youtu\.be/|shorts/)([A-Za-z0-9_-]{6,})", query)
+                    video_query = watch_match.group(1) if watch_match else query
+                    search_filter = {"videoId": {"$regex": re.escape(video_query), "$options": "i"}}
                 elif search_type == "skill":
-                    filter_query = {"skill_name": {"$regex": query, "$options": "i"}}
+                    search_filter = {"skill_name": {"$regex": re.escape(query), "$options": "i"}}
                 else:  # title
-                    filter_query = {"title": {"$regex": query, "$options": "i"}}
+                    search_filter = _build_flexible_text_filter(TITLE_SEARCH_FIELDS, query)
+                filter_query = {"$and": [live_doc_filter, search_filter]}
 
                 docs = list(
                     videos_collection.find(
@@ -938,6 +1019,8 @@ def create_app():
                             "item_type": 1,
                             "proficiency_level": 1,
                             "proficiency_description": 1,
+                            "review_status": 1,
+                            "mapping_review": 1,
                             "additional_mappings": 1,
                             "mappings": 1,
                         },
@@ -955,6 +1038,8 @@ def create_app():
                         "title": doc.get("title", ""),
                         "sector": doc.get("sector", ""),
                         "skill_name": doc.get("skill_name", ""),
+                        "competency": doc.get("competency", ""),
+                        "proficiency_level": doc.get("proficiency_level", ""),
                         "current_mappings": current_mappings,
                         "description": doc.get("description", ""),
                         "channel_title": doc.get("channelTitle", ""),
@@ -1000,6 +1085,8 @@ def create_app():
             video_id = data.get("video_id", "").strip()
             skill_name = data.get("skill_name", "").strip()
             sector = data.get("sector", "").strip()
+            competency = data.get("competency", "").strip()
+            proficiency_level = data.get("proficiency_level", "").strip()
             mappings_to_add = data.get("mappings_to_add", [])
             mappings_to_remove = data.get("mappings_to_remove", [])
 
@@ -1012,7 +1099,18 @@ def create_app():
             client, videos_collection = _get_videos_collection()
             try:
                 # Get current document
-                doc = videos_collection.find_one({"videoId": video_id, "skill_name": skill_name})
+                target_query = {
+                    "videoId": video_id,
+                    "skill_name": skill_name,
+                    "deleted": {"$ne": True},
+                    "mapping_review.is_request": {"$ne": True},
+                }
+                if competency:
+                    target_query["competency"] = competency
+                if proficiency_level:
+                    target_query["proficiency_level"] = proficiency_level
+
+                doc = videos_collection.find_one(target_query)
                 if not doc:
                     return jsonify({"error": "Video not found"}), 404
 
@@ -1066,7 +1164,7 @@ def create_app():
 
                 # Update document
                 result = videos_collection.update_one(
-                    {"videoId": video_id, "skill_name": skill_name},
+                    target_query,
                     {
                         "$set": {
                             "additional_mappings": current_mappings,
