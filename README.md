@@ -3,7 +3,7 @@
 Standalone repo for four connected components:
 
 1. Reproducible MySQL schema + SkillsFuture seeding.
-2. Admin tools app (Flask) for YouTube ingestion, MongoDB browsing, quiz generation, and soft-delete operations.
+2. Admin tools app (Flask) for YouTube ingestion, mapping review, MongoDB browsing, quiz generation, and soft-delete operations.
 3. Vector indexing pipelines (Qdrant + BGE embeddings) for SkillsFuture and YouTube.
 4. FastAPI endpoints for search/recommend/quiz APIs and the learner-facing academy portal.
 
@@ -29,7 +29,7 @@ Implemented now:
 
 1. SkillsFuture relational pipeline into MySQL from Excel sources.
 2. Mapping table population (`map_sf_to_cat_skill`) + reconciliation reports in `out/`.
-3. Admin tools UI/backend with YouTube preview/upsert, Mongo browser, multi-labelling, quiz generation, and soft-delete tools.
+3. Admin tools UI/backend with YouTube preview/upsert, mapping review, Mongo browser, multi-labelling, quiz generation, and soft-delete tools.
 4. Groq-assisted query enhancement during YouTube ingestion.
 5. Quiz generation flow (admin UI at `/quiz_gen` + APIs) with MongoDB storage.
    - Hierarchical filtering: sector → skill → proficiency level → competency.
@@ -101,7 +101,7 @@ This repo currently has two separate app surfaces:
 1. Internal admin tools (prototype ops UI, Docker service: `admin_tools`)
    - Docker run: `http://localhost:5001`
    - Local run: `http://localhost:5000`
-   - Includes `/` for YouTube ingestion, `/mongo_browser` for MongoDB browsing, `/multi_label` for assigning additional mappings, `/quiz_gen` for generated quiz questions, and `/delete` for soft deletes.
+   - Includes `/` for YouTube ingestion, `/mapping_review` for reviewing learner/direct-search video mapping requests, `/mongo_browser` for MongoDB browsing, `/multi_label` for assigning additional mappings, `/quiz_gen` for generated quiz questions, and `/delete` for soft deletes.
 2. Learner-facing prototype portal
    - FastAPI host (default): `http://localhost:8000`
    - Learner page: `http://localhost:8000/academy`
@@ -110,7 +110,7 @@ This repo currently has two separate app surfaces:
 ## Prerequisites
 
 - Docker + Docker Compose
-- LLM API key (Groq or OpenAI; used for quiz generation and query keyword enhancement)
+- LLM API key (Groq or OpenAI; used for quiz generation, query keyword enhancement, and AI mapping suggestions)
 - Excel files in `data/raw/`:
   - `Unique Skills List.xlsx`
   - `SkillsFuture Skills Framework Dataset.xlsx`
@@ -130,7 +130,7 @@ Optional local runtime:
 cp .env.example .env
 # edit ports/passwords if needed
 # set YOUTUBE_API_KEY if you want YouTube preview/ingest from the console or learner portal
-# set LLM_PROVIDER / LLM_MODEL / LLM_API_KEY for quiz generation + query keyword enhancement
+# set LLM_PROVIDER / LLM_MODEL / LLM_API_KEY for quiz generation, query keyword enhancement, and AI mapping suggestions
 ```
 
 ### 2) Start core services
@@ -139,7 +139,7 @@ cp .env.example .env
 docker compose up -d mysql mongodb adminer
 ```
 
-### 2b) Configure LLM provider, model, and API key (required for quiz + query features)
+### 2b) Configure LLM provider, model, and API key (required for quiz, query, and mapping suggestion features)
 
 Set these in `.env`:
 
@@ -264,9 +264,14 @@ uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
 # open: http://localhost:8000/academy
 ```
 
-New videos ingested from the console or learner portal are embedded into Qdrant automatically after upsert. `scripts/embed_yt_videos.py` remains useful for backfills or full rebuilds.
+Mapped videos ingested from the console or skill-scoped learner flow are embedded into Qdrant automatically after upsert. Direct YouTube search submissions with no sector/skill/competency mapping are saved as pending review requests first; AI mapping suggestions are prepared asynchronously, and Qdrant indexing happens only when an admin approves the request. `scripts/embed_yt_videos.py` remains useful for backfills or full rebuilds.
 
 Additional mappings assigned from the multi-label tool are payload-only updates. They update MongoDB and the existing Qdrant point payload so recommendations can include the video for mapped proficiency values and boost mapped competency matches without re-embedding the video.
+
+Admin mapping review lifecycle:
+- Pending requests can be approved and indexed, or rejected without creating embeddings.
+- Rejected requests remain as audit/blocklist records and can be reopened.
+- Approved requests must be unpublished, not plain-rejected. Unpublish deletes approved MongoDB mapping docs, removes Qdrant points for the video, then marks the review request rejected.
 
 ## Troubleshooting
 
@@ -325,7 +330,7 @@ Open `http://localhost:5000`.
 - Upserts documents into MongoDB (`videos`, `ingestion_runs`).
 - Embeds touched video-skill documents into Qdrant after successful upsert.
 - Lets admins assign additional competency/proficiency mappings at `/multi_label`; these sync to Qdrant payload without changing the existing vector.
-- Provides Mongo browser, quiz generation, and soft-delete tools at `/mongo_browser`, `/quiz_gen`, and `/delete`.
+- Provides mapping review, Mongo browser, quiz generation, and soft-delete tools at `/mapping_review`, `/mongo_browser`, `/quiz_gen`, and `/delete`.
 
 ### Admin Quiz Generation (Included in this Workflow)
 
@@ -445,6 +450,7 @@ uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
   - `POST /api/public/recommend/videos`
   - `POST /api/public/videos/preview`
   - `POST /api/public/videos/ingest`
+  - `POST /api/public/videos/search`
 
 ### Learner Quiz Taking (Included in this Workflow)
 
@@ -452,7 +458,8 @@ The learner portal at `http://localhost:8000/academy` includes:
 
 - Fuzzy industry search and mapped skill suggestions on the main page.
 - Video recommendation with an optional strict skill filter.
-- A `Find Another Video` flow that previews YouTube candidates and ingests selected videos into the library.
+- A `Find Another Video` flow that previews YouTube candidates for the selected skill path and ingests selected mapped videos into the library.
+- A direct video search flow that can search saved indexed videos or submit new YouTube candidates for admin mapping review before indexing.
 - Recommendation filtering can include videos whose requested proficiency appears in additional mapping payloads, while mapped competency matches receive bounded metadata boosts.
 - Interactive quiz taking.
 

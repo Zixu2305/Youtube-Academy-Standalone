@@ -687,7 +687,9 @@ Key failures:
 ---
 
 ### POST `/api/public/videos/ingest`
-Ingests selected preview videos into MongoDB and Qdrant.
+Submits selected preview/search videos.
+
+Mapped submissions, where `sector`, `skill_name`, and `competency` are present, are upserted into MongoDB and embedded into Qdrant immediately. Unmapped direct-search submissions are saved as pending admin mapping review requests; AI/fallback mapping suggestions are prepared asynchronously, and Qdrant indexing is skipped until admin approval.
 
 Request body:
 ```json
@@ -726,12 +728,38 @@ Response:
   "unchanged": 0,
   "error_count": 0,
   "embedding_status": "completed",
-  "embedding_indexed": 1
+  "embedding_requested": 1,
+  "embedding_indexed": 1,
+  "embedding_skipped_invalid": 0,
+  "pending_review_count": 0,
+  "approved_ingested_count": 1
 }
 ```
 
-Embedding note:
-- New ingested videos are embedded with their primary mapping fields.
+Pending-review response example:
+```json
+{
+  "message": "Selected videos saved for admin mapping review. AI suggestions are being prepared.",
+  "count": 2,
+  "inserted": 2,
+  "updated": 0,
+  "unchanged": 0,
+  "error_count": 0,
+  "embedding_status": "skipped",
+  "embedding_requested": 0,
+  "embedding_indexed": 0,
+  "embedding_skipped_invalid": 0,
+  "pending_review_count": 2,
+  "approved_ingested_count": 0
+}
+```
+
+Review and embedding notes:
+- Mapped videos are embedded with their primary mapping fields.
+- Unmapped direct-search videos are written to the MongoDB `videos` collection with `review_status: "pending"` and `mapping_review.is_request: true`.
+- Pending review suggestions use `mapping_review.suggestion_status`: `queued`, `running`, `ready`, `failed`, `manual`, or `cancelled`.
+- Admin approval creates approved mapping docs and indexes Qdrant points.
+- Admin rejection before approval does not create embeddings.
 - Additional mappings added later use the multi-label update endpoint and only sync Qdrant payload.
 
 ---
@@ -740,7 +768,7 @@ Embedding note:
 Direct video search with two modes controlled by the `source` field: YouTube Data API search and saved library semantic search. Both modes share the same endpoint and response shape.
 
 The `source` field determines which retrieval path is used:
-- `"youtube"` searches YouTube directly via the YouTube Data API and returns fresh candidates for review and ingestion
+- `"youtube"` searches YouTube directly via the YouTube Data API and returns fresh candidates that can be submitted for admin mapping review
 - `"library"` performs a semantic search over saved and indexed videos in Qdrant without calling the YouTube API or consuming quota
 
 Request body:
@@ -755,7 +783,7 @@ Request body:
 
 Request fields:
 - `query` (string, required, min length 2, max length 240)
-- `max_results` (integer, optional, default 8, range 1-8)
+- `max_results` (integer, optional, default 8, range 1-80; the UI uses 8 for direct YouTube mode and up to 80 for saved-library mode)
 - `order` (string, optional, default `"relevance"`): YouTube sort order, one of `date`, `rating`, `relevance`, `title`, `videoCount`, `viewCount`. Ignored when `source` is `"library"`.
 - `source` (string, optional, default `"youtube"`): `"youtube"` or `"library"`
 
@@ -829,6 +857,101 @@ curl -X POST http://localhost:8000/api/public/videos/search \
   -H "Content-Type: application/json" \
   -d '{"query":"beginner accounting standards tutorial","max_results":8,"source":"youtube","order":"relevance"}'
 ```
+
+---
+
+### Admin Video Mapping Review
+These endpoints back the admin mapping review UI in the learner portal and the standalone admin tools page at `/mapping_review`.
+
+Review states:
+- `pending`: request is waiting for admin mapping review.
+- `approved`: request was approved, approved mapping docs were written, and Qdrant points were indexed.
+- `rejected`: request is archived/rejected and should not be indexed. Rejected requests remain as audit/blocklist records.
+
+Lifecycle rules:
+- Pending -> reject does not create embeddings.
+- Pending/rejected -> approve validates seeded SkillsFuture mappings, writes approved MongoDB docs, and indexes Qdrant.
+- Approved -> plain reject is blocked. Use unpublish so MongoDB approved docs and Qdrant points are removed together.
+- Rejected -> reopen moves the request back to pending.
+
+#### GET `/api/admin/video-mapping-requests`
+Lists review requests.
+
+Query params:
+- `status`: `pending`, `approved`, `rejected`, or `all`; default `pending`
+- `limit`: integer, default `50`, max `200`
+
+Response:
+```json
+{
+  "count": 1,
+  "requests": [
+    {
+      "video_id": "abcd1234",
+      "review_status": "pending",
+      "title": "Example video",
+      "channel_title": "Example Channel",
+      "thumbnail_url": "https://...",
+      "search_query": "ai ethics tutorial",
+      "suggestion_status": "ready",
+      "suggestion_error": "",
+      "suggested_mappings": [],
+      "approved_mappings": [],
+      "created_at": "2026-06-23T00:00:00Z",
+      "updated_at": "2026-06-23T00:00:05Z",
+      "reviewed_at": ""
+    }
+  ]
+}
+```
+
+#### GET `/api/admin/video-mapping-requests/{video_id}`
+Returns one review request.
+
+#### PUT `/api/admin/video-mapping-requests/{video_id}`
+Saves admin mapping edits while keeping the request pending. The request body matches the approval body below.
+
+#### POST `/api/admin/video-mapping-requests/{video_id}/approve`
+Approves mappings and indexes the video.
+
+Request body:
+```json
+{
+  "reviewer": "admin",
+  "mappings": [
+    {
+      "sector": "Infocomm Technology",
+      "skill": "Data Analytics",
+      "proficiency_level": "2",
+      "competency": "ability: Analyse data to identify trends and patterns for decision-making",
+      "item_type": "ability",
+      "proficiency_description": "...",
+      "confidence": 0.8,
+      "reason": "Admin reviewed",
+      "source": "admin"
+    }
+  ]
+}
+```
+
+The server validates every mapping against seeded SkillsFuture sector/skill/proficiency/competency data before writing approved docs.
+
+#### POST `/api/admin/video-mapping-requests/{video_id}/reject`
+Rejects a non-approved request. This does not index or delete Qdrant points because pending requests are not indexed. Returns `409` if the request is already approved.
+
+Request body:
+```json
+{
+  "reviewer": "admin",
+  "reason": "Not suitable for this library."
+}
+```
+
+#### POST `/api/admin/video-mapping-requests/{video_id}/unpublish`
+Removes an approved video from the live library. This deletes approved non-request MongoDB docs for the `video_id`, deletes Qdrant points with payload `video_id`, clears FastAPI retrieval caches, and marks the review request rejected.
+
+#### POST `/api/admin/video-mapping-requests/{video_id}/reopen`
+Moves a rejected request back to pending so it can be edited and approved later. Approved requests must be unpublished before reopening.
 
 ---
 
@@ -962,8 +1085,9 @@ For cross-platform integration where partner codebase access is not available, u
 
 Optional ingestion and search flow:
 1. `POST /api/public/videos/search` with `"source": "youtube"` to preview YouTube candidates
-2. `POST /api/public/videos/ingest` to add selected videos to the library
-3. `POST /api/public/videos/search` with `"source": "library"` to search the saved library semantically
+2. `POST /api/public/videos/ingest` to submit selected unmapped videos for admin mapping review
+3. Admin approves via `POST /api/admin/video-mapping-requests/{video_id}/approve`
+4. `POST /api/public/videos/search` with `"source": "library"` to search the saved indexed library semantically
 
 For full architecture and operational guidance, see `docs/api_layers_integration_guide.md`.
 
@@ -982,5 +1106,5 @@ Likely dependency checks:
 - Qdrant for search and recommendation endpoints; also required for library mode of `/api/public/videos/search`
 - MongoDB for quiz storage and ingested videos
 - YouTube API key for preview, ingest, and YouTube mode of `/api/public/videos/search`
-- LLM provider configuration for quiz generation and query enhancement
+- LLM provider configuration for quiz generation, query enhancement, and AI mapping suggestions
 - Embedding and reranker models for library search and recommendation endpoints

@@ -41,6 +41,7 @@ Note: this diagram is the primary conceptual view. Use `docs/api_reference.md` a
 
 Quick boundary summary:
 - `/api/public/*` is the preferred integration surface for partners and frontend clients
+- `/api/admin/video-mapping-requests/*` is the admin-only curation surface for review, approval, rejection, unpublish, and reopen actions
 - `/api/search/*`, `/api/recommend/*`, and `/api/quiz/*` are engine-level APIs that are available but less integration-stable than the public surface
 - `/academy` is the learner demo page, not a platform integration surface
 
@@ -107,7 +108,7 @@ Recommended for:
   - constrained by daily quota
 
 - LLM Provider (Groq/OpenAI):
-  - used in quiz generation and ingestion query-enhancement paths
+  - used in quiz generation, ingestion query-enhancement, and AI mapping suggestion paths
 
 - Hugging Face model artifacts (embedding and reranker):
   - required for semantic embedding and cross-encoder reranking models
@@ -135,7 +136,8 @@ Recommended for:
 1. `POST /api/public/videos/preview`
 2. User selects approved videos
 3. `POST /api/public/videos/ingest`
-4. Videos are upserted and indexed for retrieval
+4. Videos with complete sector/skill/competency mappings are upserted and indexed for retrieval
+5. Videos without mappings are saved as pending mapping review requests and are indexed only after admin approval
 
 ### 5.4 Optional multi-label curation path
 1. `POST /api/public/multi-label/search-videos`
@@ -152,6 +154,10 @@ This path supports two modes via the same endpoint (`POST /api/public/videos/sea
 2. API calls YouTube Data API and returns fresh candidate videos
 3. Results include an `already_ingested` flag for videos already in the saved library
 4. Caller may select candidates and pass them to `POST /api/public/videos/ingest`
+5. Unmapped direct-search submissions are saved as pending admin mapping review requests
+6. AI/fallback mapping suggestions are prepared asynchronously after the request is saved
+7. Admin approval validates seeded SkillsFuture mappings, writes approved video docs, and indexes Qdrant points
+8. Pending rejection creates no embeddings; approved videos must be unpublished to remove MongoDB approved docs and Qdrant points
 
 **Library mode** (`source: "library"`):
 1. Caller sends a free-text query
@@ -163,6 +169,23 @@ This path supports two modes via the same endpoint (`POST /api/public/videos/sea
 7. Results below the configured minimum relevance score are excluded
 8. Remaining results are returned as view-only library matches with a `score` field
 9. Does not call YouTube API or consume quota
+
+### 5.6 Admin mapping review lifecycle
+Admin review requests are stored in MongoDB `videos` documents with `mapping_review.is_request: true`.
+
+State handling:
+- `pending`: waiting for admin review. AI suggestions may be `queued`, `running`, `ready`, `failed`, `manual`, or `cancelled`.
+- `approved`: approved mapping docs have been written and Qdrant points are live.
+- `rejected`: not live. Used as an audit/blocklist record.
+
+Allowed transitions:
+- Pending -> approve: validate mapping, write approved docs, index Qdrant.
+- Pending -> reject: mark rejected, no Qdrant work.
+- Rejected -> reopen: move back to pending for further review.
+- Rejected -> approve: allowed after review if the admin wants to restore the video.
+- Approved -> unpublish: delete approved MongoDB docs, delete Qdrant points by `video_id`, then mark the request rejected.
+
+Plain reject on an approved request is blocked so the review status cannot disagree with the live Qdrant index.
 
 Library mode requires Qdrant to be running and the YouTube video collection to be populated. Run `python scripts/embed_yt_videos.py` to backfill any videos in MongoDB that have not yet been indexed.
 
@@ -202,6 +225,13 @@ Optional engagement endpoints:
 Optional curation endpoints:
 - `POST /api/public/videos/preview`
 - `POST /api/public/videos/ingest`
+- `GET /api/admin/video-mapping-requests`
+- `GET /api/admin/video-mapping-requests/{video_id}`
+- `PUT /api/admin/video-mapping-requests/{video_id}`
+- `POST /api/admin/video-mapping-requests/{video_id}/approve`
+- `POST /api/admin/video-mapping-requests/{video_id}/reject`
+- `POST /api/admin/video-mapping-requests/{video_id}/unpublish`
+- `POST /api/admin/video-mapping-requests/{video_id}/reopen`
 
 Optional free-text search endpoints:
 - `POST /api/public/videos/search` with `source: "youtube"` for fresh YouTube candidate discovery
@@ -212,6 +242,7 @@ Optional free-text search endpoints:
 Current project state:
 - no explicit API auth/authorization middleware is configured in `api/main.py`
 - intended for standalone demo/local deployment
+- admin mapping review endpoints can mutate MongoDB and Qdrant state, so do not expose them publicly without authentication/authorization
 
 For cross-team production integration, place APIs behind a gateway with:
 - OAuth2/JWT or signed service token auth
@@ -251,7 +282,7 @@ For cross-team production integration, place APIs behind a gateway with:
 - If library search returns no results, confirm Qdrant collections exist and `python scripts/embed_yt_videos.py` has been run
 - If library search returns a 503, confirm the embedding and reranker models are available
 - If preview or ingest fails, confirm the YouTube API key and quota state
-- If quiz generation fails, confirm the LLM configuration, MySQL connectivity, and MongoDB connectivity
+- If quiz generation or AI mapping suggestions fail, confirm the LLM configuration, MySQL connectivity, and MongoDB connectivity
 
 ## 10. API Versioning Guidance
 

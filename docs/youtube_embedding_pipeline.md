@@ -2,9 +2,11 @@
 
 ## What This Is
 
-A pipeline that takes YouTube videos stored in MongoDB (via the ingestion web app or batch script), embeds them into Qdrant, and provides a **recommender endpoint** that uses SkillsFuture skill embeddings as a semantic bridge to find the most relevant videos for a user query.
+A pipeline that takes approved YouTube video mappings stored in MongoDB (via the ingestion web app, learner portal, admin review, or batch script), embeds them into Qdrant, and provides a **recommender endpoint** that uses SkillsFuture skill embeddings as a semantic bridge to find the most relevant videos for a user query.
 
-**Flow:** YouTube API -> MongoDB -> SentenceTransformer (BGE) -> Qdrant vector + payload -> FastAPI recommender API
+**Mapped flow:** YouTube API -> MongoDB -> SentenceTransformer (BGE) -> Qdrant vector + payload -> FastAPI recommender API
+
+**Direct-search review flow:** YouTube API -> pending MongoDB review request -> async AI/fallback mapping suggestions -> admin approval -> approved MongoDB docs -> Qdrant vector + payload
 
 ---
 
@@ -79,6 +81,8 @@ docker compose up -d admin_tools
 # Open http://localhost:5001
 ```
 
+Direct learner/admin YouTube search submissions that do not include sector/skill/competency mappings are saved as pending mapping review requests. AI/fallback suggestions are generated asynchronously; the video is not embedded until an admin approves mappings from `/mapping_review`.
+
 ### Step 2: Create Qdrant Collections
 ```bash
 python qdrant/create_collections.py
@@ -89,7 +93,7 @@ Creates both `sf_skill_level_docs__bge_base__768` and `youtube_videos__bge_base_
 ```bash
 python scripts/embed_yt_videos.py
 ```
-Reads videos from MongoDB, encodes the primary video mapping text, and upserts vectors plus payload into Qdrant. Use this for backfills, rebuilds, or MongoDB records that do not yet have Qdrant points. New videos ingested through the app are embedded automatically after upsert.
+Reads videos from MongoDB, encodes the primary video mapping text, and upserts vectors plus payload into Qdrant. Use this for backfills, rebuilds, or MongoDB records that do not yet have Qdrant points. Mapped videos ingested through the app are embedded automatically after upsert; pending review requests are skipped until approved.
 
 Additional mappings added through multi-labelling do not require this script. They are synchronized as Qdrant payload on the existing point.
 
@@ -144,6 +148,25 @@ If the Qdrant point does not exist yet, run `python scripts/embed_yt_videos.py` 
 
 ---
 
+## Admin Mapping Review Lifecycle
+
+Unmapped direct-search submissions are stored in MongoDB `videos` documents with:
+
+- `review_status: "pending"`
+- `mapping_review.is_request: true`
+- `mapping_review.suggestion_status`: `queued`, `running`, `ready`, `failed`, `manual`, or `cancelled`
+
+The initial submit returns quickly after saving the pending request. AI/fallback mapping suggestions are filled asynchronously. Admin actions then control indexing:
+
+- **Approve & Index**: validates seeded SkillsFuture mappings, writes approved non-request MongoDB docs, embeds them, and upserts Qdrant points.
+- **Reject**: for pending requests only; marks the request rejected and creates no embeddings.
+- **Reopen**: moves a rejected request back to pending.
+- **Unpublish**: for approved requests; deletes approved MongoDB docs, deletes Qdrant points by `video_id`, and marks the request rejected.
+
+Plain reject on an approved request is blocked because it would otherwise leave live Qdrant points behind.
+
+---
+
 ## Files
 
 | File | Purpose |
@@ -174,7 +197,7 @@ Longer, more specific queries produce better scores than short generic ones.
 ## Technical Details
 
 - **Embedding model:** BAAI/bge-base-en-v1.5 (768 dimensions, cosine similarity)
-- **Point IDs:** Deterministic UUID5 from `(videoId, skill_name)` — matches MongoDB unique key
+- **Point IDs:** Deterministic UUID5 from `(videoId, skill_name, proficiency_level, competency)` so one video can have separate live points for multiple approved mappings
 - **Embedded text includes:** title, description (500 chars), tags, channel, sector, skill, primary competency, primary proficiency info
 - **Qdrant payload includes:** primary video metadata plus normalized mapping fields for all primary/additional mappings
 - **Qdrant payload indexes:** sector, skill_name, video_id, channel_title (for fast filtering)
