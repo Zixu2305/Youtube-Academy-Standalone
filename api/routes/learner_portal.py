@@ -51,6 +51,8 @@ PORTAL_YOUTUBE_API_KEY_ENV_NAMES = (
     "YOUTUBE_DATA_API_KEY",
 )
 MAPPING_SUGGESTION_MIN_SCORE = 2.0
+MAPPING_CANDIDATE_TOTAL_LIMIT = 12
+MAPPING_CANDIDATE_PER_SECTOR_LIMIT = 2
 
 page_router = APIRouter()
 api_router = APIRouter()
@@ -455,6 +457,7 @@ class PublicVideoMappingSuggestion(BaseModel):
     proficiency_description: str = ""
     confidence: float = 0.0
     reason: str = ""
+    source: Literal["ai", "fallback"] = "ai"
 
 
 class PublicVideoMappingSuggestResponse(BaseModel):
@@ -590,17 +593,45 @@ def score_text_overlap(query: str, label: str) -> float:
     return len(overlap) / max(1, len(query_tokens))
 
 
+def score_token_hit_count(query: str, label: str) -> int:
+    query_tokens = set(tokenize_search_text(query))
+    label_tokens = set(tokenize_search_text(label))
+    if not query_tokens or not label_tokens:
+        return 0
+    return len(query_tokens & label_tokens)
+
+
+@lru_cache(maxsize=1)
+def get_mapping_header_index() -> list[dict[str, object]]:
+    index: list[dict[str, object]] = []
+    for skill_entry in get_skill_suggestion_index():
+        skill = str(skill_entry.get("skill") or "").strip()
+        if not skill:
+            continue
+        skill_tokens = set(tokenize_search_text(skill))
+        for sector_item in skill_entry.get("sectors", []):
+            sector = str(sector_item.get("sector") or "").strip()
+            if not sector:
+                continue
+            index.append(
+                {
+                    "sector": sector,
+                    "skill": skill,
+                    "mapped_skill_count": parse_int(sector_item.get("mapped_proficiency_count")),
+                    "sector_tokens": set(tokenize_search_text(sector)),
+                    "skill_tokens": skill_tokens,
+                    "sector_label": normalize_search_text(sector),
+                    "skill_label": normalize_search_text(skill),
+                }
+            )
+    return index
+
+
 def expand_mapping_query_text(query_text: str) -> str:
     tokens = set(tokenize_search_text(query_text))
     expansions: list[str] = []
     if "ai" in tokens:
-        expansions.extend(["artificial intelligence", "machine learning"])
-    if "ethic" in tokens or "ethics" in tokens or "ethical" in tokens:
-        expansions.extend(["ethics", "ethical", "responsible", "governance", "risk"])
-    if "safety" in tokens or "safe" in tokens:
-        expansions.extend(["security", "risk", "governance"])
-    if "data" in tokens:
-        expansions.extend(["data governance", "responsible data use"])
+        expansions.append("artificial intelligence")
     return " ".join([query_text, *expansions]).strip()
 
 
@@ -625,6 +656,31 @@ def build_mapping_search_tokens(query_text: str, limit: int = 10) -> list[str]:
     return tokens
 
 
+def build_weighted_mapping_text(
+    *,
+    video: PublicMappingVideo,
+    search_query: str,
+) -> str:
+    title = video.title.strip()
+    channel = video.channel_title.strip()
+    query = search_query.strip()
+    description = video.description[:1200].strip()
+    tags = " ".join(video.tags[:12]).strip()
+    parts = [
+        title,
+        title,
+        title,
+        title,
+        channel,
+        channel,
+        query,
+        query,
+        description,
+        tags,
+    ]
+    return " ".join(part for part in parts if part).strip()
+
+
 def score_mapping_candidate_row(query_text: str, row: dict[str, object]) -> float:
     expanded_query = expand_mapping_query_text(query_text)
     skill = str(row.get("skill") or "")
@@ -644,138 +700,97 @@ def score_mapping_candidate_row(query_text: str, row: dict[str, object]) -> floa
         + score_text_overlap(expanded_query, combined_competency) * 2.0
     )
 
-    query_tokens = set(tokenize_search_text(expanded_query))
-    candidate_tokens = set(tokenize_search_text(" ".join([sector, skill, item_text, description])))
-    if {"ethics", "ethical", "responsible", "governance"} & query_tokens and candidate_tokens & {"ethics", "ethical", "responsible", "governance"}:
-        score += 4.0
-    if {"artificial", "intelligence", "machine", "learning"} & query_tokens and candidate_tokens & {"artificial", "intelligence", "machine", "learning", "ai"}:
-        score += 3.0
-    if (
-        {"artificial", "intelligence"} <= query_tokens
-        and {"ethics", "governance"} & query_tokens
-        and sector.strip().lower() == "infocomm technology"
-    ):
-        score += 8.0
-    broad_ai_ethics_query = {"artificial", "intelligence"} <= query_tokens and {"ethics", "ethical", "governance", "responsible"} & query_tokens
-    if "financial" in candidate_tokens and not (query_tokens & {"financial", "finance", "banking", "payment", "insurance"}):
-        score -= 14.0 if broad_ai_ethics_query else 5.0
-    if {"accountancy", "audit", "auditor", "accounting"} & candidate_tokens and not (
-        query_tokens & {"accountancy", "audit", "auditor", "accounting", "finance", "financial"}
-    ):
-        score -= 8.0 if broad_ai_ethics_query else 4.0
-    if "security" in candidate_tokens and not (query_tokens & {"security", "secure", "cybersecurity", "privacy", "safety", "risk"}):
-        score -= 2.0
     return score
 
 
-def get_mapping_competency_candidate_rows(query_text: str, limit: int = 700) -> list[dict[str, object]]:
+def score_mapping_candidate_evidence(query_text: str, row: dict[str, object]) -> float:
+    expanded_query = expand_mapping_query_text(query_text)
+    query_tokens = set(build_mapping_search_tokens(expanded_query, limit=20))
+    if not query_tokens:
+        return 0.0
+
+    sector = str(row.get("sector") or "")
+    skill = str(row.get("skill") or "")
+    item_text = str(row.get("item_text") or "")
+    description = str(row.get("proficiency_description") or "")
+
+    def hit_count(value: str) -> int:
+        return len(query_tokens & set(tokenize_search_text(value)))
+
+    score = (
+        hit_count(item_text) * 3.0
+        + hit_count(description) * 1.2
+        + hit_count(skill) * 2.0
+        + hit_count(sector) * 1.5
+    )
+
+    query_label = normalize_search_text(expanded_query)
+    item_label = normalize_search_text(item_text)
+    skill_label = normalize_search_text(skill)
+    if item_label and item_label in query_label:
+        score += 2.0
+    if skill_label and skill_label in query_label:
+        score += 1.5
+    return score
+
+
+def get_mapping_competency_candidate_rows(query_text: str, limit: int = 900) -> list[dict[str, object]]:
     tokens = build_mapping_search_tokens(query_text)
     if not tokens:
         return []
 
-    query_tokens = set(tokenize_search_text(expand_mapping_query_text(query_text)))
-    preferred_skill_filters: list[str] = []
-    if {"artificial", "intelligence"} <= query_tokens and {"ethics", "governance"} & query_tokens:
-        preferred_skill_filters.extend([
-            "%Artificial Intelligence Ethics and Governance%",
-            "%Responsible AI and Generative AI Practices%",
-        ])
-    elif {"artificial", "intelligence"} <= query_tokens and {"responsible", "ethical", "ethics"} & query_tokens:
-        preferred_skill_filters.append("%Responsible AI and Generative AI Practices%")
-
-    preferred_rows: list[dict[str, object]] = []
-    if preferred_skill_filters:
-        preferred_where = " OR ".join(["m.source_skill_title LIKE %s" for _ in preferred_skill_filters])
-        preferred_sql = f"""
-        SELECT
-          m.sector_name_raw AS sector,
-          m.source_skill_title AS skill,
-          m.proficiency_level AS proficiency_level,
-          COALESCE(sl.proficiency_description, '') AS proficiency_description,
-          sci.item_type AS item_type,
-          sci.item_text AS item_text
-        FROM map_sf_to_cat_skill m
-        JOIN sf_competency_item sci
-          ON sci.sf_skill_id = m.sf_skill_id
-         AND sci.proficiency_level = m.proficiency_level
-        LEFT JOIN sf_skill_level sl
-          ON sl.sf_skill_id = m.sf_skill_id
-         AND sl.proficiency_level = m.proficiency_level
-        WHERE ({preferred_where})
-        LIMIT 240;
-        """
-        conn = get_mysql_connection()
-        cur = conn.cursor(dictionary=True)
-        try:
-            cur.execute(preferred_sql, preferred_skill_filters)
-            preferred_rows = cur.fetchall()
-        finally:
-            cur.close()
-            conn.close()
-
     rows: list[dict[str, object]] = []
-    if not preferred_rows:
-        where_clauses = []
-        params: list[object] = []
-        for token in tokens:
-            like_value = f"%{token}%"
-            where_clauses.append(
-                "("
-                "m.sector_name_raw LIKE %s OR "
-                "m.source_skill_title LIKE %s OR "
-                "sci.item_text LIKE %s OR "
-                "sl.proficiency_description LIKE %s"
-                ")"
-            )
-            params.extend([like_value, like_value, like_value, like_value])
+    where_clauses = []
+    params: list[object] = []
+    for token in tokens:
+        like_value = f"%{token}%"
+        where_clauses.append(
+            "("
+            "m.sector_name_raw LIKE %s OR "
+            "m.source_skill_title LIKE %s OR "
+            "sci.item_text LIKE %s OR "
+            "sl.proficiency_description LIKE %s"
+            ")"
+        )
+        params.extend([like_value, like_value, like_value, like_value])
 
-        sql = f"""
-        SELECT
-          m.sector_name_raw AS sector,
-          m.source_skill_title AS skill,
-          m.proficiency_level AS proficiency_level,
-          COALESCE(sl.proficiency_description, '') AS proficiency_description,
-          sci.item_type AS item_type,
-          sci.item_text AS item_text
-        FROM map_sf_to_cat_skill m
-        JOIN sf_competency_item sci
-          ON sci.sf_skill_id = m.sf_skill_id
-         AND sci.proficiency_level = m.proficiency_level
-        LEFT JOIN sf_skill_level sl
-          ON sl.sf_skill_id = m.sf_skill_id
-         AND sl.proficiency_level = m.proficiency_level
-        WHERE m.source_skill_title IS NOT NULL
-          AND m.source_skill_title <> ''
-          AND m.sector_name_raw IS NOT NULL
-          AND m.sector_name_raw <> ''
-          AND sci.item_text IS NOT NULL
-          AND sci.item_text <> ''
-          AND ({' OR '.join(where_clauses)})
-        ORDER BY
-          CASE
-            WHEN m.source_skill_title LIKE '%Artificial Intelligence Ethics%' THEN 0
-            WHEN m.source_skill_title LIKE '%Responsible AI%' THEN 1
-            WHEN m.source_skill_title LIKE '%Generative AI%' THEN 2
-            ELSE 3
-          END,
-          m.sector_name_raw,
-          m.source_skill_title,
-          m.proficiency_level
-        LIMIT %s;
-        """
-        params.append(limit)
+    sql = f"""
+    SELECT
+      m.sector_name_raw AS sector,
+      m.source_skill_title AS skill,
+      m.proficiency_level AS proficiency_level,
+      COALESCE(sl.proficiency_description, '') AS proficiency_description,
+      sci.item_type AS item_type,
+      sci.item_text AS item_text
+    FROM map_sf_to_cat_skill m
+    JOIN sf_competency_item sci
+      ON sci.sf_skill_id = m.sf_skill_id
+     AND sci.proficiency_level = m.proficiency_level
+    LEFT JOIN sf_skill_level sl
+      ON sl.sf_skill_id = m.sf_skill_id
+     AND sl.proficiency_level = m.proficiency_level
+    WHERE m.source_skill_title IS NOT NULL
+      AND m.source_skill_title <> ''
+      AND m.sector_name_raw IS NOT NULL
+      AND m.sector_name_raw <> ''
+      AND sci.item_text IS NOT NULL
+      AND sci.item_text <> ''
+      AND ({' OR '.join(where_clauses)})
+    LIMIT %s;
+    """
+    params.append(limit)
 
-        conn = get_mysql_connection()
-        cur = conn.cursor(dictionary=True)
-        try:
-            cur.execute(sql, params)
-            rows = cur.fetchall()
-        finally:
-            cur.close()
-            conn.close()
+    conn = get_mysql_connection()
+    cur = conn.cursor(dictionary=True)
+    try:
+        cur.execute(sql, params)
+        rows = cur.fetchall()
+    finally:
+        cur.close()
+        conn.close()
 
     scored_rows: list[tuple[float, dict[str, object]]] = []
-    for row in [*preferred_rows, *rows]:
+    for row in rows:
         normalized = {
             "sector": str(row.get("sector") or "").strip(),
             "skill": str(row.get("skill") or "").strip(),
@@ -800,34 +815,153 @@ def get_mapping_competency_candidate_rows(query_text: str, limit: int = 700) -> 
     return [{**row, "row_score": round(score, 4)} for score, row in scored_rows]
 
 
-def get_mapping_candidate_headers(query_text: str, limit: int = 80) -> list[dict[str, object]]:
-    tokens = build_mapping_search_tokens(query_text, limit=8)
-    if not tokens:
-        return []
+def select_sector_balanced_mapping_entries(
+    entries: list[tuple[float, dict[str, object]]],
+    *,
+    limit: int,
+    per_sector_limit: int = MAPPING_CANDIDATE_PER_SECTOR_LIMIT,
+) -> list[tuple[float, dict[str, object]]]:
+    selected: list[tuple[float, dict[str, object]]] = []
+    selected_keys: set[tuple[str, str]] = set()
+    sector_counts: dict[str, int] = {}
 
-    where_clauses = []
+    def entry_key(entry: dict[str, object]) -> tuple[str, str]:
+        return (
+            str(entry.get("sector") or "").strip().lower(),
+            str(entry.get("skill") or "").strip().lower(),
+        )
+
+    for score, entry in entries:
+        key = entry_key(entry)
+        sector = key[0]
+        if not sector or not key[1] or key in selected_keys:
+            continue
+        if sector_counts.get(sector, 0) >= per_sector_limit:
+            continue
+        selected.append((score, entry))
+        selected_keys.add(key)
+        sector_counts[sector] = sector_counts.get(sector, 0) + 1
+        if len(selected) >= limit:
+            return selected
+
+    for score, entry in entries:
+        key = entry_key(entry)
+        if not key[0] or not key[1] or key in selected_keys:
+            continue
+        selected.append((score, entry))
+        selected_keys.add(key)
+        if len(selected) >= limit:
+            break
+
+    return selected
+
+
+def build_skill_map_response_from_rows(
+    *,
+    sector: str,
+    skill: str,
+    rows: list[dict[str, object]],
+) -> SkillMapResponse | None:
+    grouped: dict[str, dict] = {}
+    for row in rows:
+        level = str(row.get("proficiency_level") or "").strip()
+        if not level:
+            continue
+
+        entry = grouped.setdefault(
+            level,
+            {
+                "proficiency_level": level,
+                "proficiency_description": str(row.get("proficiency_description") or ""),
+                "mapped_skill_ids": [],
+                "knowledge_items": [],
+                "ability_items": [],
+                "_seen_skill_ids": set(),
+                "_seen_knowledge": set(),
+                "_seen_ability": set(),
+            },
+        )
+
+        sf_skill_id = parse_int(row.get("sf_skill_id"), default=0)
+        if sf_skill_id > 0 and sf_skill_id not in entry["_seen_skill_ids"]:
+            entry["_seen_skill_ids"].add(sf_skill_id)
+            entry["mapped_skill_ids"].append(sf_skill_id)
+
+        item_type = str(row.get("item_type") or "").strip()
+        item_text = str(row.get("item_text") or "").strip()
+        if not item_type or not item_text:
+            continue
+
+        if item_type == "knowledge" and item_text not in entry["_seen_knowledge"]:
+            entry["_seen_knowledge"].add(item_text)
+            entry["knowledge_items"].append(item_text)
+        elif item_type == "ability" and item_text not in entry["_seen_ability"]:
+            entry["_seen_ability"].add(item_text)
+            entry["ability_items"].append(item_text)
+
+    mappings: list[SkillProficiencyMap] = []
+    for level in sorted(grouped.keys(), key=proficiency_sort_key):
+        entry = grouped[level]
+        mappings.append(
+            SkillProficiencyMap(
+                proficiency_level=entry["proficiency_level"],
+                proficiency_description=entry["proficiency_description"],
+                mapped_skill_ids=entry["mapped_skill_ids"],
+                knowledge_items=entry["knowledge_items"],
+                ability_items=entry["ability_items"],
+            )
+        )
+
+    if not mappings:
+        return None
+
+    return SkillMapResponse(
+        sector=sector,
+        skill=skill,
+        count=len(mappings),
+        mappings=mappings,
+    )
+
+
+def get_skill_maps_for_mapping_entries(entries: list[dict[str, object]]) -> dict[tuple[str, str], SkillMapResponse]:
+    pairs: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for entry in entries:
+        sector = str(entry.get("sector") or "").strip()
+        skill = str(entry.get("skill") or "").strip()
+        key = (sector.lower(), skill.lower())
+        if not sector or not skill or key in seen:
+            continue
+        seen.add(key)
+        pairs.append((sector, skill))
+    if not pairs:
+        return {}
+
+    pair_clauses = []
     params: list[object] = []
-    for token in tokens:
-        like_value = f"%{token}%"
-        where_clauses.append("(m.sector_name_raw LIKE %s OR m.source_skill_title LIKE %s)")
-        params.extend([like_value, like_value])
+    for sector, skill in pairs:
+        pair_clauses.append("(m.sector_name_raw = %s AND m.source_skill_title = %s)")
+        params.extend([sector, skill])
 
     sql = f"""
     SELECT
-      m.source_skill_title AS skill,
       m.sector_name_raw AS sector,
-      COUNT(DISTINCT CONCAT(m.sf_skill_id, ':', m.proficiency_level)) AS mapped_proficiency_count
+      m.source_skill_title AS skill,
+      m.sf_skill_id,
+      m.proficiency_level,
+      COALESCE(sl.proficiency_description, '') AS proficiency_description,
+      ci.item_type,
+      ci.item_text
     FROM map_sf_to_cat_skill m
-    WHERE m.source_skill_title IS NOT NULL
-      AND m.source_skill_title <> ''
-      AND m.sector_name_raw IS NOT NULL
-      AND m.sector_name_raw <> ''
-      AND ({' OR '.join(where_clauses)})
-    GROUP BY m.source_skill_title, m.sector_name_raw
-    ORDER BY mapped_proficiency_count DESC, m.sector_name_raw, m.source_skill_title
-    LIMIT %s;
+    LEFT JOIN sf_skill_level sl
+      ON sl.sf_skill_id = m.sf_skill_id
+      AND sl.proficiency_level = m.proficiency_level
+    LEFT JOIN sf_competency_item ci
+      ON ci.sf_skill_id = m.sf_skill_id
+      AND ci.proficiency_level = m.proficiency_level
+    WHERE {' OR '.join(pair_clauses)}
+    ORDER BY m.sector_name_raw, m.source_skill_title, m.proficiency_level, ci.item_type, ci.item_id;
     """
-    params.append(limit)
 
     conn = get_mysql_connection()
     cur = conn.cursor(dictionary=True)
@@ -838,52 +972,84 @@ def get_mapping_candidate_headers(query_text: str, limit: int = 80) -> list[dict
         cur.close()
         conn.close()
 
-    return [
-        {
-            "sector": str(row.get("sector") or "").strip(),
-            "skill": str(row.get("skill") or "").strip(),
-            "mapped_skill_count": parse_int(row.get("mapped_proficiency_count")),
-        }
-        for row in rows
-        if str(row.get("sector") or "").strip() and str(row.get("skill") or "").strip()
-    ]
+    rows_by_pair: dict[tuple[str, str], list[dict[str, object]]] = {}
+    display_names: dict[tuple[str, str], tuple[str, str]] = {}
+    for row in rows:
+        sector = str(row.get("sector") or "").strip()
+        skill = str(row.get("skill") or "").strip()
+        key = (sector.lower(), skill.lower())
+        rows_by_pair.setdefault(key, []).append(row)
+        display_names[key] = (sector, skill)
+
+    maps: dict[tuple[str, str], SkillMapResponse] = {}
+    for key, pair_rows in rows_by_pair.items():
+        sector, skill = display_names[key]
+        skill_map = build_skill_map_response_from_rows(sector=sector, skill=skill, rows=pair_rows)
+        if skill_map:
+            maps[key] = skill_map
+    return maps
+
+
+def get_mapping_candidate_headers(query_text: str, limit: int = 80) -> list[dict[str, object]]:
+    expanded_query = expand_mapping_query_text(query_text)
+    query_label = normalize_search_text(expanded_query)
+    query_tokens = set(build_mapping_search_tokens(expanded_query, limit=12))
+    scored_headers: list[tuple[float, dict[str, object]]] = []
+    if not query_tokens:
+        return []
+    for entry in get_mapping_header_index():
+        skill_tokens = entry.get("skill_tokens") or set()
+        sector_tokens = entry.get("sector_tokens") or set()
+        skill_hits = len(query_tokens & skill_tokens)
+        sector_hits = len(query_tokens & sector_tokens)
+        if skill_hits <= 0 and sector_hits <= 0:
+            continue
+
+        skill_label = str(entry.get("skill_label") or "")
+        sector_label = str(entry.get("sector_label") or "")
+        phrase_bonus = 0.0
+        if skill_label and skill_label in query_label:
+            phrase_bonus += 2.0
+        if sector_label and sector_label in query_label:
+            phrase_bonus += 1.5
+
+        mapped_count = parse_int(entry.get("mapped_skill_count"))
+        score = skill_hits * 2.4 + sector_hits * 3.0 + phrase_bonus + min(1.0, mapped_count / 8) * 0.2
+        if score < MAPPING_SUGGESTION_MIN_SCORE:
+            continue
+        scored_headers.append(
+            (
+                score,
+                {
+                    "sector": str(entry.get("sector") or ""),
+                    "skill": str(entry.get("skill") or ""),
+                    "mapped_skill_count": mapped_count,
+                    "header_score": round(score, 4),
+                },
+            )
+        )
+
+    scored_headers.sort(
+        key=lambda item: (
+            -item[0],
+            str(item[1].get("sector") or "").lower(),
+            str(item[1].get("skill") or "").lower(),
+        )
+    )
+    return [entry for _, entry in scored_headers[:limit]]
 
 
 def get_mapping_candidates_for_video(
     *,
     video: PublicMappingVideo,
     search_query: str,
-    limit: int = 4,
+    limit: int = MAPPING_CANDIDATE_TOTAL_LIMIT,
 ) -> list[dict[str, object]]:
-    query_text = " ".join(
-        [
-            search_query,
-            video.title,
-            video.description,
-            video.channel_title,
-            " ".join(video.tags[:12]),
-        ]
-    ).strip()
-    base_search_text = search_query.strip() or query_text
+    query_text = build_weighted_mapping_text(video=video, search_query=search_query)
     scored_entries: list[tuple[float, dict[str, object]]] = []
-    competency_rows = get_mapping_competency_candidate_rows(query_text)
-    header_entries = get_mapping_candidate_headers(base_search_text)
-    for row in competency_rows:
-        entry = {
-            "sector": row["sector"],
-            "skill": row["skill"],
-            "mapped_skill_count": 1,
-            "competency_rows": [row],
-        }
-        scored_entries.append((float(row.get("row_score") or 0), entry))
-
+    header_entries = get_mapping_candidate_headers(query_text)
     for entry in header_entries:
-        skill = str(entry.get("skill") or "")
-        skill_score = score_label_match(expand_mapping_query_text(base_search_text), skill)
-        sector = str(entry.get("sector") or "")
-        sector_score = score_label_match(expand_mapping_query_text(base_search_text), sector)
-        mapped_count = parse_int(entry.get("mapped_skill_count"))
-        score = sector_score * 2.4 + skill_score * 2.8 + min(1.0, mapped_count / 8) * 0.25
+        score = float(entry.get("header_score") or 0)
         if score < MAPPING_SUGGESTION_MIN_SCORE:
             continue
         scored_entries.append((score, entry))
@@ -921,13 +1087,14 @@ def get_mapping_candidates_for_video(
         )
     )
 
-    for score, entry in sorted_entries[:limit]:
-        try:
-            skill_map = get_skill_map(
-                sector=str(entry.get("sector") or ""),
-                skill=str(entry.get("skill") or ""),
-            )
-        except HTTPException:
+    balanced_entries = select_sector_balanced_mapping_entries(sorted_entries, limit=limit)
+    skill_maps = get_skill_maps_for_mapping_entries([entry for _, entry in balanced_entries])
+
+    for score, entry in balanced_entries:
+        sector = str(entry.get("sector") or "")
+        skill = str(entry.get("skill") or "")
+        skill_map = skill_maps.get((sector.strip().lower(), skill.strip().lower()))
+        if not skill_map:
             continue
 
         rows_by_level: dict[str, list[dict[str, object]]] = {}
@@ -950,7 +1117,7 @@ def get_mapping_candidates_for_video(
             if not ranked_competencies:
                 ranked_competencies = [
                     (
-                        score_mapping_candidate_row(
+                        score_mapping_candidate_evidence(
                             query_text,
                             {
                                 "sector": entry.get("sector"),
@@ -966,7 +1133,7 @@ def get_mapping_candidates_for_video(
                     for item in mapping.knowledge_items
                 ] + [
                     (
-                        score_mapping_candidate_row(
+                        score_mapping_candidate_evidence(
                             query_text,
                             {
                                 "sector": entry.get("sector"),
@@ -985,7 +1152,7 @@ def get_mapping_candidates_for_video(
             ranked_competencies.sort(key=lambda item: -item[0])
             competencies = [
                 competency
-                for competency_score, competency in ranked_competencies[:6]
+                for competency_score, competency in ranked_competencies[:4]
                 if competency_score > 0 or rows_by_level.get(mapping.proficiency_level)
             ]
             if not competencies:
@@ -995,7 +1162,7 @@ def get_mapping_candidates_for_video(
                 "proficiency_description": mapping.proficiency_description,
                 "competencies": competencies,
             })
-            if len(mappings) >= 4:
+            if len(mappings) >= 2:
                 break
         if not mappings:
             continue
@@ -1021,6 +1188,12 @@ def _parse_mapping_suggestion(raw: str) -> dict:
         raise
 
 
+def mapping_score_to_confidence(score: float) -> float:
+    bounded_score = max(0.0, float(score or 0.0))
+    confidence = bounded_score / (bounded_score + 3.5) if bounded_score else 0.18
+    return round(max(0.05, min(0.92, confidence)), 2)
+
+
 def _fallback_mapping_suggestion(
     candidates: list[dict[str, object]],
     query_text: str = "",
@@ -1032,17 +1205,22 @@ def _fallback_mapping_suggestion(
             competencies = mapping.get("competencies", [])
             for competency in competencies:
                 competency_text = str(competency.get("item_text") or "")
-                score = (
-                    score_label_match(query_text, competency_text)
-                    + score_text_overlap(query_text, competency_text) * 3.2
-                    + score_text_overlap(query_text, str(mapping.get("proficiency_description") or "")) * 0.7
+                score = score_mapping_candidate_evidence(
+                    query_text,
+                    {
+                        "sector": candidate.get("sector"),
+                        "skill": candidate.get("skill"),
+                        "proficiency_description": mapping.get("proficiency_description"),
+                        "item_text": competency_text,
+                    },
                 )
+                score += float(candidate.get("score") or 0)
                 if best_match is None or score > best_match[0]:
                     best_match = (score, candidate, mapping, competency)
 
     if best_match is not None:
         score, candidate, mapping, competency = best_match
-        confidence = 0.42 if score > 0 else 0.32
+        confidence = mapping_score_to_confidence(score)
         return PublicVideoMappingSuggestion(
             sector=str(candidate.get("sector") or ""),
             skill=str(candidate.get("skill") or ""),
@@ -1051,7 +1229,8 @@ def _fallback_mapping_suggestion(
             item_type=str(competency.get("item_type") or ""),
             competency=f"{competency.get('item_type')}: {competency.get('item_text')}",
             confidence=confidence,
-            reason="Suggested from the closest seeded SkillsFuture mapping.",
+            reason=f"Fallback similarity score {score:.2f} from seeded SkillsFuture mapping.",
+            source="fallback",
         )
     return None
 
@@ -1269,7 +1448,7 @@ def build_mapping_suggestions_for_video(
     except HTTPException:
         return []
     suggestion = response.suggestion.model_dump()
-    suggestion["source"] = "ai" if use_ai and suggestion.get("confidence", 0) > 0 else "fallback"
+    suggestion["source"] = suggestion.get("source") or ("ai" if use_ai and suggestion.get("confidence", 0) > 0 else "fallback")
     return dedupe_mappings([suggestion])
 
 
@@ -2489,15 +2668,7 @@ def public_suggest_video_mapping(payload: PublicVideoMappingSuggestRequest):
     if not candidates:
         raise HTTPException(status_code=404, detail="No seeded SkillsFuture mapping candidates were found for this video.")
 
-    query_text = " ".join(
-        [
-            search_query,
-            payload.video.title,
-            payload.video.description,
-            payload.video.channel_title,
-            " ".join(payload.video.tags[:12]),
-        ]
-    ).strip()
+    query_text = build_weighted_mapping_text(video=payload.video, search_query=search_query)
     fallback = _fallback_mapping_suggestion(candidates, query_text)
     if not payload.use_ai:
         if not fallback:
@@ -2513,9 +2684,10 @@ You suggest SkillsFuture mappings for YouTube learning videos.
 Rules:
 - Choose only from the provided candidates.
 - Do not invent sectors, skills, levels, or competencies.
+- Treat the video title as the strongest signal. Use the search query as supporting context, not the main topic if it conflicts with the title.
 - Prefer the competency item_text and proficiency_description that best match the video topic.
-- Do not choose a sector-specific mapping such as Financial Services, Accountancy, Aerospace, or Healthcare unless the video title, channel, description, tags, or search query clearly mention that domain.
-- For broad topics such as AI ethics, responsible AI, safety, bias, governance, or risk, prefer broad governance/data/technology/responsible-use mappings over narrow security or finance mappings unless those narrow terms are explicit.
+- Choose the candidate with the strongest evidence from the video title, channel, description, tags, and search query.
+- Do not prefer or penalize any sector by default. If the evidence is weak or ambiguous, keep confidence below 0.45.
 - If no candidate is a strong conceptual fit, return the closest candidate but keep confidence below 0.45.
 - Return JSON only.
 - Use this schema:
@@ -2590,6 +2762,7 @@ Seeded candidates:
         return PublicVideoMappingSuggestResponse(suggestion=fallback)
 
     confidence = max(0.0, min(1.0, float(parsed.get("confidence") or 0)))
+    mapping_reason = str(parsed.get("reason") or "").strip()
     suggestion = PublicVideoMappingSuggestion(
         sector=str(selected_candidate.get("sector") or ""),
         skill=str(selected_candidate.get("skill") or ""),
@@ -2598,7 +2771,8 @@ Seeded candidates:
         item_type=str(matched_competency.get("item_type") or ""),
         competency=f"{matched_competency.get('item_type')}: {matched_competency.get('item_text')}",
         confidence=confidence,
-        reason=str(parsed.get("reason") or "").strip(),
+        reason=mapping_reason,
+        source="ai",
     )
     return PublicVideoMappingSuggestResponse(suggestion=suggestion)
 

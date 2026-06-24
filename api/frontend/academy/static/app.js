@@ -1206,7 +1206,7 @@ function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           query,
-          max_results: searchSource === "library" ? 80 : 8,
+          max_results: searchSource === "library" ? 80 : 24,
           order: "relevance",
           source: searchSource,
         }),
@@ -1237,15 +1237,8 @@ function App() {
           filteredSavedCount += originalCount - previewRows.length;
         }
       }
-      const nextSelection = {};
-      previewRows.forEach((video) => {
-        if (video.video_id && searchSource === "youtube" && !video.already_ingested) {
-          nextSelection[video.video_id] = true;
-        }
-      });
-
       setPreviewVideos(previewRows);
-      setPreviewSelection(nextSelection);
+      setPreviewSelection({});
       setPreviewMeta({
         query: response.query || query,
         alreadyIngestedCount: filteredSavedCount,
@@ -1263,7 +1256,7 @@ function App() {
             searchSource === "library"
               ? "No saved indexed videos matched this prompt."
               : filteredSavedCount
-                ? "All matching YouTube videos are already in the saved library."
+                ? `${filteredSavedCount} matching YouTube result(s) are already saved. Try a more specific prompt to find fresh videos.`
                 : "No YouTube videos matched this prompt."
           ),
           tone: "error",
@@ -1272,7 +1265,7 @@ function App() {
         setIngestionStatus({
           text: searchSource === "library"
             ? `${previewRows.length} saved video result(s) ready.`
-            : `${previewRows.length} new YouTube result(s) ready. Submit to send AI-suggested mappings for admin review.`,
+            : `${previewRows.length} new YouTube result(s) ready. Select the videos you want to send for admin review.`,
           tone: response.quota_exceeded ? "error" : "success",
         });
       }
@@ -1814,7 +1807,7 @@ function App() {
                 <div className="preview-card-top">
                   <p className="video-title">${video.title || "Untitled video"}</p>
                   <span className=${`preview-state-chip ${video.already_ingested ? "ingested" : isSelected ? "selected" : "fresh"}`}>
-                    ${isLibraryResult ? "Saved library" : video.already_ingested ? "Already in library" : isSelected ? "Selected" : "New candidate"}
+                    ${isLibraryResult ? "Saved library" : video.already_ingested ? "Already in library" : isSelected ? "Selected for review" : "Not selected"}
                   </span>
                 </div>
                 <p className="video-meta">${metrics.join(" · ")}</p>
