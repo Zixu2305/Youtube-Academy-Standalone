@@ -224,6 +224,12 @@ function createEmptyAdminMapping() {
   };
 }
 
+function formatSuggestionFailureMessage(error) {
+  return String(error || "").toLowerCase().includes("no reliable suggestion")
+    ? "No reliable suggestion, add mappings manually below"
+    : "AI suggestion failed. Add mappings manually below.";
+}
+
 function App() {
   const [sectors, setSectors] = useState([]);
   const [selectedSector, setSelectedSector] = useState("");
@@ -2126,10 +2132,10 @@ function App() {
                                           ${mapping.reason ? html`<small>${mapping.reason}</small>` : null}
                                         </div>
                                       `)
-                                    : ["queued", "running"].includes(adminSelectedRequest.suggestion_status || "")
+                                      : ["queued", "running"].includes(adminSelectedRequest.suggestion_status || "")
                                       ? html`<p className="empty-note">AI suggestion is being prepared. Refresh shortly or add mappings manually below.</p>`
                                       : (adminSelectedRequest.suggestion_status || "") === "failed"
-                                        ? html`<p className="empty-note">AI suggestion failed${adminSelectedRequest.suggestion_error ? `: ${adminSelectedRequest.suggestion_error}` : "."} Add mappings manually below.</p>`
+                                        ? html`<p className="empty-note">${formatSuggestionFailureMessage(adminSelectedRequest.suggestion_error)}</p>`
                                     : html`<p className="empty-note">No AI suggestion was found. Add mappings manually below.</p>`}
                                 </div>
 

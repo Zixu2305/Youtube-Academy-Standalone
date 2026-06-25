@@ -53,6 +53,9 @@ PORTAL_YOUTUBE_API_KEY_ENV_NAMES = (
 MAPPING_SUGGESTION_MIN_SCORE = 2.0
 MAPPING_CANDIDATE_TOTAL_LIMIT = 12
 MAPPING_CANDIDATE_PER_SECTOR_LIMIT = 2
+MAPPING_FALLBACK_MIN_CONFIDENCE = 0.70
+MAPPING_FALLBACK_STRONG_SCORE = 30.0
+NO_RELIABLE_MAPPING_MESSAGE = "No reliable suggestion"
 
 page_router = APIRouter()
 api_router = APIRouter()
@@ -1190,8 +1193,8 @@ def _parse_mapping_suggestion(raw: str) -> dict:
 
 def mapping_score_to_confidence(score: float) -> float:
     bounded_score = max(0.0, float(score or 0.0))
-    confidence = bounded_score / (bounded_score + 3.5) if bounded_score else 0.18
-    return round(max(0.05, min(0.92, confidence)), 2)
+    confidence = bounded_score / MAPPING_FALLBACK_STRONG_SCORE if bounded_score else 0.0
+    return round(max(0.0, min(1.0, confidence)), 2)
 
 
 def _fallback_mapping_suggestion(
@@ -1221,6 +1224,8 @@ def _fallback_mapping_suggestion(
     if best_match is not None:
         score, candidate, mapping, competency = best_match
         confidence = mapping_score_to_confidence(score)
+        if confidence < MAPPING_FALLBACK_MIN_CONFIDENCE:
+            return None
         return PublicVideoMappingSuggestion(
             sector=str(candidate.get("sector") or ""),
             skill=str(candidate.get("skill") or ""),
@@ -1229,7 +1234,10 @@ def _fallback_mapping_suggestion(
             item_type=str(competency.get("item_type") or ""),
             competency=f"{competency.get('item_type')}: {competency.get('item_text')}",
             confidence=confidence,
-            reason=f"Fallback similarity score {score:.2f} from seeded SkillsFuture mapping.",
+            reason=(
+                f"Fallback evidence score {score:.2f}/{MAPPING_FALLBACK_STRONG_SCORE:.0f} "
+                "from seeded SkillsFuture mapping."
+            ),
             source="fallback",
         )
     return None
@@ -1443,10 +1451,7 @@ def build_mapping_suggestions_for_video(
         search_query=search_query,
         use_ai=use_ai,
     )
-    try:
-        response = public_suggest_video_mapping(request)
-    except HTTPException:
-        return []
+    response = public_suggest_video_mapping(request)
     suggestion = response.suggestion.model_dump()
     suggestion["source"] = suggestion.get("source") or ("ai" if use_ai and suggestion.get("confidence", 0) > 0 else "fallback")
     return dedupe_mappings([suggestion])
@@ -1549,6 +1554,11 @@ def populate_pending_review_suggestions(
             },
         )
     except Exception as exc:
+        error_message = (
+            str(exc.detail)
+            if isinstance(exc, HTTPException) and getattr(exc, "detail", None)
+            else str(exc)
+        )
         try:
             if client is None:
                 client, videos_collection = get_portal_videos_collection()
@@ -1563,7 +1573,7 @@ def populate_pending_review_suggestions(
                 {
                     "$set": {
                         "mapping_review.suggestion_status": "failed",
-                        "mapping_review.suggestion_error": str(exc),
+                        "mapping_review.suggestion_error": error_message,
                         "mapping_review.updated_at": utc_now(),
                     }
                 },
@@ -2672,7 +2682,7 @@ def public_suggest_video_mapping(payload: PublicVideoMappingSuggestRequest):
     fallback = _fallback_mapping_suggestion(candidates, query_text)
     if not payload.use_ai:
         if not fallback:
-            raise HTTPException(status_code=404, detail="No seeded competency candidates were found for this video.")
+            raise HTTPException(status_code=404, detail=NO_RELIABLE_MAPPING_MESSAGE)
         return PublicVideoMappingSuggestResponse(suggestion=fallback)
 
     from pipelines.llm_client import call_llm_chat
@@ -2724,7 +2734,7 @@ Seeded candidates:
     except Exception as exc:
         if fallback:
             return PublicVideoMappingSuggestResponse(suggestion=fallback)
-        raise HTTPException(status_code=503, detail=f"AI mapping suggestion is unavailable: {exc}") from exc
+        raise HTTPException(status_code=503, detail=f"{NO_RELIABLE_MAPPING_MESSAGE}: AI mapping suggestion is unavailable.") from exc
 
     candidate_id = parse_int(parsed.get("candidate_id"), default=-1)
     selected_candidate = next(
@@ -2733,7 +2743,7 @@ Seeded candidates:
     )
     if not selected_candidate:
         if not fallback:
-            raise HTTPException(status_code=500, detail="AI returned a mapping that did not match seeded candidates.")
+            raise HTTPException(status_code=500, detail=NO_RELIABLE_MAPPING_MESSAGE)
         return PublicVideoMappingSuggestResponse(suggestion=fallback)
 
     selected_level = str(parsed.get("proficiency_level") or "").strip()
@@ -2758,7 +2768,7 @@ Seeded candidates:
     if not matched_mapping or not matched_competency:
         fallback = _fallback_mapping_suggestion([selected_candidate], query_text)
         if not fallback:
-            raise HTTPException(status_code=500, detail="AI returned a competency that did not match seeded candidates.")
+            raise HTTPException(status_code=500, detail=NO_RELIABLE_MAPPING_MESSAGE)
         return PublicVideoMappingSuggestResponse(suggestion=fallback)
 
     confidence = max(0.0, min(1.0, float(parsed.get("confidence") or 0)))

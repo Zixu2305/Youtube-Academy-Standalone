@@ -12,6 +12,7 @@
     const reviewQuery = document.getElementById("review_query");
     const suggestedMappings = document.getElementById("suggested_mappings");
     const copySuggestionsBtn = document.getElementById("copy_suggestions_btn");
+    const retrySuggestionsBtn = document.getElementById("retry_suggestions_btn");
     const mappingRows = document.getElementById("mapping_rows");
     const addMappingBtn = document.getElementById("add_mapping_btn");
     const saveMappingBtn = document.getElementById("save_mapping_btn");
@@ -77,6 +78,7 @@
         rejectMappingBtn.classList.toggle("danger-button", !isRejected);
 
         copySuggestionsBtn.disabled = busy || !selectedRequest?.suggested_mappings?.length || isApproved || isRejected;
+        retrySuggestionsBtn.disabled = busy || !hasSelection || isApproved || isRejected;
         addMappingBtn.disabled = busy || !hasSelection || isApproved || isRejected;
         saveMappingBtn.disabled = busy || !hasSelection || isApproved || isRejected;
         approveMappingBtn.disabled = busy || !hasSelection || isApproved || isRejected;
@@ -144,6 +146,12 @@
         return parts.join(" / ");
     }
 
+    function suggestionFailureMessage(error) {
+        return String(error || "").toLowerCase().includes("no reliable suggestion")
+            ? "No reliable suggestion, add mappings manually below"
+            : "AI suggestion failed. Add mappings manually below.";
+    }
+
     function renderSuggestions() {
         const rows = selectedRequest?.suggested_mappings || [];
         if (!rows.length) {
@@ -153,8 +161,7 @@
                 return;
             }
             if (status === "failed") {
-                const detail = selectedRequest?.suggestion_error ? `: ${selectedRequest.suggestion_error}` : ".";
-                suggestedMappings.innerHTML = `<div class="empty-panel">AI suggestion failed${esc(detail)} Add mappings manually below.</div>`;
+                suggestedMappings.innerHTML = `<div class="empty-panel">${esc(suggestionFailureMessage(selectedRequest?.suggestion_error))}</div>`;
                 return;
             }
             suggestedMappings.innerHTML = `<div class="empty-panel">No AI suggestions were generated.</div>`;
@@ -449,6 +456,35 @@
         }
     }
 
+    async function retrySuggestions() {
+        if (!selectedRequest) return;
+        if (selectedStatus() !== "pending") {
+            setState("Only pending requests can retry AI suggestions. Reopen rejected requests first.", "error");
+            return;
+        }
+        setBusy(true);
+        setState("Retrying AI suggestion...");
+        try {
+            const payload = await fetchJson(`/api/admin/video-mapping-requests/${encodeURIComponent(selectedRequest.video_id)}/retry-suggestion`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ reviewer: reviewerName.value.trim() || "admin-console" }),
+            });
+            showRequest(payload);
+            setState(
+                payload.suggested_mappings?.length
+                    ? "AI suggestion regenerated."
+                    : suggestionFailureMessage(payload.suggestion_error),
+                payload.suggested_mappings?.length ? "success" : "error",
+            );
+            await loadQueue();
+        } catch (error) {
+            setState(`Unable to retry AI suggestion: ${error.message}`, "error");
+        } finally {
+            setBusy(false);
+        }
+    }
+
     async function approveMappings() {
         if (!selectedRequest) return;
         if (selectedStatus() !== "pending") {
@@ -529,6 +565,7 @@
 
     refreshBtn.addEventListener("click", loadQueue);
     statusFilter.addEventListener("change", loadQueue);
+    retrySuggestionsBtn.addEventListener("click", retrySuggestions);
     addMappingBtn.addEventListener("click", () => renderMappingRows([...readMappings(), emptyMapping()]));
     copySuggestionsBtn.addEventListener("click", () => {
         if (selectedRequest?.suggested_mappings?.length) {

@@ -700,6 +700,108 @@ def create_app():
             if client:
                 client.close()
 
+    @app.route("/api/admin/video-mapping-requests/<video_id>/retry-suggestion", methods=["POST"])
+    def retry_video_mapping_suggestion(video_id):
+        normalized_video_id = _normalize_video_id(video_id)
+        data = request.get_json(silent=True) or {}
+        reviewer = str(data.get("reviewer") or "admin-console")
+
+        client = None
+        try:
+            import json
+            import urllib.error
+            import urllib.request
+
+            client, videos_collection = _get_videos_collection()
+            existing = videos_collection.find_one(
+                {
+                    "videoId": normalized_video_id,
+                    "mapping_review.is_request": True,
+                }
+            )
+            if not existing:
+                return jsonify({"ok": False, "error": "Video mapping review request not found."}), 404
+            if str(existing.get("review_status") or (existing.get("mapping_review") or {}).get("status") or "") != "pending":
+                return jsonify({"ok": False, "error": "Only pending requests can retry AI suggestions."}), 400
+
+            now = datetime.utcnow()
+            videos_collection.update_one(
+                {"_id": existing["_id"]},
+                {
+                    "$set": {
+                        "suggested_mappings": [],
+                        "mapping_review.suggested_mappings": [],
+                        "mapping_review.suggestion_status": "running",
+                        "mapping_review.suggestion_error": "",
+                        "mapping_review.updated_at": now,
+                        "mapping_review.reviewer": reviewer,
+                    }
+                },
+            )
+
+            review = existing.get("mapping_review") or {}
+            search_query = str(review.get("search_query") or "")
+            try:
+                api_base = env("ACADEMY_API_BASE_URL", "http://host.docker.internal:9000").rstrip("/")
+                api_payload = {
+                    "search_query": search_query,
+                    "use_ai": True,
+                    "video": {
+                        "video_id": str(existing.get("videoId") or ""),
+                        "title": str(existing.get("title") or ""),
+                        "description": str(existing.get("description") or ""),
+                        "channel_title": str(existing.get("channelTitle") or ""),
+                        "thumbnail_url": str(existing.get("thumbnailUrl") or ""),
+                        "tags": [str(tag) for tag in (existing.get("tags") or [])],
+                    },
+                }
+                encoded_payload = json.dumps(api_payload).encode("utf-8")
+                retry_request = urllib.request.Request(
+                    f"{api_base}/api/public/videos/suggest-mapping",
+                    data=encoded_payload,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(retry_request, timeout=45) as response:
+                    retry_payload = json.loads(response.read().decode("utf-8"))
+                suggestion = retry_payload.get("suggestion") or {}
+                mappings = [suggestion] if suggestion else []
+                status = "ready" if mappings else "failed"
+                error = "" if mappings else "No reliable suggestion"
+            except urllib.error.HTTPError as exc:
+                mappings = []
+                status = "failed"
+                try:
+                    error_payload = json.loads(exc.read().decode("utf-8"))
+                    error = str(error_payload.get("detail") or error_payload.get("error") or exc.reason)
+                except Exception:
+                    error = str(exc.reason or exc)
+            except Exception as exc:
+                mappings = []
+                status = "failed"
+                error = str(exc)
+
+            videos_collection.update_one(
+                {"_id": existing["_id"]},
+                {
+                    "$set": {
+                        "suggested_mappings": mappings,
+                        "mapping_review.suggested_mappings": mappings,
+                        "mapping_review.suggestion_status": status,
+                        "mapping_review.suggestion_error": error,
+                        "mapping_review.updated_at": datetime.utcnow(),
+                        "mapping_review.reviewer": reviewer,
+                    }
+                },
+            )
+            updated = videos_collection.find_one({"_id": existing["_id"]})
+            return jsonify({"ok": True, **_make_mapping_review_response(updated or existing)})
+        except Exception as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 500
+        finally:
+            if client:
+                client.close()
+
     @app.route("/api/admin/video-mapping-requests/<video_id>/approve", methods=["POST"])
     def approve_video_mapping_request(video_id):
         normalized_video_id = _normalize_video_id(video_id)
