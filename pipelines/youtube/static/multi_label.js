@@ -272,8 +272,8 @@
         modalAddBtn.disabled = true;
         setProficiencyDescription("", "");
 
-        // Get available proficiency levels (for now, show common ones)
-        const commonLevels = ["1", "2", "3", "4", "5"];
+        // Get available proficiency levels
+        const commonLevels = ["1", "2", "3", "4", "5", "6", "Basic", "Intermediate", "Advanced"];
         commonLevels.forEach((level) => {
             const btn = document.createElement("button");
             btn.className = "proficiency-option";
