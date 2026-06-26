@@ -111,8 +111,8 @@ Recommended for:
   - used in quiz generation, ingestion query-enhancement, and AI mapping suggestion paths
 
 - Hugging Face model artifacts (embedding and reranker):
-  - required for semantic embedding and cross-encoder reranking models
-  - used by both the recommendation endpoint and the saved library search mode
+  - embedding model is required for semantic search in recommendation and saved library search paths
+  - cross-encoder reranker is required for recommendation endpoints, but not for saved library search
   - can be loaded from local cache or downloaded when network access is available
 
 ## 5. End-to-End Request Paths
@@ -152,12 +152,14 @@ This path supports two modes via the same endpoint (`POST /api/public/videos/sea
 **YouTube mode** (`source: "youtube"`):
 1. Caller sends a free-text query
 2. API calls YouTube Data API and returns fresh candidate videos
-3. Results include an `already_ingested` flag for videos already in the saved library
-4. Caller may select candidates and pass them to `POST /api/public/videos/ingest`
-5. Unmapped direct-search submissions are saved as pending admin mapping review requests
-6. AI/fallback mapping suggestions are prepared asynchronously after the request is saved
-7. Admin approval validates seeded SkillsFuture mappings, writes approved video docs, and indexes Qdrant points
-8. Pending rejection creates no embeddings; approved videos must be unpublished to remove MongoDB approved docs and Qdrant points
+3. Videos already present in the saved library are filtered out of the returned candidate list
+4. `already_ingested_count` reports saved-library matches detected for the query; returned YouTube candidates have `already_ingested: false`
+5. Caller may optionally request a synchronous seeded mapping suggestion with `POST /api/public/videos/suggest-mapping`
+6. Caller may select candidates and pass them to `POST /api/public/videos/ingest`
+7. Unmapped direct-search submissions are saved as pending admin mapping review requests
+8. AI/fallback mapping suggestions are prepared asynchronously after the request is saved
+9. Admin approval validates seeded SkillsFuture mappings, writes approved video docs, and indexes Qdrant points
+10. Pending rejection creates no embeddings; approved videos must be unpublished to remove MongoDB approved docs and Qdrant points
 
 **Library mode** (`source: "library"`):
 1. Caller sends a free-text query
@@ -165,10 +167,11 @@ This path supports two modes via the same endpoint (`POST /api/public/videos/sea
 3. Qdrant cosine ANN search retrieves semantic candidates from the saved video index
 4. BM25 keyword retrieval runs in parallel over title and tags
 5. Reciprocal Rank Fusion merges both candidate sets
-6. Cross-encoder reranker scores and reorders the top candidates
-7. Results below the configured minimum relevance score are excluded
-8. Remaining results are returned as view-only library matches with a `score` field
-9. Does not call YouTube API or consume quota
+6. Title text-match boosting is applied to the top fused candidates
+7. Results below the fixed library relevance threshold are excluded
+8. Remaining results are returned as view-only library matches with a retrieval `score` field
+9. This path does not use the cross-encoder reranker
+10. Does not call YouTube API or consume quota
 
 ### 5.6 Admin mapping review lifecycle
 Admin review requests are stored in MongoDB `videos` documents with `mapping_review.is_request: true`.
@@ -224,6 +227,7 @@ Optional engagement endpoints:
 
 Optional curation endpoints:
 - `POST /api/public/videos/preview`
+- `POST /api/public/videos/suggest-mapping`
 - `POST /api/public/videos/ingest`
 - `GET /api/admin/video-mapping-requests`
 - `GET /api/admin/video-mapping-requests/{video_id}`
@@ -278,9 +282,9 @@ For cross-team production integration, place APIs behind a gateway with:
 ### 9.4 What to check first when debugging
 
 - If public discovery calls fail, confirm MySQL and the SkillsFuture seed are loaded
-- If recommendation calls fail, confirm Qdrant is running and collections were created
+- If recommendation calls fail, confirm Qdrant is running, collections were created, and embedding/reranker models are available
 - If library search returns no results, confirm Qdrant collections exist and `python scripts/embed_yt_videos.py` has been run
-- If library search returns a 503, confirm the embedding and reranker models are available
+- If library search returns a 503, confirm the embedding model is available
 - If preview or ingest fails, confirm the YouTube API key and quota state
 - If quiz generation or AI mapping suggestions fail, confirm the LLM configuration, MySQL connectivity, and MongoDB connectivity
 

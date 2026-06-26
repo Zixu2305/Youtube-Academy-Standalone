@@ -34,7 +34,7 @@ Implemented now:
 5. Quiz generation flow (admin UI at `/quiz_gen` + APIs) with MongoDB storage.
    - Hierarchical filtering: sector → skill → proficiency level → competency.
    - Five quiz modes: competency, knowledge, ability, proficiency, skill.
-  - Groq-assisted question generation.
+   - Groq-assisted question generation.
    - Button state management (generate → store → reset).
 6. Learner quiz taking interface (FastAPI academy portal at `/academy`).
    - Interactive quiz taking with question navigation.
@@ -53,13 +53,27 @@ Implemented now:
    - `GET /api/public/skills`
    - `GET /api/public/skill-suggestions`
    - `GET /api/public/skill-map`
+   - `GET /api/public/job-roles`
+   - `GET /api/public/job-roles/{job_role_id}`
    - `POST /api/public/recommend/videos`
    - `POST /api/public/videos/preview`
+   - `POST /api/public/videos/search`
+   - `POST /api/public/videos/suggest-mapping`
    - `POST /api/public/videos/ingest`
+   - `POST /api/public/videos/{video_id}/vote`
+   - `GET /api/public/videos/votes`
    - `POST /api/public/multi-label/search-videos`
    - `GET /api/public/multi-label/competencies`
    - `POST /api/public/multi-label/update-video`
+   - `GET /api/admin/video-mapping-requests`
+   - `GET /api/admin/video-mapping-requests/{video_id}`
+   - `PUT /api/admin/video-mapping-requests/{video_id}`
+   - `POST /api/admin/video-mapping-requests/{video_id}/approve`
+   - `POST /api/admin/video-mapping-requests/{video_id}/reject`
+   - `POST /api/admin/video-mapping-requests/{video_id}/unpublish`
+   - `POST /api/admin/video-mapping-requests/{video_id}/reopen`
    - `GET /academy` (learner portal)
+   - `GET /academy/job-roles` (job role lookup page)
 
 Reference docs:
 
@@ -174,7 +188,7 @@ LLM_MODEL=gpt-4.1-nano
 LLM_API_KEY=<your_openai_key>
 ```
 
-> Note: For OpenAI, this prototype accepts only GPT-4 family models. Do not use non-GPT-4 models such as `gpt-5` and above.
+> Note: The runtime passes `LLM_MODEL` through to the selected provider without repo-side model-family validation. Use a model name supported by the configured provider and API key. The default OpenAI model is `gpt-4.1-nano`.
 
 #### Provider-specific fallback behavior
 
@@ -447,10 +461,25 @@ uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
   - `GET /api/public/skills`
   - `GET /api/public/skill-suggestions`
   - `GET /api/public/skill-map`
+  - `GET /api/public/job-roles`
+  - `GET /api/public/job-roles/{job_role_id}`
   - `POST /api/public/recommend/videos`
   - `POST /api/public/videos/preview`
-  - `POST /api/public/videos/ingest`
   - `POST /api/public/videos/search`
+  - `POST /api/public/videos/suggest-mapping`
+  - `POST /api/public/videos/ingest`
+  - `POST /api/public/videos/{video_id}/vote`
+  - `GET /api/public/videos/votes`
+  - `POST /api/public/multi-label/search-videos`
+  - `GET /api/public/multi-label/competencies`
+  - `POST /api/public/multi-label/update-video`
+  - `GET /api/admin/video-mapping-requests`
+  - `GET /api/admin/video-mapping-requests/{video_id}`
+  - `PUT /api/admin/video-mapping-requests/{video_id}`
+  - `POST /api/admin/video-mapping-requests/{video_id}/approve`
+  - `POST /api/admin/video-mapping-requests/{video_id}/reject`
+  - `POST /api/admin/video-mapping-requests/{video_id}/unpublish`
+  - `POST /api/admin/video-mapping-requests/{video_id}/reopen`
 
 ### Learner Quiz Taking (Included in this Workflow)
 

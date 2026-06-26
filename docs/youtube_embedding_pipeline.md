@@ -2,7 +2,9 @@
 
 ## What This Is
 
-A pipeline that takes approved YouTube video mappings stored in MongoDB (via the ingestion web app, learner portal, admin review, or batch script), embeds them into Qdrant, and provides a **recommender endpoint** that uses SkillsFuture skill embeddings as a semantic bridge to find the most relevant videos for a user query.
+A pipeline that takes approved YouTube video mappings stored in MongoDB through the ingestion web app, learner portal, or admin review flow, embeds them into Qdrant, and supports recommendation/search endpoints over the saved video library.
+
+The core recommender still starts with a SkillsFuture skill match, but it is no longer a simple cosine-only two-hop lookup. Current recommendation paths use BGE embeddings, Qdrant semantic retrieval, BM25 keyword retrieval, Reciprocal Rank Fusion, metadata boosts, cross-encoder reranking, and a small vote-aware ordering adjustment. The saved-library direct search path uses BGE embeddings, Qdrant semantic retrieval, BM25, RRF, and title-match boosting, but does not use the cross-encoder reranker.
 
 **Mapped flow:** YouTube API -> MongoDB -> SentenceTransformer (BGE) -> Qdrant vector + payload -> FastAPI recommender API
 
@@ -15,7 +17,7 @@ A pipeline that takes approved YouTube video mappings stored in MongoDB (via the
 ### Video Recommender (primary)
 `POST /api/recommend/videos`
 
-Uses SF skill embeddings as a "semantic bridge" — a user query finds the best matching skill, then that skill's rich embedding vector finds the most relevant YouTube videos.
+Uses SF skill embeddings as the first retrieval hop: a free-text user query finds the best matching skill, then the matched skill context drives hybrid retrieval and cross-encoder reranking over YouTube videos.
 
 ```bash
 curl -X POST http://localhost:8000/api/recommend/videos \
@@ -35,6 +37,7 @@ curl -X POST http://localhost:8000/api/recommend/videos \
 ```json
 {
   "query": "how to clean messy datasets",
+  "retrieval_method": "hybrid_rrf_reranked",
   "matched_skill": {
     "score": 0.60,
     "skill_title": "Data Analysis and Interpretation",
@@ -45,17 +48,30 @@ curl -X POST http://localhost:8000/api/recommend/videos \
   },
   "recommended_videos": [
     {
-      "score": 0.65,
+      "rrf_score": 0.032,
+      "reranker_score": 0.91,
       "video_id": "yArm1xkyD2o",
       "title": "Introduction to Data Science Principles...",
+      "description": "...",
+      "channel_title": "Example Channel",
+      "thumbnail_url": "https://...",
+      "published_at": "2024-01-01T00:00:00Z",
+      "duration": "PT6M54S",
+      "view_count": 8,
+      "like_count": 0,
+      "comment_count": 0,
+      "tags": ["data science"],
       "sector": "Infocomm Technology",
       "skill_name": "...",
-      "duration": "6:54",
-      "view_count": 8
+      "competency": "...",
+      "proficiency_level": "2",
+      "user_votes": 0
     }
   ]
 }
 ```
+
+For explicit sector/skill/proficiency recommendations used by the learner portal, see `POST /api/public/recommend/videos` in `docs/api_reference.md`.
 
 ### Skill Search
 `POST /api/search/skills`
@@ -105,18 +121,22 @@ API docs at `http://localhost:8000/docs`.
 
 ---
 
-## How the Recommender Works (Two-Hop Semantic Bridge)
+## How the Core Recommender Works
 
-1. **Encode** the user query with BGE model
-2. **Search SF skills collection** (11,991 points) with the query vector → get top 1 match **with its stored vector** (`with_vectors=True`)
-3. **Extract** the matched skill's 768-dim embedding vector from Qdrant
-4. **Search YT videos collection** using that skill vector (not the original query vector) → get top N videos
-5. **Return** the matched skill info + recommended videos
+1. **Encode** the user query with the BGE model.
+2. **Search the SF skills collection** with the query vector and return the top skill match with its stored vector.
+3. **Search the YT videos collection semantically** using the matched skill vector.
+4. **Run BM25 keyword retrieval** over saved video title/tag text using the matched skill title.
+5. **Merge candidates with Reciprocal Rank Fusion** and apply metadata boosts for sector, proficiency, and mapped competency matches.
+6. **Rerank the top candidates with the cross-encoder** using paired SkillsFuture and YouTube metadata text.
+7. **Apply vote-aware adjustment** by swapping adjacent results when the lower-ranked item has at least three more votes.
+8. **Return** matched skill info plus recommended videos with `rrf_score`, `reranker_score`, and `user_votes`.
 
 ### Why This Approach
 - A vague query like "how to clean data" produces a generic embedding
 - The SF skill embedding contains rich context: competency descriptions, knowledge items, ability items
-- Using the skill vector to search videos produces better, more targeted recommendations than searching with the raw query
+- Using the skill vector to seed video retrieval produces better, more targeted candidates than searching with the raw query alone
+- BM25, RRF, metadata boosts, and cross-encoder reranking improve ranking quality after the semantic candidate set is formed
 - The skill framework acts as a knowledge layer that translates user intent into structured competency context
 
 ---
@@ -171,9 +191,8 @@ Plain reject on an approved request is blocked because it would otherwise leave 
 
 | File | Purpose |
 |------|---------|
-| `scripts/batch_ingest_yt.py` | Batch-ingests YouTube videos for all competencies across 8 Infocomm Technology skills |
 | `scripts/embed_yt_videos.py` | Reads videos from MongoDB, encodes with BGE model, upserts vectors into Qdrant |
-| `api/routes/recommend.py` | `POST /api/recommend/videos` — recommender endpoint (semantic bridge) |
+| `api/routes/recommend.py` | `POST /api/recommend/videos` — core hybrid recommendation endpoint |
 | `api/routes/multi_label.py` | Public multi-label endpoints for adding/removing additional mappings and syncing Qdrant payload |
 | `api/routes/search_skills.py` | `POST /api/search/skills` — direct skill search |
 | `api/routes/search_videos.py` | `POST /api/search/videos` — direct video search (useful for testing embeddings are retrievable) |
@@ -181,16 +200,16 @@ Plain reject on an approved request is blocked because it would otherwise leave 
 
 ---
 
-## Search Score Interpretation
+## Score Interpretation
 
-| Score Range | Interpretation |
-|---|---|
-| 0.85+ | Very strong semantic match |
-| 0.70–0.85 | Good relevance |
-| 0.50–0.70 | Loosely related |
-| Below 0.50 | Weak/unrelated |
+Recommendation responses expose two ranking scores:
 
-Longer, more specific queries produce better scores than short generic ones.
+- `rrf_score`: hybrid retrieval score after RRF fusion and metadata boosts. It is mainly useful for debugging which candidates advanced to reranking.
+- `reranker_score`: cross-encoder relevance score used as the primary ordering signal before vote-aware adjustment.
+
+Saved-library direct search responses expose `score`, which is the final boosted retrieval score from Qdrant/BM25/RRF plus title-match boosting. It is not a cross-encoder score.
+
+Scores are most useful for comparing results within the same query. Do not treat them as calibrated probabilities across unrelated queries.
 
 ---
 

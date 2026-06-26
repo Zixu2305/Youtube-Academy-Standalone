@@ -786,14 +786,15 @@ Request fields:
 - `max_results` (integer, optional, default 8, range 1-80; the UI uses 8 for direct YouTube mode and up to 80 for saved-library mode)
 - `order` (string, optional, default `"relevance"`): YouTube sort order, one of `date`, `rating`, `relevance`, `title`, `videoCount`, `viewCount`. Ignored when `source` is `"library"`.
 - `source` (string, optional, default `"youtube"`): `"youtube"` or `"library"`
+- `min_score` (number, optional, default `0.0`, range 0.0-1.0): accepted by the schema but not currently used by the handler; library mode applies the server-side fixed threshold described below
 
 **YouTube mode (`source: "youtube"`):**
 
-Calls the YouTube Data API with the query and returns candidate videos. Results include `already_ingested: true` for videos already in the saved library. Consumes YouTube API quota. Requires `YOUTUBE_API_KEY` to be configured.
+Calls the YouTube Data API with the query and returns fresh candidate videos. Videos already present in the saved library are filtered out before the response is returned. `already_ingested_count` reports saved-library matches detected for the query, and returned YouTube candidates have `already_ingested: false`. Consumes YouTube API quota. Requires `YOUTUBE_API_KEY` to be configured.
 
 **Library mode (`source: "library"`):**
 
-Runs a hybrid semantic search over the saved video Qdrant index using the full recommendation pipeline: BGE embedding → Qdrant cosine ANN → BM25 keyword retrieval → Reciprocal Rank Fusion → cross-encoder reranking. Does not require sector, skill, or competency context. Only videos previously ingested and embedded are searchable. Results with a reranker score below the configured minimum threshold are excluded. Returns `already_ingested: true` for all results.
+Runs hybrid retrieval over the saved video Qdrant index: BGE embedding -> Qdrant cosine ANN -> BM25 keyword retrieval -> Reciprocal Rank Fusion -> title text-match boosting. This path does not use the cross-encoder reranker. It does not require sector, skill, or competency context. Only videos previously ingested and embedded are searchable. Results with a final boosted retrieval score below the fixed server threshold are excluded. Returns `already_ingested: true` for all results.
 
 Response shape (shared by both modes):
 ```json
@@ -833,13 +834,15 @@ Response shape (shared by both modes):
 
 Response field notes:
 - `source` on each result is `"library"` for library mode and `"youtube"` for YouTube mode
-- `score` is the cross-encoder reranker score (present on library results only, `null` on YouTube results)
+- `score` is the final boosted retrieval score in library mode; it is `null` on YouTube results
+- In YouTube mode, `already_ingested_count` reports saved-library matches detected for the query and those videos are omitted from `results`
+- In library mode, `already_ingested_count` equals the number of returned saved-library results
 - `quota_message` is populated with `"No relevant videos found. Try a different search term or lower the relevance threshold."` when library mode returns zero results after score filtering
 - `quota` is populated with YouTube API credit context for YouTube mode; `null` for library mode
 
 Key failures:
 - `400` when `query` is empty or below minimum length
-- `503` when embedding or reranker model is unavailable (library mode)
+- `503` when the embedding model is unavailable (library mode)
 - `503` when YouTube API key is not configured (YouTube mode)
 - `429` when YouTube quota is exceeded and no results can be returned (YouTube mode)
 - `500` when Qdrant search fails (library mode)
@@ -857,6 +860,55 @@ curl -X POST http://localhost:8000/api/public/videos/search \
   -H "Content-Type: application/json" \
   -d '{"query":"beginner accounting standards tutorial","max_results":8,"source":"youtube","order":"relevance"}'
 ```
+
+---
+
+### POST `/api/public/videos/suggest-mapping`
+Returns a synchronous seeded SkillsFuture mapping suggestion for one video candidate. This is useful for direct YouTube search results before submitting a mapped video to `/api/public/videos/ingest`.
+
+The endpoint first builds candidates from seeded SkillsFuture data. With `use_ai: false`, it returns the best deterministic fallback. With `use_ai: true`, it asks the configured LLM provider to choose from those seeded candidates only; if the LLM call fails or returns an invalid candidate, the endpoint falls back to the deterministic suggestion when available.
+
+Request body:
+```json
+{
+  "video": {
+    "video_id": "abcd1234",
+    "title": "Beginner data analytics tutorial",
+    "description": "Learn basic data cleaning and charts.",
+    "channel_title": "Example Channel",
+    "tags": ["data", "analytics", "excel"]
+  },
+  "search_query": "beginner data analytics",
+  "use_ai": false
+}
+```
+
+Response:
+```json
+{
+  "suggestion": {
+    "sector": "Infocomm Technology",
+    "skill": "Data Analytics",
+    "proficiency_level": "2",
+    "competency": "ability: Analyse data to identify trends and patterns for decision-making",
+    "item_type": "ability",
+    "proficiency_description": "...",
+    "confidence": 0.42,
+    "reason": "Closest seeded match based on the video title and search query."
+  },
+  "alternatives": []
+}
+```
+
+Notes:
+- `video.title`, `video.description`, `video.channel_title`, `video.tags`, and `search_query` are used to rank seeded mapping candidates.
+- `use_ai: true` requires `LLM_PROVIDER`, `LLM_MODEL`, and `LLM_API_KEY` to be configured.
+- `alternatives` is currently always an empty list.
+
+Key failures:
+- `404` when no seeded SkillsFuture mapping candidates can be found
+- `503` when AI suggestion is requested, no deterministic fallback exists, and the LLM provider is unavailable
+- `500` when the AI returns a candidate that cannot be reconciled to seeded data and no fallback exists
 
 ---
 
@@ -1085,9 +1137,10 @@ For cross-platform integration where partner codebase access is not available, u
 
 Optional ingestion and search flow:
 1. `POST /api/public/videos/search` with `"source": "youtube"` to preview YouTube candidates
-2. `POST /api/public/videos/ingest` to submit selected unmapped videos for admin mapping review
-3. Admin approves via `POST /api/admin/video-mapping-requests/{video_id}/approve`
-4. `POST /api/public/videos/search` with `"source": "library"` to search the saved indexed library semantically
+2. Optional: `POST /api/public/videos/suggest-mapping` to get a seeded mapping suggestion for a selected candidate
+3. `POST /api/public/videos/ingest` to submit selected videos, either mapped for immediate indexing or unmapped for admin mapping review
+4. Admin approves review requests via `POST /api/admin/video-mapping-requests/{video_id}/approve`
+5. `POST /api/public/videos/search` with `"source": "library"` to search the saved indexed library semantically
 
 For full architecture and operational guidance, see `docs/api_layers_integration_guide.md`.
 
@@ -1107,4 +1160,4 @@ Likely dependency checks:
 - MongoDB for quiz storage and ingested videos
 - YouTube API key for preview, ingest, and YouTube mode of `/api/public/videos/search`
 - LLM provider configuration for quiz generation, query enhancement, and AI mapping suggestions
-- Embedding and reranker models for library search and recommendation endpoints
+- Embedding model for library search; embedding and reranker models for recommendation endpoints
